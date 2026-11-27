@@ -84,6 +84,11 @@ export class ControllerContext {
 	readonly capacityChanges = new Wakeups();
 	readonly hostUsages = new HostUsageState();
 	readonly sessionWakes = new Wakeups();
+	readonly boardWakes = new Wakeups();
+	boardCountsFn?: () => Map<
+		string,
+		{ threads: number; openTasks: number; readyTasks: number; blockedTasks: number }
+	>;
 	readonly creatingWS = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 	readonly sessionRaces = new Map<string, Promise<void>>();
 	readonly startingRuns = new Map<
@@ -424,12 +429,20 @@ export class ControllerContext {
 		const qByName = new Map(qps.map((q) => [q.name, q]));
 		const { active, toDecide } = this.store.reviewCounts();
 		const memCounts = this.store.pendingMemoriesCounts();
+		const boardCounts = this.boardCountsFn?.();
 		for (const p of ps) {
 			p.liveSessions = live.get(p.name) ?? 0;
 			p.schedules = scheds.get(p.name) ?? 0;
 			p.activeReviews = active.get(p.name) ?? 0;
 			p.reviewsToDecide = toDecide.get(p.name) ?? 0;
 			p.pendingMemories = memCounts.byProject.get(p.name) ?? 0;
+			const bc = boardCounts?.get(p.name);
+			if (bc) {
+				p.boardThreads = bc.threads;
+				p.openBoardTasks = bc.openTasks;
+				p.readyBoardTasks = bc.readyTasks;
+				p.blockedBoardTasks = bc.blockedTasks;
+			}
 			const qp = qByName.get(p.name);
 			if (qp) {
 				p.openQuestions = qp.open;

@@ -35,6 +35,8 @@ const (
 	IssueServiceName = "hotbed.v1.IssueService"
 	// MemoryServiceName is the fully-qualified name of the MemoryService service.
 	MemoryServiceName = "hotbed.v1.MemoryService"
+	// BoardServiceName is the fully-qualified name of the BoardService service.
+	BoardServiceName = "hotbed.v1.BoardService"
 )
 
 // These constants are the procedure names of the RPCs defined in this package. They're exposed at
@@ -357,6 +359,100 @@ const (
 	MemoryServiceDeleteMemoryProcedure = "/hotbed.v1.MemoryService/DeleteMemory"
 	// MemoryServiceMoveMemoryProcedure is the procedure name of the MemoryService's MoveMemory RPC.
 	MemoryServiceMoveMemoryProcedure = "/hotbed.v1.MemoryService/MoveMemory"
+	// BoardServicePostBoardMessageProcedure is the procedure name of the BoardService's
+	// PostBoardMessage RPC.
+	BoardServicePostBoardMessageProcedure = "/hotbed.v1.BoardService/PostBoardMessage"
+	// BoardServiceEditBoardMessageProcedure is the procedure name of the BoardService's
+	// EditBoardMessage RPC.
+	BoardServiceEditBoardMessageProcedure = "/hotbed.v1.BoardService/EditBoardMessage"
+	// BoardServiceDeleteBoardMessageProcedure is the procedure name of the BoardService's
+	// DeleteBoardMessage RPC.
+	BoardServiceDeleteBoardMessageProcedure = "/hotbed.v1.BoardService/DeleteBoardMessage"
+	// BoardServiceReactBoardMessageProcedure is the procedure name of the BoardService's
+	// ReactBoardMessage RPC.
+	BoardServiceReactBoardMessageProcedure = "/hotbed.v1.BoardService/ReactBoardMessage"
+	// BoardServiceLabelBoardMessageProcedure is the procedure name of the BoardService's
+	// LabelBoardMessage RPC.
+	BoardServiceLabelBoardMessageProcedure = "/hotbed.v1.BoardService/LabelBoardMessage"
+	// BoardServiceListBoardThreadsProcedure is the procedure name of the BoardService's
+	// ListBoardThreads RPC.
+	BoardServiceListBoardThreadsProcedure = "/hotbed.v1.BoardService/ListBoardThreads"
+	// BoardServiceGetBoardThreadProcedure is the procedure name of the BoardService's GetBoardThread
+	// RPC.
+	BoardServiceGetBoardThreadProcedure = "/hotbed.v1.BoardService/GetBoardThread"
+	// BoardServiceListBoardEventsProcedure is the procedure name of the BoardService's ListBoardEvents
+	// RPC.
+	BoardServiceListBoardEventsProcedure = "/hotbed.v1.BoardService/ListBoardEvents"
+	// BoardServiceListBoardActorsProcedure is the procedure name of the BoardService's ListBoardActors
+	// RPC.
+	BoardServiceListBoardActorsProcedure = "/hotbed.v1.BoardService/ListBoardActors"
+	// BoardServiceUploadBoardAttachmentProcedure is the procedure name of the BoardService's
+	// UploadBoardAttachment RPC.
+	BoardServiceUploadBoardAttachmentProcedure = "/hotbed.v1.BoardService/UploadBoardAttachment"
+	// BoardServiceDownloadBoardAttachmentProcedure is the procedure name of the BoardService's
+	// DownloadBoardAttachment RPC.
+	BoardServiceDownloadBoardAttachmentProcedure = "/hotbed.v1.BoardService/DownloadBoardAttachment"
+	// BoardServiceListBoardSchemasProcedure is the procedure name of the BoardService's
+	// ListBoardSchemas RPC.
+	BoardServiceListBoardSchemasProcedure = "/hotbed.v1.BoardService/ListBoardSchemas"
+	// BoardServiceGetBoardSchemaProcedure is the procedure name of the BoardService's GetBoardSchema
+	// RPC.
+	BoardServiceGetBoardSchemaProcedure = "/hotbed.v1.BoardService/GetBoardSchema"
+	// BoardServiceCreateBoardSchemaProcedure is the procedure name of the BoardService's
+	// CreateBoardSchema RPC.
+	BoardServiceCreateBoardSchemaProcedure = "/hotbed.v1.BoardService/CreateBoardSchema"
+	// BoardServiceScheduleBoardMessageProcedure is the procedure name of the BoardService's
+	// ScheduleBoardMessage RPC.
+	BoardServiceScheduleBoardMessageProcedure = "/hotbed.v1.BoardService/ScheduleBoardMessage"
+	// BoardServiceListBoardSchedulesProcedure is the procedure name of the BoardService's
+	// ListBoardSchedules RPC.
+	BoardServiceListBoardSchedulesProcedure = "/hotbed.v1.BoardService/ListBoardSchedules"
+	// BoardServiceCancelBoardScheduleProcedure is the procedure name of the BoardService's
+	// CancelBoardSchedule RPC.
+	BoardServiceCancelBoardScheduleProcedure = "/hotbed.v1.BoardService/CancelBoardSchedule"
+	// BoardServiceCreateBoardTaskProcedure is the procedure name of the BoardService's CreateBoardTask
+	// RPC.
+	BoardServiceCreateBoardTaskProcedure = "/hotbed.v1.BoardService/CreateBoardTask"
+	// BoardServiceBatchCreateBoardTasksProcedure is the procedure name of the BoardService's
+	// BatchCreateBoardTasks RPC.
+	BoardServiceBatchCreateBoardTasksProcedure = "/hotbed.v1.BoardService/BatchCreateBoardTasks"
+	// BoardServiceListBoardTasksProcedure is the procedure name of the BoardService's ListBoardTasks
+	// RPC.
+	BoardServiceListBoardTasksProcedure = "/hotbed.v1.BoardService/ListBoardTasks"
+	// BoardServiceClaimBoardTaskProcedure is the procedure name of the BoardService's ClaimBoardTask
+	// RPC.
+	BoardServiceClaimBoardTaskProcedure = "/hotbed.v1.BoardService/ClaimBoardTask"
+	// BoardServiceRenewBoardTaskProcedure is the procedure name of the BoardService's RenewBoardTask
+	// RPC.
+	BoardServiceRenewBoardTaskProcedure = "/hotbed.v1.BoardService/RenewBoardTask"
+	// BoardServiceReleaseBoardTaskProcedure is the procedure name of the BoardService's
+	// ReleaseBoardTask RPC.
+	BoardServiceReleaseBoardTaskProcedure = "/hotbed.v1.BoardService/ReleaseBoardTask"
+	// BoardServiceCompleteBoardTaskProcedure is the procedure name of the BoardService's
+	// CompleteBoardTask RPC.
+	BoardServiceCompleteBoardTaskProcedure = "/hotbed.v1.BoardService/CompleteBoardTask"
+	// BoardServiceFailBoardTaskProcedure is the procedure name of the BoardService's FailBoardTask RPC.
+	BoardServiceFailBoardTaskProcedure = "/hotbed.v1.BoardService/FailBoardTask"
+	// BoardServiceBlockBoardTaskProcedure is the procedure name of the BoardService's BlockBoardTask
+	// RPC.
+	BoardServiceBlockBoardTaskProcedure = "/hotbed.v1.BoardService/BlockBoardTask"
+	// BoardServiceUnblockBoardTaskProcedure is the procedure name of the BoardService's
+	// UnblockBoardTask RPC.
+	BoardServiceUnblockBoardTaskProcedure = "/hotbed.v1.BoardService/UnblockBoardTask"
+	// BoardServiceReopenBoardTaskProcedure is the procedure name of the BoardService's ReopenBoardTask
+	// RPC.
+	BoardServiceReopenBoardTaskProcedure = "/hotbed.v1.BoardService/ReopenBoardTask"
+	// BoardServiceAssignBoardTaskProcedure is the procedure name of the BoardService's AssignBoardTask
+	// RPC.
+	BoardServiceAssignBoardTaskProcedure = "/hotbed.v1.BoardService/AssignBoardTask"
+	// BoardServiceSetBoardTaskNeedsProcedure is the procedure name of the BoardService's
+	// SetBoardTaskNeeds RPC.
+	BoardServiceSetBoardTaskNeedsProcedure = "/hotbed.v1.BoardService/SetBoardTaskNeeds"
+	// BoardServiceCancelBoardTaskProcedure is the procedure name of the BoardService's CancelBoardTask
+	// RPC.
+	BoardServiceCancelBoardTaskProcedure = "/hotbed.v1.BoardService/CancelBoardTask"
+	// BoardServiceImportBoardProcedure is the procedure name of the BoardService's ImportBoard RPC.
+	BoardServiceImportBoardProcedure = "/hotbed.v1.BoardService/ImportBoard"
 )
 
 var (
@@ -5580,6 +5676,1200 @@ func (h memoryServiceHandler) moveMemory(ctx context.Context, _ connect.Spec, st
 		return err
 	}
 	res, err := h.svc.MoveMemory(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	boardServicePostBoardMessageSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("PostBoardMessage"),
+			Procedure:  BoardServicePostBoardMessageProcedure,
+		}
+	})
+	boardServiceEditBoardMessageSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("EditBoardMessage"),
+			Procedure:  BoardServiceEditBoardMessageProcedure,
+		}
+	})
+	boardServiceDeleteBoardMessageSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("DeleteBoardMessage"),
+			Procedure:  BoardServiceDeleteBoardMessageProcedure,
+		}
+	})
+	boardServiceReactBoardMessageSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ReactBoardMessage"),
+			Procedure:  BoardServiceReactBoardMessageProcedure,
+		}
+	})
+	boardServiceLabelBoardMessageSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("LabelBoardMessage"),
+			Procedure:  BoardServiceLabelBoardMessageProcedure,
+		}
+	})
+	boardServiceListBoardThreadsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ListBoardThreads"),
+			Procedure:        BoardServiceListBoardThreadsProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceGetBoardThreadSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("GetBoardThread"),
+			Procedure:        BoardServiceGetBoardThreadProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceListBoardEventsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ListBoardEvents"),
+			Procedure:        BoardServiceListBoardEventsProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceListBoardActorsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ListBoardActors"),
+			Procedure:        BoardServiceListBoardActorsProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceUploadBoardAttachmentSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("UploadBoardAttachment"),
+			Procedure:  BoardServiceUploadBoardAttachmentProcedure,
+		}
+	})
+	boardServiceDownloadBoardAttachmentSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("DownloadBoardAttachment"),
+			Procedure:        BoardServiceDownloadBoardAttachmentProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceListBoardSchemasSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ListBoardSchemas"),
+			Procedure:        BoardServiceListBoardSchemasProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceGetBoardSchemaSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("GetBoardSchema"),
+			Procedure:        BoardServiceGetBoardSchemaProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceCreateBoardSchemaSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("CreateBoardSchema"),
+			Procedure:  BoardServiceCreateBoardSchemaProcedure,
+		}
+	})
+	boardServiceScheduleBoardMessageSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ScheduleBoardMessage"),
+			Procedure:  BoardServiceScheduleBoardMessageProcedure,
+		}
+	})
+	boardServiceListBoardSchedulesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ListBoardSchedules"),
+			Procedure:        BoardServiceListBoardSchedulesProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceCancelBoardScheduleSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("CancelBoardSchedule"),
+			Procedure:  BoardServiceCancelBoardScheduleProcedure,
+		}
+	})
+	boardServiceCreateBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("CreateBoardTask"),
+			Procedure:  BoardServiceCreateBoardTaskProcedure,
+		}
+	})
+	boardServiceBatchCreateBoardTasksSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("BatchCreateBoardTasks"),
+			Procedure:  BoardServiceBatchCreateBoardTasksProcedure,
+		}
+	})
+	boardServiceListBoardTasksSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ListBoardTasks"),
+			Procedure:        BoardServiceListBoardTasksProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	boardServiceClaimBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ClaimBoardTask"),
+			Procedure:  BoardServiceClaimBoardTaskProcedure,
+		}
+	})
+	boardServiceRenewBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("RenewBoardTask"),
+			Procedure:  BoardServiceRenewBoardTaskProcedure,
+		}
+	})
+	boardServiceReleaseBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ReleaseBoardTask"),
+			Procedure:  BoardServiceReleaseBoardTaskProcedure,
+		}
+	})
+	boardServiceCompleteBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("CompleteBoardTask"),
+			Procedure:  BoardServiceCompleteBoardTaskProcedure,
+		}
+	})
+	boardServiceFailBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("FailBoardTask"),
+			Procedure:  BoardServiceFailBoardTaskProcedure,
+		}
+	})
+	boardServiceBlockBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("BlockBoardTask"),
+			Procedure:  BoardServiceBlockBoardTaskProcedure,
+		}
+	})
+	boardServiceUnblockBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("UnblockBoardTask"),
+			Procedure:  BoardServiceUnblockBoardTaskProcedure,
+		}
+	})
+	boardServiceReopenBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ReopenBoardTask"),
+			Procedure:  BoardServiceReopenBoardTaskProcedure,
+		}
+	})
+	boardServiceAssignBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("AssignBoardTask"),
+			Procedure:  BoardServiceAssignBoardTaskProcedure,
+		}
+	})
+	boardServiceSetBoardTaskNeedsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("SetBoardTaskNeeds"),
+			Procedure:  BoardServiceSetBoardTaskNeedsProcedure,
+		}
+	})
+	boardServiceCancelBoardTaskSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("CancelBoardTask"),
+			Procedure:  BoardServiceCancelBoardTaskProcedure,
+		}
+	})
+	boardServiceImportBoardSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("BoardService").Methods().ByName("ImportBoard"),
+			Procedure:  BoardServiceImportBoardProcedure,
+		}
+	})
+)
+
+// BoardServiceClient is a client for the hotbed.v1.BoardService service.
+type BoardServiceClient interface {
+	// Start a new thread in a project, or reply in an existing thread (`re`).
+	PostBoardMessage(context.Context, *v1.PostBoardMessageRequest) (*v1.BoardMessageResult, error)
+	// Replace a message's text (author or principal only; optional if_revision).
+	EditBoardMessage(context.Context, *v1.EditBoardMessageRequest) (*v1.BoardMessageResult, error)
+	// Soft-delete a message into a tombstone (author or principal only).
+	DeleteBoardMessage(context.Context, *v1.DeleteBoardMessageRequest) (*v1.BoardMessage, error)
+	// Add or remove a normalized emoji reaction on a message.
+	ReactBoardMessage(context.Context, *v1.ReactBoardMessageRequest) (*v1.BoardMessage, error)
+	// Set/unset labels on a message, optionally conditioned on current label values.
+	LabelBoardMessage(context.Context, *v1.LabelBoardMessageRequest) (*v1.BoardMessage, error)
+	// List threads in a project (or all projects), newest activity last, with filters and pagination.
+	ListBoardThreads(context.Context, *v1.ListBoardThreadsRequest) (*v1.ListBoardThreadsResponse, error)
+	// Read one whole thread (root, replies, pending schedules) from any message ID in it.
+	GetBoardThread(context.Context, *v1.GetBoardThreadRequest) (*v1.GetBoardThreadResponse, error)
+	// Read or wait for board events matching filters (before-and-after evaluation).
+	ListBoardEvents(context.Context, *v1.ListBoardEventsRequest) (*v1.ListBoardEventsResponse, error)
+	// List actors seen on the board.
+	ListBoardActors(context.Context, *v1.ListBoardActorsRequest) (*v1.ListBoardActorsResponse, error)
+	// Upload a file attachment to attach to board messages or schedules.
+	UploadBoardAttachment(context.Context, *v1.UploadBoardAttachmentRequest) (*v1.BoardAttachment, error)
+	// Download a file attachment by ID.
+	DownloadBoardAttachment(context.Context, *v1.DownloadBoardAttachmentRequest) (*v1.DownloadBoardAttachmentResponse, error)
+	// List built-in and registered structured-data schemas.
+	ListBoardSchemas(context.Context, *v1.ListBoardSchemasRequest) (*v1.ListBoardSchemasResponse, error)
+	// Inspect one structured-data schema by name@version.
+	GetBoardSchema(context.Context, *v1.GetBoardSchemaRequest) (*v1.BoardSchema, error)
+	// Register an immutable JSON Schema version (name@version) for structured message blocks.
+	CreateBoardSchema(context.Context, *v1.CreateBoardSchemaRequest) (*v1.CreateBoardSchemaResponse, error)
+	// Schedule a board post or reply to send later or on a repeat cadence.
+	ScheduleBoardMessage(context.Context, *v1.ScheduleBoardMessageRequest) (*v1.BoardScheduleResult, error)
+	// List pending (or all) scheduled board messages.
+	ListBoardSchedules(context.Context, *v1.ListBoardSchedulesRequest) (*v1.ListBoardSchedulesResponse, error)
+	// Cancel a pending scheduled board message.
+	CancelBoardSchedule(context.Context, *v1.CancelBoardScheduleRequest) (*v1.CancelBoardScheduleResponse, error)
+	// Start a new thread as a task, or adopt an existing thread (`re`) as a task.
+	CreateBoardTask(context.Context, *v1.CreateBoardTaskRequest) (*v1.BoardTaskResult, error)
+	// Atomically create a plan of up to 100 tasks with internal key DAG dependencies.
+	BatchCreateBoardTasks(context.Context, *v1.BatchCreateBoardTasksRequest) (*v1.BatchCreateBoardTasksResponse, error)
+	// List tasks (default open: waiting/ready/claimed/blocked), oldest first or latest active.
+	ListBoardTasks(context.Context, *v1.ListBoardTasksRequest) (*v1.ListBoardTasksResponse, error)
+	// Claim a specific task by ID, or claim the oldest ready task in a project (optionally waiting).
+	ClaimBoardTask(context.Context, *v1.ClaimBoardTaskRequest) (*v1.BoardTaskResult, error)
+	// Extend a held task claim's lease (fenced by epoch + token).
+	RenewBoardTask(context.Context, *v1.RenewBoardTaskRequest) (*v1.BoardTaskResult, error)
+	// Release a held task back to ready (fenced by epoch + token).
+	ReleaseBoardTask(context.Context, *v1.ReleaseBoardTaskRequest) (*v1.BoardMessage, error)
+	// Complete a held task and atomically ready dependent waiting tasks (fenced by epoch + token).
+	CompleteBoardTask(context.Context, *v1.CompleteBoardTaskRequest) (*v1.BoardMessage, error)
+	// Fail a held task with a reason (fenced by epoch + token).
+	FailBoardTask(context.Context, *v1.FailBoardTaskRequest) (*v1.BoardMessage, error)
+	// Hold a task for a person (with claim proof if claimed, or as owner if unclaimed).
+	BlockBoardTask(context.Context, *v1.BlockBoardTaskRequest) (*v1.BoardMessage, error)
+	// Lift a hold on a blocked task, returning it to ready or waiting.
+	UnblockBoardTask(context.Context, *v1.UnblockBoardTaskRequest) (*v1.BoardMessage, error)
+	// Reopen a failed task back to ready.
+	ReopenBoardTask(context.Context, *v1.ReopenBoardTaskRequest) (*v1.BoardMessage, error)
+	// Assign a task to one profile/actor, or return it to the pool (`unassign`).
+	AssignBoardTask(context.Context, *v1.AssignBoardTaskRequest) (*v1.BoardMessage, error)
+	// Replace a task's prerequisite task IDs (with cycle detection).
+	SetBoardTaskNeeds(context.Context, *v1.SetBoardTaskNeedsRequest) (*v1.BoardMessage, error)
+	// Cancel a non-completed task with a reason, ending any active claim.
+	CancelBoardTask(context.Context, *v1.CancelBoardTaskRequest) (*v1.BoardMessage, error)
+	// Idempotently import actors, schemas, messages, tasks, and schedules from an existing board.
+	ImportBoard(context.Context, *v1.ImportBoardRequest) (*v1.ImportBoardResponse, error)
+}
+
+// NewBoardServiceClient constructs a client for the hotbed.v1.BoardService service. Multiple
+// service clients may share a single connect.Client.
+func NewBoardServiceClient(client *connect.Client) BoardServiceClient {
+	return &boardServiceClient{client: client}
+}
+
+// BoardServiceHandler is an implementation of the hotbed.v1.BoardService service.
+type BoardServiceHandler interface {
+	// Start a new thread in a project, or reply in an existing thread (`re`).
+	PostBoardMessage(context.Context, *v1.PostBoardMessageRequest) (*v1.BoardMessageResult, error)
+	// Replace a message's text (author or principal only; optional if_revision).
+	EditBoardMessage(context.Context, *v1.EditBoardMessageRequest) (*v1.BoardMessageResult, error)
+	// Soft-delete a message into a tombstone (author or principal only).
+	DeleteBoardMessage(context.Context, *v1.DeleteBoardMessageRequest) (*v1.BoardMessage, error)
+	// Add or remove a normalized emoji reaction on a message.
+	ReactBoardMessage(context.Context, *v1.ReactBoardMessageRequest) (*v1.BoardMessage, error)
+	// Set/unset labels on a message, optionally conditioned on current label values.
+	LabelBoardMessage(context.Context, *v1.LabelBoardMessageRequest) (*v1.BoardMessage, error)
+	// List threads in a project (or all projects), newest activity last, with filters and pagination.
+	ListBoardThreads(context.Context, *v1.ListBoardThreadsRequest) (*v1.ListBoardThreadsResponse, error)
+	// Read one whole thread (root, replies, pending schedules) from any message ID in it.
+	GetBoardThread(context.Context, *v1.GetBoardThreadRequest) (*v1.GetBoardThreadResponse, error)
+	// Read or wait for board events matching filters (before-and-after evaluation).
+	ListBoardEvents(context.Context, *v1.ListBoardEventsRequest) (*v1.ListBoardEventsResponse, error)
+	// List actors seen on the board.
+	ListBoardActors(context.Context, *v1.ListBoardActorsRequest) (*v1.ListBoardActorsResponse, error)
+	// Upload a file attachment to attach to board messages or schedules.
+	UploadBoardAttachment(context.Context, *v1.UploadBoardAttachmentRequest) (*v1.BoardAttachment, error)
+	// Download a file attachment by ID.
+	DownloadBoardAttachment(context.Context, *v1.DownloadBoardAttachmentRequest) (*v1.DownloadBoardAttachmentResponse, error)
+	// List built-in and registered structured-data schemas.
+	ListBoardSchemas(context.Context, *v1.ListBoardSchemasRequest) (*v1.ListBoardSchemasResponse, error)
+	// Inspect one structured-data schema by name@version.
+	GetBoardSchema(context.Context, *v1.GetBoardSchemaRequest) (*v1.BoardSchema, error)
+	// Register an immutable JSON Schema version (name@version) for structured message blocks.
+	CreateBoardSchema(context.Context, *v1.CreateBoardSchemaRequest) (*v1.CreateBoardSchemaResponse, error)
+	// Schedule a board post or reply to send later or on a repeat cadence.
+	ScheduleBoardMessage(context.Context, *v1.ScheduleBoardMessageRequest) (*v1.BoardScheduleResult, error)
+	// List pending (or all) scheduled board messages.
+	ListBoardSchedules(context.Context, *v1.ListBoardSchedulesRequest) (*v1.ListBoardSchedulesResponse, error)
+	// Cancel a pending scheduled board message.
+	CancelBoardSchedule(context.Context, *v1.CancelBoardScheduleRequest) (*v1.CancelBoardScheduleResponse, error)
+	// Start a new thread as a task, or adopt an existing thread (`re`) as a task.
+	CreateBoardTask(context.Context, *v1.CreateBoardTaskRequest) (*v1.BoardTaskResult, error)
+	// Atomically create a plan of up to 100 tasks with internal key DAG dependencies.
+	BatchCreateBoardTasks(context.Context, *v1.BatchCreateBoardTasksRequest) (*v1.BatchCreateBoardTasksResponse, error)
+	// List tasks (default open: waiting/ready/claimed/blocked), oldest first or latest active.
+	ListBoardTasks(context.Context, *v1.ListBoardTasksRequest) (*v1.ListBoardTasksResponse, error)
+	// Claim a specific task by ID, or claim the oldest ready task in a project (optionally waiting).
+	ClaimBoardTask(context.Context, *v1.ClaimBoardTaskRequest) (*v1.BoardTaskResult, error)
+	// Extend a held task claim's lease (fenced by epoch + token).
+	RenewBoardTask(context.Context, *v1.RenewBoardTaskRequest) (*v1.BoardTaskResult, error)
+	// Release a held task back to ready (fenced by epoch + token).
+	ReleaseBoardTask(context.Context, *v1.ReleaseBoardTaskRequest) (*v1.BoardMessage, error)
+	// Complete a held task and atomically ready dependent waiting tasks (fenced by epoch + token).
+	CompleteBoardTask(context.Context, *v1.CompleteBoardTaskRequest) (*v1.BoardMessage, error)
+	// Fail a held task with a reason (fenced by epoch + token).
+	FailBoardTask(context.Context, *v1.FailBoardTaskRequest) (*v1.BoardMessage, error)
+	// Hold a task for a person (with claim proof if claimed, or as owner if unclaimed).
+	BlockBoardTask(context.Context, *v1.BlockBoardTaskRequest) (*v1.BoardMessage, error)
+	// Lift a hold on a blocked task, returning it to ready or waiting.
+	UnblockBoardTask(context.Context, *v1.UnblockBoardTaskRequest) (*v1.BoardMessage, error)
+	// Reopen a failed task back to ready.
+	ReopenBoardTask(context.Context, *v1.ReopenBoardTaskRequest) (*v1.BoardMessage, error)
+	// Assign a task to one profile/actor, or return it to the pool (`unassign`).
+	AssignBoardTask(context.Context, *v1.AssignBoardTaskRequest) (*v1.BoardMessage, error)
+	// Replace a task's prerequisite task IDs (with cycle detection).
+	SetBoardTaskNeeds(context.Context, *v1.SetBoardTaskNeedsRequest) (*v1.BoardMessage, error)
+	// Cancel a non-completed task with a reason, ending any active claim.
+	CancelBoardTask(context.Context, *v1.CancelBoardTaskRequest) (*v1.BoardMessage, error)
+	// Idempotently import actors, schemas, messages, tasks, and schedules from an existing board.
+	ImportBoard(context.Context, *v1.ImportBoardRequest) (*v1.ImportBoardResponse, error)
+}
+
+// RegisterBoardServiceHandler registers svc as the hotbed.v1.BoardService implementation on server.
+func RegisterBoardServiceHandler(server *connect.Server, svc BoardServiceHandler) {
+	adapter := boardServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: boardServicePostBoardMessageSpec(), Handler: adapter.postBoardMessage},
+		connect.Method{Spec: boardServiceEditBoardMessageSpec(), Handler: adapter.editBoardMessage},
+		connect.Method{Spec: boardServiceDeleteBoardMessageSpec(), Handler: adapter.deleteBoardMessage},
+		connect.Method{Spec: boardServiceReactBoardMessageSpec(), Handler: adapter.reactBoardMessage},
+		connect.Method{Spec: boardServiceLabelBoardMessageSpec(), Handler: adapter.labelBoardMessage},
+		connect.Method{Spec: boardServiceListBoardThreadsSpec(), Handler: adapter.listBoardThreads},
+		connect.Method{Spec: boardServiceGetBoardThreadSpec(), Handler: adapter.getBoardThread},
+		connect.Method{Spec: boardServiceListBoardEventsSpec(), Handler: adapter.listBoardEvents},
+		connect.Method{Spec: boardServiceListBoardActorsSpec(), Handler: adapter.listBoardActors},
+		connect.Method{Spec: boardServiceUploadBoardAttachmentSpec(), Handler: adapter.uploadBoardAttachment},
+		connect.Method{Spec: boardServiceDownloadBoardAttachmentSpec(), Handler: adapter.downloadBoardAttachment},
+		connect.Method{Spec: boardServiceListBoardSchemasSpec(), Handler: adapter.listBoardSchemas},
+		connect.Method{Spec: boardServiceGetBoardSchemaSpec(), Handler: adapter.getBoardSchema},
+		connect.Method{Spec: boardServiceCreateBoardSchemaSpec(), Handler: adapter.createBoardSchema},
+		connect.Method{Spec: boardServiceScheduleBoardMessageSpec(), Handler: adapter.scheduleBoardMessage},
+		connect.Method{Spec: boardServiceListBoardSchedulesSpec(), Handler: adapter.listBoardSchedules},
+		connect.Method{Spec: boardServiceCancelBoardScheduleSpec(), Handler: adapter.cancelBoardSchedule},
+		connect.Method{Spec: boardServiceCreateBoardTaskSpec(), Handler: adapter.createBoardTask},
+		connect.Method{Spec: boardServiceBatchCreateBoardTasksSpec(), Handler: adapter.batchCreateBoardTasks},
+		connect.Method{Spec: boardServiceListBoardTasksSpec(), Handler: adapter.listBoardTasks},
+		connect.Method{Spec: boardServiceClaimBoardTaskSpec(), Handler: adapter.claimBoardTask},
+		connect.Method{Spec: boardServiceRenewBoardTaskSpec(), Handler: adapter.renewBoardTask},
+		connect.Method{Spec: boardServiceReleaseBoardTaskSpec(), Handler: adapter.releaseBoardTask},
+		connect.Method{Spec: boardServiceCompleteBoardTaskSpec(), Handler: adapter.completeBoardTask},
+		connect.Method{Spec: boardServiceFailBoardTaskSpec(), Handler: adapter.failBoardTask},
+		connect.Method{Spec: boardServiceBlockBoardTaskSpec(), Handler: adapter.blockBoardTask},
+		connect.Method{Spec: boardServiceUnblockBoardTaskSpec(), Handler: adapter.unblockBoardTask},
+		connect.Method{Spec: boardServiceReopenBoardTaskSpec(), Handler: adapter.reopenBoardTask},
+		connect.Method{Spec: boardServiceAssignBoardTaskSpec(), Handler: adapter.assignBoardTask},
+		connect.Method{Spec: boardServiceSetBoardTaskNeedsSpec(), Handler: adapter.setBoardTaskNeeds},
+		connect.Method{Spec: boardServiceCancelBoardTaskSpec(), Handler: adapter.cancelBoardTask},
+		connect.Method{Spec: boardServiceImportBoardSpec(), Handler: adapter.importBoard},
+	)
+}
+
+// UnimplementedBoardServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedBoardServiceHandler struct{}
+
+func (UnimplementedBoardServiceHandler) PostBoardMessage(context.Context, *v1.PostBoardMessageRequest) (*v1.BoardMessageResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.PostBoardMessage is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) EditBoardMessage(context.Context, *v1.EditBoardMessageRequest) (*v1.BoardMessageResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.EditBoardMessage is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) DeleteBoardMessage(context.Context, *v1.DeleteBoardMessageRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.DeleteBoardMessage is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ReactBoardMessage(context.Context, *v1.ReactBoardMessageRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ReactBoardMessage is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) LabelBoardMessage(context.Context, *v1.LabelBoardMessageRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.LabelBoardMessage is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ListBoardThreads(context.Context, *v1.ListBoardThreadsRequest) (*v1.ListBoardThreadsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ListBoardThreads is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) GetBoardThread(context.Context, *v1.GetBoardThreadRequest) (*v1.GetBoardThreadResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.GetBoardThread is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ListBoardEvents(context.Context, *v1.ListBoardEventsRequest) (*v1.ListBoardEventsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ListBoardEvents is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ListBoardActors(context.Context, *v1.ListBoardActorsRequest) (*v1.ListBoardActorsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ListBoardActors is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) UploadBoardAttachment(context.Context, *v1.UploadBoardAttachmentRequest) (*v1.BoardAttachment, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.UploadBoardAttachment is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) DownloadBoardAttachment(context.Context, *v1.DownloadBoardAttachmentRequest) (*v1.DownloadBoardAttachmentResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.DownloadBoardAttachment is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ListBoardSchemas(context.Context, *v1.ListBoardSchemasRequest) (*v1.ListBoardSchemasResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ListBoardSchemas is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) GetBoardSchema(context.Context, *v1.GetBoardSchemaRequest) (*v1.BoardSchema, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.GetBoardSchema is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) CreateBoardSchema(context.Context, *v1.CreateBoardSchemaRequest) (*v1.CreateBoardSchemaResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.CreateBoardSchema is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ScheduleBoardMessage(context.Context, *v1.ScheduleBoardMessageRequest) (*v1.BoardScheduleResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ScheduleBoardMessage is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ListBoardSchedules(context.Context, *v1.ListBoardSchedulesRequest) (*v1.ListBoardSchedulesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ListBoardSchedules is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) CancelBoardSchedule(context.Context, *v1.CancelBoardScheduleRequest) (*v1.CancelBoardScheduleResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.CancelBoardSchedule is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) CreateBoardTask(context.Context, *v1.CreateBoardTaskRequest) (*v1.BoardTaskResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.CreateBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) BatchCreateBoardTasks(context.Context, *v1.BatchCreateBoardTasksRequest) (*v1.BatchCreateBoardTasksResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.BatchCreateBoardTasks is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ListBoardTasks(context.Context, *v1.ListBoardTasksRequest) (*v1.ListBoardTasksResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ListBoardTasks is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ClaimBoardTask(context.Context, *v1.ClaimBoardTaskRequest) (*v1.BoardTaskResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ClaimBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) RenewBoardTask(context.Context, *v1.RenewBoardTaskRequest) (*v1.BoardTaskResult, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.RenewBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ReleaseBoardTask(context.Context, *v1.ReleaseBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ReleaseBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) CompleteBoardTask(context.Context, *v1.CompleteBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.CompleteBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) FailBoardTask(context.Context, *v1.FailBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.FailBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) BlockBoardTask(context.Context, *v1.BlockBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.BlockBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) UnblockBoardTask(context.Context, *v1.UnblockBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.UnblockBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ReopenBoardTask(context.Context, *v1.ReopenBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ReopenBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) AssignBoardTask(context.Context, *v1.AssignBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.AssignBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) SetBoardTaskNeeds(context.Context, *v1.SetBoardTaskNeedsRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.SetBoardTaskNeeds is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) CancelBoardTask(context.Context, *v1.CancelBoardTaskRequest) (*v1.BoardMessage, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.CancelBoardTask is not implemented")
+}
+
+func (UnimplementedBoardServiceHandler) ImportBoard(context.Context, *v1.ImportBoardRequest) (*v1.ImportBoardResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.BoardService.ImportBoard is not implemented")
+}
+
+type boardServiceClient struct {
+	client *connect.Client
+}
+
+func (c *boardServiceClient) PostBoardMessage(ctx context.Context, req *v1.PostBoardMessageRequest) (*v1.BoardMessageResult, error) {
+	var res v1.BoardMessageResult
+	if err := c.client.CallUnary(ctx, boardServicePostBoardMessageSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) EditBoardMessage(ctx context.Context, req *v1.EditBoardMessageRequest) (*v1.BoardMessageResult, error) {
+	var res v1.BoardMessageResult
+	if err := c.client.CallUnary(ctx, boardServiceEditBoardMessageSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) DeleteBoardMessage(ctx context.Context, req *v1.DeleteBoardMessageRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceDeleteBoardMessageSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ReactBoardMessage(ctx context.Context, req *v1.ReactBoardMessageRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceReactBoardMessageSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) LabelBoardMessage(ctx context.Context, req *v1.LabelBoardMessageRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceLabelBoardMessageSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ListBoardThreads(ctx context.Context, req *v1.ListBoardThreadsRequest) (*v1.ListBoardThreadsResponse, error) {
+	var res v1.ListBoardThreadsResponse
+	if err := c.client.CallUnary(ctx, boardServiceListBoardThreadsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) GetBoardThread(ctx context.Context, req *v1.GetBoardThreadRequest) (*v1.GetBoardThreadResponse, error) {
+	var res v1.GetBoardThreadResponse
+	if err := c.client.CallUnary(ctx, boardServiceGetBoardThreadSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ListBoardEvents(ctx context.Context, req *v1.ListBoardEventsRequest) (*v1.ListBoardEventsResponse, error) {
+	var res v1.ListBoardEventsResponse
+	if err := c.client.CallUnary(ctx, boardServiceListBoardEventsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ListBoardActors(ctx context.Context, req *v1.ListBoardActorsRequest) (*v1.ListBoardActorsResponse, error) {
+	var res v1.ListBoardActorsResponse
+	if err := c.client.CallUnary(ctx, boardServiceListBoardActorsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) UploadBoardAttachment(ctx context.Context, req *v1.UploadBoardAttachmentRequest) (*v1.BoardAttachment, error) {
+	var res v1.BoardAttachment
+	if err := c.client.CallUnary(ctx, boardServiceUploadBoardAttachmentSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) DownloadBoardAttachment(ctx context.Context, req *v1.DownloadBoardAttachmentRequest) (*v1.DownloadBoardAttachmentResponse, error) {
+	var res v1.DownloadBoardAttachmentResponse
+	if err := c.client.CallUnary(ctx, boardServiceDownloadBoardAttachmentSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ListBoardSchemas(ctx context.Context, req *v1.ListBoardSchemasRequest) (*v1.ListBoardSchemasResponse, error) {
+	var res v1.ListBoardSchemasResponse
+	if err := c.client.CallUnary(ctx, boardServiceListBoardSchemasSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) GetBoardSchema(ctx context.Context, req *v1.GetBoardSchemaRequest) (*v1.BoardSchema, error) {
+	var res v1.BoardSchema
+	if err := c.client.CallUnary(ctx, boardServiceGetBoardSchemaSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) CreateBoardSchema(ctx context.Context, req *v1.CreateBoardSchemaRequest) (*v1.CreateBoardSchemaResponse, error) {
+	var res v1.CreateBoardSchemaResponse
+	if err := c.client.CallUnary(ctx, boardServiceCreateBoardSchemaSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ScheduleBoardMessage(ctx context.Context, req *v1.ScheduleBoardMessageRequest) (*v1.BoardScheduleResult, error) {
+	var res v1.BoardScheduleResult
+	if err := c.client.CallUnary(ctx, boardServiceScheduleBoardMessageSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ListBoardSchedules(ctx context.Context, req *v1.ListBoardSchedulesRequest) (*v1.ListBoardSchedulesResponse, error) {
+	var res v1.ListBoardSchedulesResponse
+	if err := c.client.CallUnary(ctx, boardServiceListBoardSchedulesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) CancelBoardSchedule(ctx context.Context, req *v1.CancelBoardScheduleRequest) (*v1.CancelBoardScheduleResponse, error) {
+	var res v1.CancelBoardScheduleResponse
+	if err := c.client.CallUnary(ctx, boardServiceCancelBoardScheduleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) CreateBoardTask(ctx context.Context, req *v1.CreateBoardTaskRequest) (*v1.BoardTaskResult, error) {
+	var res v1.BoardTaskResult
+	if err := c.client.CallUnary(ctx, boardServiceCreateBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) BatchCreateBoardTasks(ctx context.Context, req *v1.BatchCreateBoardTasksRequest) (*v1.BatchCreateBoardTasksResponse, error) {
+	var res v1.BatchCreateBoardTasksResponse
+	if err := c.client.CallUnary(ctx, boardServiceBatchCreateBoardTasksSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ListBoardTasks(ctx context.Context, req *v1.ListBoardTasksRequest) (*v1.ListBoardTasksResponse, error) {
+	var res v1.ListBoardTasksResponse
+	if err := c.client.CallUnary(ctx, boardServiceListBoardTasksSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ClaimBoardTask(ctx context.Context, req *v1.ClaimBoardTaskRequest) (*v1.BoardTaskResult, error) {
+	var res v1.BoardTaskResult
+	if err := c.client.CallUnary(ctx, boardServiceClaimBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) RenewBoardTask(ctx context.Context, req *v1.RenewBoardTaskRequest) (*v1.BoardTaskResult, error) {
+	var res v1.BoardTaskResult
+	if err := c.client.CallUnary(ctx, boardServiceRenewBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ReleaseBoardTask(ctx context.Context, req *v1.ReleaseBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceReleaseBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) CompleteBoardTask(ctx context.Context, req *v1.CompleteBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceCompleteBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) FailBoardTask(ctx context.Context, req *v1.FailBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceFailBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) BlockBoardTask(ctx context.Context, req *v1.BlockBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceBlockBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) UnblockBoardTask(ctx context.Context, req *v1.UnblockBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceUnblockBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ReopenBoardTask(ctx context.Context, req *v1.ReopenBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceReopenBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) AssignBoardTask(ctx context.Context, req *v1.AssignBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceAssignBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) SetBoardTaskNeeds(ctx context.Context, req *v1.SetBoardTaskNeedsRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceSetBoardTaskNeedsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) CancelBoardTask(ctx context.Context, req *v1.CancelBoardTaskRequest) (*v1.BoardMessage, error) {
+	var res v1.BoardMessage
+	if err := c.client.CallUnary(ctx, boardServiceCancelBoardTaskSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *boardServiceClient) ImportBoard(ctx context.Context, req *v1.ImportBoardRequest) (*v1.ImportBoardResponse, error) {
+	var res v1.ImportBoardResponse
+	if err := c.client.CallUnary(ctx, boardServiceImportBoardSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type boardServiceHandler struct{ svc BoardServiceHandler }
+
+func (h boardServiceHandler) postBoardMessage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PostBoardMessageRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PostBoardMessage(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) editBoardMessage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.EditBoardMessageRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.EditBoardMessage(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) deleteBoardMessage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteBoardMessageRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteBoardMessage(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) reactBoardMessage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReactBoardMessageRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReactBoardMessage(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) labelBoardMessage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.LabelBoardMessageRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.LabelBoardMessage(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) listBoardThreads(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListBoardThreadsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListBoardThreads(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) getBoardThread(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetBoardThreadRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetBoardThread(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) listBoardEvents(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListBoardEventsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListBoardEvents(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) listBoardActors(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListBoardActorsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListBoardActors(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) uploadBoardAttachment(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UploadBoardAttachmentRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UploadBoardAttachment(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) downloadBoardAttachment(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DownloadBoardAttachmentRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DownloadBoardAttachment(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) listBoardSchemas(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListBoardSchemasRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListBoardSchemas(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) getBoardSchema(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetBoardSchemaRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetBoardSchema(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) createBoardSchema(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CreateBoardSchemaRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CreateBoardSchema(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) scheduleBoardMessage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ScheduleBoardMessageRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ScheduleBoardMessage(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) listBoardSchedules(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListBoardSchedulesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListBoardSchedules(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) cancelBoardSchedule(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CancelBoardScheduleRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CancelBoardSchedule(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) createBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CreateBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CreateBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) batchCreateBoardTasks(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.BatchCreateBoardTasksRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.BatchCreateBoardTasks(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) listBoardTasks(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListBoardTasksRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListBoardTasks(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) claimBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ClaimBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ClaimBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) renewBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RenewBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RenewBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) releaseBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReleaseBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReleaseBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) completeBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CompleteBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CompleteBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) failBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.FailBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.FailBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) blockBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.BlockBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.BlockBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) unblockBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UnblockBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UnblockBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) reopenBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReopenBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReopenBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) assignBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AssignBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AssignBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) setBoardTaskNeeds(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SetBoardTaskNeedsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SetBoardTaskNeeds(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) cancelBoardTask(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CancelBoardTaskRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CancelBoardTask(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h boardServiceHandler) importBoard(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ImportBoardRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ImportBoard(ctx, &req)
 	if err != nil {
 		return err
 	}

@@ -1340,6 +1340,9 @@ export function createClusterService(
 			const placements = ctrl.store.placementsSince(dayMs).slice(0, PLACEMENTS_SHOWN);
 			const admissionEvents = filteredEvents("", ADMISSION_KINDS, ADMISSION_EVENTS_SHOWN);
 
+			const openBoardTasks = projects.reduce((sum, p) => sum + p.openBoardTasks, 0);
+			const blockedBoardTasks = projects.reduce((sum, p) => sum + p.blockedBoardTasks, 0);
+
 			return create(SnapshotSchema, {
 				clusterId: ctrl.clusterId,
 				controller: ctrl.controllerName,
@@ -1372,6 +1375,8 @@ export function createClusterService(
 				pendingMemories: memCounts.total,
 				openIssues: ctrl.store.countOpenIssues(),
 				globalPendingMemories: memCounts.global,
+				openBoardTasks,
+				blockedBoardTasks,
 			});
 		},
 

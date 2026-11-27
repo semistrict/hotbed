@@ -2,6 +2,7 @@ import { createClient, type Transport } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import {
   ActorKind,
+  BoardService,
   ClusterService,
   DaemonLogLevel,
   GitAuthService,
@@ -32,6 +33,7 @@ export function createConnectApi(
   const reviews = createClient(ReviewService, transport);
   const issues = createClient(IssueService, transport);
   const gitauth = createClient(GitAuthService, transport);
+  const board = createClient(BoardService, transport);
 
   return {
     snapshot: () => cluster.getSnapshot({}),
@@ -265,5 +267,61 @@ export function createConnectApi(
     review: (id) => reviews.getReview({ id }),
     respond: (reviewId, findingId, quick, text) =>
       reviews.respond({ reviewId, findingId: findingId ?? 0, quick, text, actorKind: ActorKind.USER }),
+    boardThreads: ({ project, text = "", by = "", mentions = "", labels = [], before = "", limit = 50 }) =>
+      board.listBoardThreads({
+        scope: project ? { case: "project", value: project } : { case: "allProjects", value: true },
+        text,
+        by,
+        mentions,
+        labels: labels.map((l) => ({ key: l.key, values: l.values ?? [] })),
+        before,
+        limit,
+      }),
+    boardThread: (id) => board.getBoardThread({ id }),
+    postBoardMessage: (input) =>
+      board.postBoardMessage({
+        project: input.project ?? "",
+        re: input.re ?? 0n,
+        text: input.text,
+        labels: input.labels ?? {},
+        attachmentIds: input.attachmentIds ?? [],
+      }),
+    editBoardMessage: (id, text, ifRevision = 0n) => board.editBoardMessage({ id, text, ifRevision }),
+    deleteBoardMessage: (id) => board.deleteBoardMessage({ id }),
+    reactBoardMessage: (id, emoji, remove = false) => board.reactBoardMessage({ id, emoji, remove }),
+    labelBoardMessage: (id, set, unset = []) => board.labelBoardMessage({ id, set, unset }),
+    uploadBoardAttachment: (name, contentType, data) => board.uploadBoardAttachment({ name, contentType, data }),
+    boardTasks: ({ project, states = [], includeAll = false, labels = [], owner = "", forActor = "", latest = false, limit = 100 }) =>
+      board.listBoardTasks({
+        scope: project ? { case: "project", value: project } : { case: "allProjects", value: true },
+        states,
+        includeAll,
+        labels: labels.map((l) => ({ key: l.key, values: l.values ?? [] })),
+        owner,
+        forActor,
+        latest,
+        limit,
+      }),
+    createBoardTask: (input) =>
+      board.createBoardTask({
+        project: input.project ?? "",
+        re: input.re ?? 0n,
+        text: input.text ?? "",
+        labels: input.labels ?? {},
+        attachmentIds: input.attachmentIds ?? [],
+        needs: input.needs ?? [],
+        forActor: input.forActor ?? "",
+      }),
+    blockBoardTask: (id, reason, kind = "") => board.blockBoardTask({ id, reason, kind }),
+    unblockBoardTask: (id) => board.unblockBoardTask({ id }),
+    reopenBoardTask: (id) => board.reopenBoardTask({ id }),
+    assignBoardTask: (id, forActor, unassign = false) => board.assignBoardTask({ id, forActor, unassign }),
+    cancelBoardTask: (id, reason) => board.cancelBoardTask({ id, reason }),
+    boardSchedules: (project, includeAll = false) =>
+      board.listBoardSchedules({
+        scope: project ? { case: "project", value: project } : { case: "allProjects", value: true },
+        includeAll,
+      }),
+    cancelBoardSchedule: async (id) => (await board.cancelBoardSchedule({ id })).schedule!,
   };
 }

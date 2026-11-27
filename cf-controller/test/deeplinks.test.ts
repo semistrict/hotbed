@@ -81,6 +81,9 @@ describe("Cockpit SPA deep links and auth return_to", () => {
 		const deepLinks = [
 			"/questions",
 			"/questions?tab=outbox",
+			"/board",
+			"/board/42",
+			"/tasks",
 			"/reviews/42",
 			"/memories/17",
 			"/sessions/tidy-owl",

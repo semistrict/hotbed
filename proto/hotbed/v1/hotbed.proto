@@ -2432,6 +2432,11 @@ message Project {
   reserved "root_steps";
   // Its proposed memories waiting for the user's approval.
   int32 pending_memories = 17;
+  // Board thread and task counts for this project (BoardService).
+  int32 board_threads = 18;
+  int32 open_board_tasks = 19;
+  int32 ready_board_tasks = 20;
+  int32 blocked_board_tasks = 21;
 }
 
 // One change to a project: created, added or removed (a repo).
@@ -3227,6 +3232,9 @@ message Snapshot {
   int32 global_pending_memories = 25;
   // Issues with hotbed itself reported and not archived (IssueService).
   int32 open_issues = 26;
+  // Open and blocked board tasks across all projects (BoardService).
+  int32 open_board_tasks = 27;
+  int32 blocked_board_tasks = 28;
 }
 
 // Where the controller put a session's workspace, and why: every node it
@@ -6062,6 +6070,756 @@ message MoveMemoryRequest {
     hidden: true
     default: "named_session"
   }];
+}
+
+// ---- board ------------------------------------------------------------------
+
+// BoardService is Hotbed's native message board & task queue, scoped by Hotbed
+// projects instead of channels: threads, replies, labels (with conditional CAS),
+// reactions, mentions, structured data blocks & schemas, file attachments,
+// scheduled messages, live event tailing/waiting, and a fenced-lease DAG task
+// queue — plus idempotent import from an existing @vercel/board instance.
+service BoardService {
+  // Start a new thread in a project, or reply in an existing thread (`re`).
+  rpc PostBoardMessage(PostBoardMessageRequest) returns (BoardMessageResult);
+  // Replace a message's text (author or principal only; optional if_revision).
+  rpc EditBoardMessage(EditBoardMessageRequest) returns (BoardMessageResult);
+  // Soft-delete a message into a tombstone (author or principal only).
+  rpc DeleteBoardMessage(DeleteBoardMessageRequest) returns (BoardMessage);
+  // Add or remove a normalized emoji reaction on a message.
+  rpc ReactBoardMessage(ReactBoardMessageRequest) returns (BoardMessage);
+  // Set/unset labels on a message, optionally conditioned on current label values.
+  rpc LabelBoardMessage(LabelBoardMessageRequest) returns (BoardMessage);
+  // List threads in a project (or all projects), newest activity last, with filters and pagination.
+  rpc ListBoardThreads(ListBoardThreadsRequest) returns (ListBoardThreadsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Read one whole thread (root, replies, pending schedules) from any message ID in it.
+  rpc GetBoardThread(GetBoardThreadRequest) returns (GetBoardThreadResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Read or wait for board events matching filters (before-and-after evaluation).
+  rpc ListBoardEvents(ListBoardEventsRequest) returns (ListBoardEventsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // List actors seen on the board.
+  rpc ListBoardActors(ListBoardActorsRequest) returns (ListBoardActorsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Upload a file attachment to attach to board messages or schedules.
+  rpc UploadBoardAttachment(UploadBoardAttachmentRequest) returns (BoardAttachment);
+  // Download a file attachment by ID.
+  rpc DownloadBoardAttachment(DownloadBoardAttachmentRequest) returns (DownloadBoardAttachmentResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // List built-in and registered structured-data schemas.
+  rpc ListBoardSchemas(ListBoardSchemasRequest) returns (ListBoardSchemasResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Inspect one structured-data schema by name@version.
+  rpc GetBoardSchema(GetBoardSchemaRequest) returns (BoardSchema) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Register an immutable JSON Schema version (name@version) for structured message blocks.
+  rpc CreateBoardSchema(CreateBoardSchemaRequest) returns (CreateBoardSchemaResponse);
+  // Schedule a board post or reply to send later or on a repeat cadence.
+  rpc ScheduleBoardMessage(ScheduleBoardMessageRequest) returns (BoardScheduleResult);
+  // List pending (or all) scheduled board messages.
+  rpc ListBoardSchedules(ListBoardSchedulesRequest) returns (ListBoardSchedulesResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Cancel a pending scheduled board message.
+  rpc CancelBoardSchedule(CancelBoardScheduleRequest) returns (CancelBoardScheduleResponse);
+  // Start a new thread as a task, or adopt an existing thread (`re`) as a task.
+  rpc CreateBoardTask(CreateBoardTaskRequest) returns (BoardTaskResult);
+  // Atomically create a plan of up to 100 tasks with internal key DAG dependencies.
+  rpc BatchCreateBoardTasks(BatchCreateBoardTasksRequest) returns (BatchCreateBoardTasksResponse);
+  // List tasks (default open: waiting/ready/claimed/blocked), oldest first or latest active.
+  rpc ListBoardTasks(ListBoardTasksRequest) returns (ListBoardTasksResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Claim a specific task by ID, or claim the oldest ready task in a project (optionally waiting).
+  rpc ClaimBoardTask(ClaimBoardTaskRequest) returns (BoardTaskResult);
+  // Extend a held task claim's lease (fenced by epoch + token).
+  rpc RenewBoardTask(RenewBoardTaskRequest) returns (BoardTaskResult);
+  // Release a held task back to ready (fenced by epoch + token).
+  rpc ReleaseBoardTask(ReleaseBoardTaskRequest) returns (BoardMessage);
+  // Complete a held task and atomically ready dependent waiting tasks (fenced by epoch + token).
+  rpc CompleteBoardTask(CompleteBoardTaskRequest) returns (BoardMessage);
+  // Fail a held task with a reason (fenced by epoch + token).
+  rpc FailBoardTask(FailBoardTaskRequest) returns (BoardMessage);
+  // Hold a task for a person (with claim proof if claimed, or as owner if unclaimed).
+  rpc BlockBoardTask(BlockBoardTaskRequest) returns (BoardMessage);
+  // Lift a hold on a blocked task, returning it to ready or waiting.
+  rpc UnblockBoardTask(UnblockBoardTaskRequest) returns (BoardMessage);
+  // Reopen a failed task back to ready.
+  rpc ReopenBoardTask(ReopenBoardTaskRequest) returns (BoardMessage);
+  // Assign a task to one profile/actor, or return it to the pool (`unassign`).
+  rpc AssignBoardTask(AssignBoardTaskRequest) returns (BoardMessage);
+  // Replace a task's prerequisite task IDs (with cycle detection).
+  rpc SetBoardTaskNeeds(SetBoardTaskNeedsRequest) returns (BoardMessage);
+  // Cancel a non-completed task with a reason, ending any active claim.
+  rpc CancelBoardTask(CancelBoardTaskRequest) returns (BoardMessage);
+  // Idempotently import actors, schemas, messages, tasks, and schedules from an existing board.
+  rpc ImportBoard(ImportBoardRequest) returns (ImportBoardResponse);
+}
+
+enum BoardActorKind {
+  BOARD_ACTOR_KIND_UNSPECIFIED = 0;
+  BOARD_ACTOR_KIND_PERSON = 1;
+  BOARD_ACTOR_KIND_AGENT = 2;
+  BOARD_ACTOR_KIND_EXTERNAL = 3;
+}
+
+enum BoardTaskState {
+  BOARD_TASK_STATE_UNSPECIFIED = 0;
+  BOARD_TASK_STATE_WAITING = 1;
+  BOARD_TASK_STATE_READY = 2;
+  BOARD_TASK_STATE_CLAIMED = 3;
+  BOARD_TASK_STATE_BLOCKED = 4;
+  BOARD_TASK_STATE_COMPLETED = 5;
+  BOARD_TASK_STATE_FAILED = 6;
+  BOARD_TASK_STATE_CANCELED = 7;
+}
+
+enum BoardScheduleState {
+  BOARD_SCHEDULE_STATE_UNSPECIFIED = 0;
+  BOARD_SCHEDULE_STATE_PENDING = 1;
+  BOARD_SCHEDULE_STATE_DONE = 2;
+  BOARD_SCHEDULE_STATE_CANCELED = 3;
+}
+
+message BoardAuthor {
+  // Full actor ID, e.g. "user:ramon@echophase.com", "user:ramon@echophase.com+worker-1",
+  // "session:plain-skunk", or preserved imported ID.
+  string actor = 1;
+  // Principal ID (without profile suffix).
+  string principal = 2;
+  // Optional profile name (--as), empty when acting as principal directly.
+  string profile = 3;
+  // Hotbed session ID when written by an agent session.
+  string session_id = 4;
+  // Model ID when written by an agent.
+  string model = 5;
+  // T3 Code thread ID when written by an agent.
+  string t3code_thread_id = 6;
+}
+
+message BoardActor {
+  string id = 1;
+  BoardActorKind kind = 2;
+  string handle = 3;
+  string name = 4;
+  string avatar = 5;
+  string via_name = 6;
+  string session_id = 7;
+  bool verified = 8;
+}
+
+message BoardAttachment {
+  string id = 1;
+  string name = 2;
+  string content_type = 3;
+  int64 size = 4;
+}
+
+message BoardReaction {
+  string emoji = 1;
+  repeated string actors = 2;
+}
+
+message BoardBlock {
+  string schema = 1;
+  int32 version = 2;
+  string data_json = 3;
+}
+
+message BoardMention {
+  string written = 1;
+  BoardActor actor = 2;
+  repeated BoardActor candidates = 3;
+}
+
+message BoardTaskClaimView {
+  string actor = 1;
+  int64 until = 2;
+}
+
+message BoardTaskBlocked {
+  string kind = 1;
+  string reason = 2;
+}
+
+message BoardTask {
+  BoardTaskState state = 1;
+  string owner = 2;
+  string by = 3;
+  // Assigned actor ID (or profile), empty for pool.
+  string for_actor = 4;
+  repeated int64 needs = 5;
+  int32 epoch = 6;
+  BoardTaskClaimView claim = 7;
+  BoardTaskBlocked blocked = 8;
+  string result = 9;
+  string reason = 10;
+}
+
+// Returned only once on claim (or create --claim); token is never stored in views.
+message BoardTaskClaim {
+  int32 epoch = 1;
+  string token = 2;
+  int64 until = 3;
+}
+
+message BoardMessage {
+  int64 id = 1;
+  string project = 2;
+  string text = 3;
+  // Root message ID for replies; 0 for thread roots.
+  int64 re = 4;
+  // Exact message ID replied to when not the root; 0 otherwise.
+  int64 reply_to = 5;
+  map<string, string> labels = 6;
+  repeated BoardReaction reactions = 7;
+  BoardAuthor by = 8;
+  BoardActor author = 9;
+  int64 created_at = 10;
+  optional int64 edited_at = 11;
+  bool deleted = 12;
+  repeated BoardAttachment attachments = 13;
+  repeated BoardBlock blocks = 14;
+  BoardTask task = 15;
+  int64 schedule_id = 16;
+  int32 schedule_n = 17;
+  // Monotonic event sequence of the last change to this message.
+  int64 version = 18;
+  // Monotonic revision changed only by post/edit/delete (for --if-revision).
+  int64 revision = 19;
+  // Preserved original ID when imported from an external board.
+  string external_id = 20;
+  // Filled by the CLI from the controller URL: /board/<id>.
+  string cockpit_url = 21;
+}
+
+message BoardThreadSummary {
+  BoardMessage message = 1;
+  int32 replies = 2;
+  BoardMessage last = 3;
+}
+
+message BoardSchedule {
+  int64 id = 1;
+  string project = 2;
+  int64 re = 3;
+  string text = 4;
+  map<string, string> labels = 5;
+  repeated BoardAttachment attachments = 6;
+  BoardAuthor by = 7;
+  BoardActor author = 8;
+  BoardScheduleState state = 9;
+  int64 first_at = 10;
+  int64 next_at = 11;
+  int64 every_seconds = 12;
+  int64 until_at = 13;
+  int32 times = 14;
+  int32 sent = 15;
+  int64 created_at = 16;
+  string cancel_reason = 17;
+}
+
+message BoardSchema {
+  string id = 1;
+  string name = 2;
+  int32 version = 3;
+  string description = 4;
+  string schema_json = 5;
+  bool built_in = 6;
+  string by = 7;
+  int64 created_at = 8;
+}
+
+message BoardEvent {
+  int64 cursor = 1;
+  string type = 2;
+  string project = 3;
+  int64 created_at = 4;
+  int64 message_id = 5;
+  int64 thread_id = 6;
+  BoardMessage message = 7;
+  BoardActor actor = 8;
+  string payload_json = 9;
+}
+
+message BoardLabelFilter {
+  string key = 1;
+  // Empty means key must exist with any value; multiple values mean OR.
+  repeated string values = 2;
+}
+
+message BoardMessageResult {
+  BoardMessage message = 1;
+  repeated BoardMention mentions = 2;
+  string outcome = 3;
+}
+
+message BoardTaskResult {
+  BoardMessage task = 1;
+  BoardTaskClaim claim = 2;
+  repeated BoardMention mentions = 3;
+  string outcome = 4;
+}
+
+message BoardScheduleResult {
+  BoardSchedule schedule = 1;
+  repeated BoardMention mentions = 2;
+  string outcome = 3;
+}
+
+message PostBoardMessageRequest {
+  string project = 1;
+  int64 re = 2;
+  string text = 3;
+  map<string, string> labels = 4;
+  repeated string attachment_ids = 5;
+  string idempotency_key = 6;
+  // Reply precondition: must still be the newest message in the thread.
+  int64 after_id = 7;
+  string session_id = 8;
+  string remote = 9;
+  string as_profile = 10;
+  string model = 11;
+  string t3code_thread_id = 12;
+}
+
+message EditBoardMessageRequest {
+  int64 id = 1;
+  string text = 2;
+  int64 if_revision = 3;
+  string session_id = 4;
+  string as_profile = 5;
+}
+
+message DeleteBoardMessageRequest {
+  int64 id = 1;
+  int64 if_revision = 2;
+  string session_id = 3;
+  string as_profile = 4;
+}
+
+message ReactBoardMessageRequest {
+  int64 id = 1;
+  string emoji = 2;
+  bool remove = 3;
+  string session_id = 4;
+  string as_profile = 5;
+}
+
+message LabelBoardMessageRequest {
+  int64 id = 1;
+  map<string, string> set = 2;
+  repeated string unset = 3;
+  // Preconditions: each key must currently equal its value.
+  map<string, string> if_equals = 4;
+  // Preconditions: each key must currently be unset.
+  repeated string if_unset = 5;
+  string session_id = 6;
+  string as_profile = 7;
+}
+
+message ListBoardThreadsRequest {
+  oneof scope {
+    string project = 1;
+    bool all_projects = 2;
+  }
+  string session_id = 3;
+  string remote = 4;
+  repeated BoardLabelFilter labels = 5;
+  string by = 6;
+  // Empty: no mention filter. "me": caller. Otherwise handle/actor ID.
+  string mentions = 7;
+  string text = 8;
+  int64 after = 9;
+  // Opaque pagination cursor returned in ListBoardThreadsResponse.older.
+  string before = 10;
+  int32 limit = 11;
+  string as_profile = 12;
+}
+
+message ListBoardThreadsResponse {
+  repeated BoardThreadSummary threads = 1;
+  int64 cursor = 2;
+  string older = 3;
+}
+
+message GetBoardThreadRequest {
+  int64 id = 1;
+  int64 after_id = 2;
+  repeated BoardLabelFilter labels = 3;
+  int32 limit = 4;
+}
+
+message GetBoardThreadResponse {
+  BoardMessage message = 1;
+  repeated BoardMessage replies = 2;
+  repeated BoardSchedule schedules = 3;
+  int64 cursor = 4;
+}
+
+message ListBoardEventsRequest {
+  oneof scope {
+    string project = 1;
+    bool all_projects = 2;
+  }
+  string session_id = 3;
+  string remote = 4;
+  int64 re = 5;
+  repeated BoardLabelFilter labels = 6;
+  string by = 7;
+  string mentions = 8;
+  string text = 9;
+  int64 after = 10;
+  // Return the newest N matching events (up to 100) when after == 0.
+  int32 last = 11;
+  // Wait up to N seconds (capped at 120s per RPC) for at least one matching event.
+  int32 timeout_seconds = 12;
+  int32 limit = 13;
+  bool include_all = 14;
+  string as_profile = 15;
+}
+
+message ListBoardEventsResponse {
+  repeated BoardEvent events = 1;
+  int64 cursor = 2;
+}
+
+message ListBoardActorsRequest {
+  oneof scope {
+    string project = 1;
+    bool all_projects = 2;
+  }
+  string session_id = 3;
+  string remote = 4;
+  repeated string ids = 5;
+}
+
+message ListBoardActorsResponse {
+  repeated BoardActor actors = 1;
+  int64 cursor = 2;
+}
+
+message UploadBoardAttachmentRequest {
+  string name = 1;
+  string content_type = 2;
+  bytes data = 3;
+  string session_id = 4;
+  string as_profile = 5;
+}
+
+message DownloadBoardAttachmentRequest {
+  string id = 1;
+}
+
+message DownloadBoardAttachmentResponse {
+  BoardAttachment attachment = 1;
+  bytes data = 2;
+}
+
+message ListBoardSchemasRequest {}
+
+message ListBoardSchemasResponse {
+  repeated BoardSchema schemas = 1;
+}
+
+message GetBoardSchemaRequest {
+  string id = 1;
+}
+
+message CreateBoardSchemaRequest {
+  string name = 1;
+  int32 version = 2;
+  string description = 3;
+  string schema_json = 4;
+  string session_id = 5;
+  string as_profile = 6;
+}
+
+message CreateBoardSchemaResponse {
+  BoardSchema schema = 1;
+  bool created = 2;
+}
+
+message ScheduleBoardMessageRequest {
+  string project = 1;
+  int64 re = 2;
+  string text = 3;
+  map<string, string> labels = 4;
+  repeated string attachment_ids = 5;
+  int64 in_seconds = 6;
+  int64 at_ms = 7;
+  int64 every_seconds = 8;
+  int64 until_ms = 9;
+  int64 for_seconds = 10;
+  int32 times = 11;
+  string session_id = 12;
+  string remote = 13;
+  string as_profile = 14;
+  string model = 15;
+  string t3code_thread_id = 16;
+}
+
+message ListBoardSchedulesRequest {
+  oneof scope {
+    string project = 1;
+    bool all_projects = 2;
+  }
+  string session_id = 3;
+  string remote = 4;
+  int64 re = 5;
+  string by = 6;
+  bool include_all = 7;
+}
+
+message ListBoardSchedulesResponse {
+  repeated BoardSchedule schedules = 1;
+}
+
+message CancelBoardScheduleRequest {
+  int64 id = 1;
+  string session_id = 2;
+  string as_profile = 3;
+}
+
+message CancelBoardScheduleResponse {
+  BoardSchedule schedule = 1;
+  bool canceled = 2;
+}
+
+message CreateBoardTaskRequest {
+  // Start a new thread as a task (with project + text), or adopt an existing thread (`re`).
+  string project = 1;
+  int64 re = 2;
+  string text = 3;
+  map<string, string> labels = 4;
+  repeated string attachment_ids = 5;
+  string idempotency_key = 6;
+  repeated int64 needs = 7;
+  string for_actor = 8;
+  bool claim = 9;
+  int32 lease_seconds = 10;
+  string claim_token = 11;
+  string session_id = 12;
+  string remote = 13;
+  string as_profile = 14;
+  string model = 15;
+  string t3code_thread_id = 16;
+}
+
+message BatchBoardTaskNeed {
+  oneof ref {
+    int64 id = 1;
+    string key = 2;
+  }
+}
+
+message BatchBoardTaskSpec {
+  string key = 1;
+  string text = 2;
+  map<string, string> labels = 3;
+  repeated string attachment_ids = 4;
+  repeated BatchBoardTaskNeed needs = 5;
+  string for_actor = 6;
+}
+
+message BatchCreateBoardTasksRequest {
+  string project = 1;
+  repeated BatchBoardTaskSpec tasks = 2;
+  string idempotency_key = 3;
+  string session_id = 4;
+  string remote = 5;
+  string as_profile = 6;
+  string model = 7;
+  string t3code_thread_id = 8;
+}
+
+message BatchCreateBoardTasksResponse {
+  repeated BoardMessage tasks = 1;
+}
+
+message ListBoardTasksRequest {
+  oneof scope {
+    string project = 1;
+    bool all_projects = 2;
+  }
+  string session_id = 3;
+  string remote = 4;
+  // Empty defaults to open states (waiting, ready, claimed, blocked). Set include_all=true for all.
+  repeated BoardTaskState states = 5;
+  bool include_all = 6;
+  repeated BoardLabelFilter labels = 7;
+  string by = 8;
+  string owner = 9;
+  string for_actor = 10;
+  int64 needs = 11;
+  int64 after = 12;
+  int32 limit = 13;
+  bool latest = 14;
+}
+
+message ListBoardTasksResponse {
+  repeated BoardThreadSummary tasks = 1;
+  int64 cursor = 2;
+}
+
+message ClaimBoardTaskRequest {
+  // Claim a specific task ID, or set ready=true to claim the oldest ready task in project.
+  int64 id = 1;
+  bool ready = 2;
+  oneof scope {
+    string project = 3;
+    bool all_projects = 4;
+  }
+  string session_id = 5;
+  string remote = 6;
+  repeated BoardLabelFilter labels = 7;
+  repeated string from_owners = 8;
+  int32 lease_seconds = 9;
+  int32 wait_seconds = 10;
+  string claim_token = 11;
+  string as_profile = 12;
+}
+
+message RenewBoardTaskRequest {
+  int64 id = 1;
+  int32 epoch = 2;
+  string token = 3;
+  // 0 preserves the claim's original lease duration (fallback 15m).
+  int32 lease_seconds = 4;
+  string session_id = 5;
+  string as_profile = 6;
+}
+
+message ReleaseBoardTaskRequest {
+  int64 id = 1;
+  int32 epoch = 2;
+  string token = 3;
+  string session_id = 4;
+  string as_profile = 5;
+}
+
+message CompleteBoardTaskRequest {
+  int64 id = 1;
+  int32 epoch = 2;
+  string token = 3;
+  string result = 4;
+  string session_id = 5;
+  string as_profile = 6;
+}
+
+message FailBoardTaskRequest {
+  int64 id = 1;
+  int32 epoch = 2;
+  string token = 3;
+  string reason = 4;
+  string session_id = 5;
+  string as_profile = 6;
+}
+
+message BlockBoardTaskRequest {
+  int64 id = 1;
+  string reason = 2;
+  string kind = 3;
+  int32 epoch = 4;
+  string token = 5;
+  string session_id = 6;
+  string as_profile = 7;
+}
+
+message UnblockBoardTaskRequest {
+  int64 id = 1;
+  string session_id = 2;
+  string as_profile = 3;
+}
+
+message ReopenBoardTaskRequest {
+  int64 id = 1;
+  string session_id = 2;
+  string as_profile = 3;
+}
+
+message AssignBoardTaskRequest {
+  int64 id = 1;
+  string for_actor = 2;
+  bool unassign = 3;
+  string session_id = 4;
+  string as_profile = 5;
+}
+
+message SetBoardTaskNeedsRequest {
+  int64 id = 1;
+  repeated int64 needs = 2;
+  string session_id = 3;
+  string as_profile = 4;
+}
+
+message CancelBoardTaskRequest {
+  int64 id = 1;
+  string reason = 2;
+  string session_id = 3;
+  string as_profile = 4;
+}
+
+message ImportedBoardTask {
+  BoardTaskState state = 1;
+  string owner = 2;
+  string by = 3;
+  string for_actor = 4;
+  repeated string needs_external_ids = 5;
+  int32 epoch = 6;
+  string claim_actor = 7;
+  int64 claim_until = 8;
+  string blocked_kind = 9;
+  string blocked_reason = 10;
+  string result = 11;
+  string reason = 12;
+}
+
+message ImportedBoardMessage {
+  string external_id = 1;
+  // Original numeric ID if parseable; preserved when unused in the target board.
+  int64 preferred_id = 2;
+  string project = 3;
+  string text = 4;
+  string re_external_id = 5;
+  string reply_to_external_id = 6;
+  map<string, string> labels = 7;
+  repeated BoardReaction reactions = 8;
+  BoardAuthor by = 9;
+  BoardActor author = 10;
+  int64 created_at = 11;
+  optional int64 edited_at = 12;
+  bool deleted = 13;
+  repeated BoardAttachment attachments = 14;
+  ImportedBoardTask task = 15;
+}
+
+message ImportBoardRequest {
+  // Create projects that do not yet exist (empty projects with no repos).
+  bool create_projects = 1;
+  repeated BoardActor actors = 2;
+  repeated CreateBoardSchemaRequest schemas = 3;
+  repeated ImportedBoardMessage messages = 4;
+  // Finalize pass: resolve cross-batch task `needs` external IDs to local IDs.
+  bool finalize_needs = 5;
+}
+
+message ImportBoardResponse {
+  int32 actors_imported = 1;
+  int32 schemas_imported = 2;
+  int32 messages_imported = 3;
+  int32 messages_skipped = 4;
+  int32 tasks_imported = 5;
+  int32 projects_created = 6;
+  map<string, int64> id_map = 7;
 }
 
 // ---- commands and tools -----------------------------------------------------

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+	blob,
 	index,
 	integer,
 	primaryKey,
@@ -570,4 +571,196 @@ export const baseFreshens = sqliteTable(
 		index("base_freshens_node_created").on(t.nodeId, t.createdAt),
 		index("base_freshens_base").on(t.baseId, t.nodeId),
 	],
+);
+
+// ---- Native message board & task queue (scoped by Hotbed projects) ----
+
+export const boardMessages = sqliteTable(
+	"board_messages",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		projectId: integer("project_id")
+			.notNull()
+			.references(() => projects.id),
+		externalId: text("external_id"),
+		idempotencyKey: text("idempotency_key"),
+		re: integer("re"),
+		replyTo: integer("reply_to"),
+		byActor: text("by_actor").notNull(),
+		byPrincipal: text("by_principal").notNull(),
+		byProfile: text("by_profile"),
+		textLower: text("text_lower").notNull().default(""),
+		deleted: integer("deleted").notNull().default(0),
+		createdAt: integer("created_at").notNull(),
+		editedAt: integer("edited_at"),
+		repliesCount: integer("replies_count").notNull().default(0),
+		lastActivityId: integer("last_activity_id").notNull().default(0),
+		lastActivityAt: integer("last_activity_at").notNull().default(0),
+		version: integer("version").notNull().default(0),
+		revision: integer("revision").notNull().default(1),
+		hasTask: integer("has_task").notNull().default(0),
+		taskState: text("task_state"),
+		taskOwner: text("task_owner"),
+		taskFor: text("task_for"),
+		taskLeaseUntil: integer("task_lease_until"),
+		doc: text("doc").notNull(),
+	},
+	(t) => [
+		uniqueIndex("board_messages_external_id")
+			.on(t.externalId)
+			.where(sql`${t.externalId} IS NOT NULL`),
+		uniqueIndex("board_messages_idempotency")
+			.on(t.idempotencyKey)
+			.where(sql`${t.idempotencyKey} IS NOT NULL`),
+		index("board_messages_project_re").on(t.projectId, t.re, t.lastActivityAt, t.id),
+		index("board_messages_re").on(t.re, t.id),
+		index("board_messages_by_actor").on(t.byActor, t.id),
+		index("board_messages_by_principal").on(t.byPrincipal, t.id),
+		index("board_messages_tasks").on(t.projectId, t.hasTask, t.taskState, t.id),
+		index("board_messages_task_lease")
+			.on(t.taskLeaseUntil)
+			.where(sql`${t.taskState} = 'claimed' AND ${t.taskLeaseUntil} IS NOT NULL`),
+	],
+);
+
+/**
+ * Inverted term index for board messages:
+ * - labels: term = label key, value = label value
+ * - mentions: term = '@', value = handle or actor ID
+ * - attachments: term = '^', value = attachment ID
+ * - task needs: term = '>needs', value = prerequisite message ID
+ */
+export const boardTerms = sqliteTable(
+	"board_terms",
+	{
+		messageId: integer("message_id")
+			.notNull()
+			.references(() => boardMessages.id, { onDelete: "cascade" }),
+		term: text("term").notNull(),
+		value: text("value").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.messageId, t.term, t.value] }),
+		index("board_terms_lookup").on(t.term, t.value, t.messageId),
+	],
+);
+
+export const boardTaskClaims = sqliteTable("board_task_claims", {
+	messageId: integer("message_id")
+		.primaryKey()
+		.references(() => boardMessages.id, { onDelete: "cascade" }),
+	epoch: integer("epoch").notNull(),
+	tokenHash: text("token_hash").notNull(),
+	leaseSeconds: integer("lease_seconds").notNull(),
+	actor: text("actor").notNull(),
+	until: integer("until").notNull(),
+});
+
+export const boardEvents = sqliteTable(
+	"board_events",
+	{
+		seq: integer("seq").primaryKey({ autoIncrement: true }),
+		at: integer("at").notNull(),
+		projectId: integer("project_id").references(() => projects.id),
+		type: text("type").notNull(),
+		messageId: integer("message_id"),
+		threadId: integer("thread_id"),
+		actorId: text("actor_id").notNull().default(""),
+		beforeDoc: text("before_doc"),
+		afterDoc: text("after_doc"),
+		doc: text("doc").notNull(),
+	},
+	(t) => [
+		index("board_events_project").on(t.projectId, t.seq),
+		index("board_events_thread").on(t.threadId, t.seq),
+	],
+);
+
+export const boardActors = sqliteTable(
+	"board_actors",
+	{
+		id: text("id").primaryKey(),
+		kind: text("kind").notNull(),
+		handle: text("handle").notNull(),
+		handleLower: text("handle_lower").notNull(),
+		name: text("name").notNull(),
+		sessionId: text("session_id").notNull().default(""),
+		updatedAt: integer("updated_at").notNull(),
+		doc: text("doc").notNull(),
+	},
+	(t) => [index("board_actors_handle").on(t.handleLower)],
+);
+
+export const boardSchemas = sqliteTable("board_schemas", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	version: integer("version").notNull(),
+	description: text("description").notNull().default(""),
+	schemaJson: text("schema_json").notNull(),
+	byActor: text("by_actor").notNull().default(""),
+	createdAt: integer("created_at").notNull(),
+});
+
+export const boardAttachments = sqliteTable("board_attachments", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	contentType: text("content_type").notNull(),
+	size: integer("size").notNull(),
+	uploader: text("uploader").notNull().default(""),
+	createdAt: integer("created_at").notNull(),
+});
+
+export const boardAttachmentChunks = sqliteTable(
+	"board_attachment_chunks",
+	{
+		attachmentId: text("attachment_id")
+			.notNull()
+			.references(() => boardAttachments.id, { onDelete: "cascade" }),
+		chunkIndex: integer("chunk_index").notNull(),
+		data: blob("data", { mode: "buffer" }).notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.attachmentId, t.chunkIndex] })],
+);
+
+export const boardSchedules = sqliteTable(
+	"board_schedules",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		projectId: integer("project_id")
+			.notNull()
+			.references(() => projects.id),
+		re: integer("re"),
+		state: text("state").notNull(),
+		nextAt: integer("next_at"),
+		byActor: text("by_actor").notNull(),
+		doc: text("doc").notNull(),
+	},
+	(t) => [
+		index("board_schedules_due")
+			.on(t.state, t.nextAt)
+			.where(sql`${t.state} = 'pending'`),
+		index("board_schedules_re").on(t.re, t.state),
+		index("board_schedules_project").on(t.projectId, t.state),
+	],
+);
+
+export const boardTaskBatches = sqliteTable("board_task_batches", {
+	idempotencyKey: text("idempotency_key").primaryKey(),
+	requestDigest: text("request_digest").notNull(),
+	projectId: integer("project_id")
+		.notNull()
+		.references(() => projects.id),
+	taskIdsJson: text("task_ids_json").notNull(),
+	createdAt: integer("created_at").notNull(),
+});
+
+export const boardImportNeeds = sqliteTable(
+	"board_import_needs",
+	{
+		messageId: integer("message_id")
+			.notNull()
+			.references(() => boardMessages.id, { onDelete: "cascade" }),
+		needExternalId: text("need_external_id").notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.messageId, t.needExternalId] })],
 );

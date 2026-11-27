@@ -256,6 +256,10 @@ func (s *testServer) TickSchedules(ctx context.Context) error {
 	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/tick-schedules", map[string]any{}, nil)
 }
 
+func (s *testServer) TickBoard(ctx context.Context) error {
+	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/tick-board", map[string]any{}, nil)
+}
+
 // testStore inspects and seeds state in the test DO via /__test/* endpoints.
 type testStore struct {
 	h      *cfHarness

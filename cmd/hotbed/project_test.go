@@ -305,12 +305,20 @@ func TestRepoAddAndListWithProject(t *testing.T) {
 // is here: a new one fails the test until it is.
 func TestListingsScopeAlike(t *testing.T) {
 	c, _ := questionCluster(t)
+	c.ok(nil, "board", "task", "create", "-p", "test", "ready task 1")
+	c.ok(nil, "board", "task", "create", "-p", "test", "ready task 2")
 	listings := map[string][]string{
-		"hotbed.v1.ListQuestionsRequest": {"question", "ls"},
-		"hotbed.v1.ListMemoriesRequest":  {"memory", "ls"},
-		"hotbed.v1.ListSessionsRequest":  {"session", "ls"},
-		"hotbed.v1.ListSchedulesRequest": {"schedule", "ls"},
-		"hotbed.v1.ListReviewsRequest":   {"review", "ls"},
+		"hotbed.v1.ListQuestionsRequest":      {"question", "ls"},
+		"hotbed.v1.ListMemoriesRequest":       {"memory", "ls"},
+		"hotbed.v1.ListSessionsRequest":       {"session", "ls"},
+		"hotbed.v1.ListSchedulesRequest":      {"schedule", "ls"},
+		"hotbed.v1.ListReviewsRequest":        {"review", "ls"},
+		"hotbed.v1.ListBoardThreadsRequest":   {"board", "read"},
+		"hotbed.v1.ListBoardEventsRequest":    {"board", "wait", "--timeout", "0s"},
+		"hotbed.v1.ListBoardActorsRequest":    {"board", "actors"},
+		"hotbed.v1.ListBoardSchedulesRequest": {"board", "schedule", "ls"},
+		"hotbed.v1.ListBoardTasksRequest":     {"board", "task", "ls"},
+		"hotbed.v1.ClaimBoardTaskRequest":     {"board", "task", "claim", "--ready"},
 	}
 	msgs := pb.File_hotbed_v1_hotbed_proto.Messages()
 	for i := range msgs.Len() {

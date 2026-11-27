@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/
 import type { CommandStateSlug } from "./api";
 import { Shell } from "./components/Shell";
 import { keepScrollWithinPage } from "./lib/scroll";
+import { BoardPage, BoardThreadPage, type BoardSearch } from "./pages/Board";
 import { CommandPage } from "./pages/Command";
 import { CommandsPage } from "./pages/Commands";
 import { DaemonLogsPage, type DaemonLogsSearch } from "./pages/DaemonLogs";
@@ -20,6 +21,7 @@ import { SessionPage } from "./pages/Session";
 import { SchedulesPage } from "./pages/Schedules";
 import { SessionsPage } from "./pages/Sessions";
 import { SettingsPage, type SettingsSearch, type SettingsTab } from "./pages/Settings";
+import { TasksPage, type TasksSearch, type TasksTab } from "./pages/Tasks";
 import { WorkspacePage } from "./pages/Workspace";
 
 const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
@@ -28,6 +30,30 @@ const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 // about, and the repos and workspaces under them. The project chosen scopes
 // every page but the machines' own.
 const projects = createRoute({ getParentRoute: () => root, path: "/", component: ProjectsPage });
+const board = createRoute({
+  getParentRoute: () => root,
+  path: "/board",
+  component: BoardPage,
+  validateSearch: (s: Record<string, unknown>): BoardSearch => ({
+    q: typeof s.q === "string" && s.q ? s.q : undefined,
+    label: typeof s.label === "string" && s.label ? s.label : undefined,
+    by: typeof s.by === "string" && s.by ? s.by : undefined,
+  }),
+});
+const boardThread = createRoute({
+  getParentRoute: () => root,
+  path: "/board/$id",
+  component: BoardThreadPage,
+});
+const TASK_TABS: readonly TasksTab[] = ["open", "ready", "claimed", "blocked", "waiting", "completed", "failed", "canceled", "all"];
+const tasks = createRoute({
+  getParentRoute: () => root,
+  path: "/tasks",
+  component: TasksPage,
+  validateSearch: (s: Record<string, unknown>): TasksSearch => ({
+    tab: typeof s.tab === "string" && TASK_TABS.includes(s.tab as TasksTab) ? (s.tab as TasksTab) : undefined,
+  }),
+});
 const sessions = createRoute({ getParentRoute: () => root, path: "/sessions", component: SessionsPage });
 const session = createRoute({ getParentRoute: () => root, path: "/sessions/$id", component: SessionPage });
 const reviews = createRoute({ getParentRoute: () => root, path: "/reviews", component: ReviewsPage });
@@ -180,7 +206,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, board, boardThread, tasks, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 keepScrollWithinPage(router);

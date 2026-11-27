@@ -60,6 +60,7 @@ var pages = map[protoreflect.FullName]struct{ kind, key protoreflect.Name }{
 	fullName(&pb.Memory{}):           {"memories", "id"},
 	fullName(&pb.Question{}):         {"questions", "id"},
 	fullName(&pb.Issue{}):            {"issues", "id"},
+	fullName(&pb.BoardMessage{}):     {"board", "id"},
 }
 
 func fullName(m proto.Message) protoreflect.FullName { return m.ProtoReflect().Descriptor().FullName() }

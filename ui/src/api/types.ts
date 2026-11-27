@@ -5,6 +5,9 @@ import type { MessageInitShape } from "@bufbuild/protobuf";
 import {
   ActorKind,
   BaseState,
+  BoardActorKind,
+  BoardScheduleState,
+  BoardTaskState,
   CommandState,
   IssueState,
   DaemonLogLevel,
@@ -34,6 +37,23 @@ import {
   type AskedFrom,
   type Base,
   type BaseRepo,
+  type BoardActor,
+  type BoardAttachment,
+  type BoardBlock,
+  type BoardEvent,
+  type BoardLabelFilter,
+  type BoardMessage,
+  type BoardMessageResult,
+  type BoardReaction,
+  type BoardSchedule,
+  type BoardSchema,
+  type BoardTask,
+  type BoardTaskResult,
+  type BoardThreadSummary,
+  type GetBoardThreadResponse,
+  type ListBoardSchedulesResponse,
+  type ListBoardTasksResponse,
+  type ListBoardThreadsResponse,
   type CgroupIO,
   type CgroupStats,
   type ClusterEvent,
@@ -159,6 +179,9 @@ import {
 export {
   ActorKind,
   BaseState,
+  BoardActorKind,
+  BoardScheduleState,
+  BoardTaskState,
   CommandState,
   IssueState,
   DaemonLogLevel,
@@ -187,6 +210,23 @@ export {
   type AskedFrom,
   type Base,
   type BaseRepo,
+  type BoardActor,
+  type BoardAttachment,
+  type BoardBlock,
+  type BoardEvent,
+  type BoardLabelFilter,
+  type BoardMessage,
+  type BoardMessageResult,
+  type BoardReaction,
+  type BoardSchedule,
+  type BoardSchema,
+  type BoardTask,
+  type BoardTaskResult,
+  type BoardThreadSummary,
+  type GetBoardThreadResponse,
+  type ListBoardSchedulesResponse,
+  type ListBoardTasksResponse,
+  type ListBoardThreadsResponse,
   type CgroupIO,
   type CgroupStats,
   type ClusterEvent,
@@ -521,6 +561,45 @@ export interface StartGitHubLoginInput {
   oauthUrl?: string;
 }
 
+export interface BoardThreadsFilter {
+  project?: string | null;
+  text?: string;
+  by?: string;
+  mentions?: string;
+  labels?: { key: string; values?: string[] }[];
+  before?: string;
+  limit?: number;
+}
+
+export interface BoardTasksFilter {
+  project?: string | null;
+  states?: BoardTaskState[];
+  includeAll?: boolean;
+  labels?: { key: string; values?: string[] }[];
+  owner?: string;
+  forActor?: string;
+  latest?: boolean;
+  limit?: number;
+}
+
+export interface PostBoardMessageInput {
+  project?: string;
+  re?: bigint;
+  text: string;
+  labels?: Record<string, string>;
+  attachmentIds?: string[];
+}
+
+export interface CreateBoardTaskInput {
+  project?: string;
+  re?: bigint;
+  text?: string;
+  labels?: Record<string, string>;
+  attachmentIds?: string[];
+  needs?: bigint[];
+  forActor?: string;
+}
+
 export interface Api {
   snapshot(): Promise<Snapshot>;
   retireNode(node: string): Promise<Node>;
@@ -580,4 +659,21 @@ export interface Api {
   reviews(project: string | null): Promise<Review[]>;
   review(id: number): Promise<Review>;
   respond(reviewId: number, findingId: number | null, quick: QuickResponse, text: string): Promise<ReviewEvent>;
+  boardThreads(filter: BoardThreadsFilter): Promise<ListBoardThreadsResponse>;
+  boardThread(id: bigint): Promise<GetBoardThreadResponse>;
+  postBoardMessage(input: PostBoardMessageInput): Promise<BoardMessageResult>;
+  editBoardMessage(id: bigint, text: string, ifRevision?: bigint): Promise<BoardMessageResult>;
+  deleteBoardMessage(id: bigint): Promise<BoardMessage>;
+  reactBoardMessage(id: bigint, emoji: string, remove?: boolean): Promise<BoardMessage>;
+  labelBoardMessage(id: bigint, set: Record<string, string>, unset?: string[]): Promise<BoardMessage>;
+  uploadBoardAttachment(name: string, contentType: string, data: Uint8Array): Promise<BoardAttachment>;
+  boardTasks(filter: BoardTasksFilter): Promise<ListBoardTasksResponse>;
+  createBoardTask(input: CreateBoardTaskInput): Promise<BoardTaskResult>;
+  blockBoardTask(id: bigint, reason: string, kind?: string): Promise<BoardMessage>;
+  unblockBoardTask(id: bigint): Promise<BoardMessage>;
+  reopenBoardTask(id: bigint): Promise<BoardMessage>;
+  assignBoardTask(id: bigint, forActor: string, unassign?: boolean): Promise<BoardMessage>;
+  cancelBoardTask(id: bigint, reason: string): Promise<BoardMessage>;
+  boardSchedules(project?: string | null, includeAll?: boolean): Promise<ListBoardSchedulesResponse>;
+  cancelBoardSchedule(id: bigint): Promise<BoardSchedule>;
 }

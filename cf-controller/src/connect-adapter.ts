@@ -120,6 +120,16 @@ export const VIEWER_ALLOWED_PROCEDURES = new Set([
 	"/hotbed.v1.MemoryService/ListMemories",
 	"/hotbed.v1.MemoryService/GetMemories",
 	"/hotbed.v1.MemoryService/ShowMemory",
+	// BoardService (read-only)
+	"/hotbed.v1.BoardService/ListBoardThreads",
+	"/hotbed.v1.BoardService/GetBoardThread",
+	"/hotbed.v1.BoardService/ListBoardEvents",
+	"/hotbed.v1.BoardService/ListBoardActors",
+	"/hotbed.v1.BoardService/DownloadBoardAttachment",
+	"/hotbed.v1.BoardService/ListBoardSchemas",
+	"/hotbed.v1.BoardService/GetBoardSchema",
+	"/hotbed.v1.BoardService/ListBoardSchedules",
+	"/hotbed.v1.BoardService/ListBoardTasks",
 ]);
 
 const roleScopeInterceptor: Interceptor = (next) => async (req) => {

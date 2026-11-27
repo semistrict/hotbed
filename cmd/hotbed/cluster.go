@@ -37,6 +37,7 @@ type clients struct {
 	questions  hotbedv1connect.QuestionServiceClient
 	reviews    hotbedv1connect.ReviewServiceClient
 	gitAuth    hotbedv1connect.GitAuthServiceClient
+	board      hotbedv1connect.BoardServiceClient
 }
 
 // callController has the command call the controller at addr, riding out
@@ -136,6 +137,7 @@ func (f controllerClient) clients(hc *http.Client) (clients, error) {
 		questions:  hotbedv1connect.NewQuestionServiceClient(conn),
 		reviews:    hotbedv1connect.NewReviewServiceClient(conn),
 		gitAuth:    hotbedv1connect.NewGitAuthServiceClient(conn),
+		board:      hotbedv1connect.NewBoardServiceClient(conn),
 	}, nil
 }
 

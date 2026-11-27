@@ -6,6 +6,7 @@ import migrations from "../drizzle/migrations.js";
 import * as dbSchema from "./db/schema.ts";
 import {
 	BaseSchema,
+	BoardService,
 	ClusterService,
 	CommandProfileSchema,
 	CommandSchema,
@@ -48,6 +49,7 @@ import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./con
 import { ControllerContext } from "./context.ts";
 import { ErrorCode, HotbedError, fromUnknownError } from "./errors.ts";
 import { randomHex } from "./gitops.ts";
+import { createBoardService, type BoardServiceBundle } from "./services/board.ts";
 import { createClusterService } from "./services/cluster.ts";
 import { createGitAuthService } from "./services/gitauth.ts";
 import { createMemoryService } from "./services/memories.ts";
@@ -188,6 +190,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	private builds!: BuildDistributor;
 	private ctrl!: ControllerContext;
 	private scheduleRunner!: ScheduleRunner;
+	private boardSvc!: BoardServiceBundle;
 	private dispatcher!: ConnectFetchDispatcher;
 	private nowOffsetMs = 0;
 	private testWakeWaitMs?: number;
@@ -257,6 +260,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const wsSvc = createWorkspaceService(this.ctrl);
 		const schedSvc = createScheduleService(this.ctrl, wsSvc.helpers);
 		this.scheduleRunner = schedSvc.runner;
+		this.boardSvc = createBoardService(this.ctrl, this.ctx.storage);
+		this.ctrl.boardCountsFn = () => this.boardSvc.store.projectBoardCounts(this.ctrl.now());
 		const clusterSvc = createClusterService(this.ctrl, schedSvc.runner);
 		const sessionSvc = createSessionService(this.ctrl);
 		const questionSvc = createQuestionService(this.ctrl);
@@ -275,13 +280,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			router.service(IssueService, issueSvc);
 			router.service(ScheduleService, schedSvc.impl);
 			router.service(GitAuthService, gitAuthSvc);
+			router.service(BoardService, this.boardSvc.impl);
 		});
 	}
 
 	private desiredAlarmDelayMs(): number | null {
 		const hasActiveWork =
 			this.store.listSchedules("").some((s) => !s.paused) ||
-			this.store.liveSessionsByProject().size > 0;
+			this.store.liveSessionsByProject().size > 0 ||
+			this.boardSvc.store.hasPendingWork(this.ctrl.now());
 		if (hasActiveWork) return ACTIVE_ALARM_MS;
 		const hasIdleWork = this.store.listNodes().length > 0 || this.builds.needsBackgroundRefresh();
 		return hasIdleWork ? IDLE_ALARM_MS : null;
@@ -306,6 +313,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				name: "tick schedules",
 				level: DaemonLogLevel.ERROR,
 				fn: () => this.scheduleRunner.tickSchedules(),
+			},
+			{
+				name: "tick board",
+				level: DaemonLogLevel.ERROR,
+				fn: () => this.boardSvc.tickBoard(),
 			},
 			{
 				name: "settle scheduled runs",
@@ -1292,6 +1304,58 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			return this.builds.serveAsset(Number(parts[0]), parts[1]);
 		}
 
+		// 5b. Board attachment downloads (/board/attachments/{id})
+		if (
+			pathname.startsWith("/board/attachments/") &&
+			(request.method === "GET" || request.method === "HEAD")
+		) {
+			try {
+				const caller = await this.authRequest(request);
+				if (caller.role === "worker") {
+					return Response.json(
+						{ code: ErrorCode.NotAuthorized, message: "workers cannot download board attachments" },
+						{ status: 403 },
+					);
+				}
+				const id = decodePathSegment(pathname.slice("/board/attachments/".length));
+				if (!id) {
+					return Response.json(
+						{ code: ErrorCode.InvalidArgs, message: "attachment ID is required" },
+						{ status: 400 },
+					);
+				}
+				const { attachment, data } = this.boardSvc.store.downloadAttachment(id);
+				const ct = attachment.contentType || "application/octet-stream";
+				const safeInline =
+					ct.startsWith("image/") ||
+					ct.startsWith("video/") ||
+					ct.startsWith("audio/") ||
+					ct === "text/plain" ||
+					ct === "application/pdf";
+				const safeName = attachment.name.replace(/["\\\r\n]/g, "_");
+				const headers = new Headers({
+					"Content-Type": ct,
+					"Content-Length": String(data.byteLength),
+					"Content-Disposition": `${safeInline ? "inline" : "attachment"}; filename="${safeName}"`,
+					"Content-Security-Policy": "sandbox",
+					"X-Content-Type-Options": "nosniff",
+					"Cache-Control": "private, max-age=31536000, immutable",
+				});
+				return new Response(request.method === "HEAD" ? null : data, { status: 200, headers });
+			} catch (err) {
+				const he = fromUnknownError(err);
+				const status =
+					he.code === ErrorCode.NotFound
+						? 404
+						: he.code === ErrorCode.NotAuthorized
+							? 403
+							: he.code === ErrorCode.InvalidArgs
+								? 400
+								: 500;
+				return Response.json(he.toJSON(), { status });
+			}
+		}
+
 		// 6. ConnectRPC endpoints (/hotbed.v1.<Service>/<Method>)
 		if (this.dispatcher.hasPath(pathname)) {
 			let caller;
@@ -1392,6 +1456,10 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		if (sub === "tick-schedules" && request.method === "POST") {
 			await this.scheduleRunner.tickSchedules();
 			await this.ctrl.settleRuns();
+			return Response.json({ ok: true });
+		}
+		if (sub === "tick-board" && request.method === "POST") {
+			this.boardSvc.tickBoard();
 			return Response.json({ ok: true });
 		}
 		if (sub === "restart" && request.method === "POST") {

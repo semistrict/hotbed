@@ -9,8 +9,10 @@ import {
   FolderKanban,
   GitPullRequestDraft,
   Layers,
+  ListChecks,
   LogOut,
   MessageCircleQuestion,
+  MessageSquareText,
   Monitor,
   Moon,
   ScrollText,
@@ -65,6 +67,8 @@ import { useProject, useScopedSnapshot } from "../lib/project";
 interface NavItem {
   readonly to:
     | "/"
+    | "/board"
+    | "/tasks"
     | "/questions"
     | "/memories"
     | "/reviews"
@@ -86,6 +90,8 @@ interface NavItem {
 // which every project shares.
 const WORKSPACE_NAV: readonly NavItem[] = [
   { to: "/", label: "Projects", icon: FolderKanban },
+  { to: "/board", label: "Board", icon: MessageSquareText },
+  { to: "/tasks", label: "Tasks", icon: ListChecks },
   { to: "/questions", label: "Questions", icon: MessageCircleQuestion },
   { to: "/memories", label: "Memories", icon: Brain },
   { to: "/reviews", label: "Reviews", icon: GitPullRequestDraft },
@@ -319,6 +325,23 @@ function AppSidebar({
   const logWarns = whole ? (whole.controllerLogs?.warns24h ?? 0) + whole.nodes.reduce((sum, n) => sum + (n.daemonLogs?.warns24h ?? 0), 0) : 0;
 
   const badgeFor = (to: NavItem["to"]): { node: ReactNode; urgent?: boolean; tooltipSuffix?: string } => {
+    if (to === "/tasks" && scoped && scoped.blockedBoardTasks > 0) {
+      return {
+        node: (
+          <Badge className="h-4 min-w-4 px-1.5 font-mono text-[10px] leading-4" aria-label={`${scoped.blockedBoardTasks} blocked tasks`}>
+            {scoped.blockedBoardTasks}
+          </Badge>
+        ),
+        urgent: true,
+        tooltipSuffix: ` (${scoped.blockedBoardTasks} blocked, ${scoped.openBoardTasks} open)`,
+      };
+    }
+    if (to === "/tasks" && scoped && scoped.openBoardTasks > 0) {
+      return {
+        node: <span className="num font-mono text-[10.5px] text-muted-foreground">{scoped.openBoardTasks}</span>,
+        tooltipSuffix: ` (${scoped.openBoardTasks} open)`,
+      };
+    }
     if (to === "/questions" && scoped && scoped.openQuestions > 0) {
       return {
         node: (

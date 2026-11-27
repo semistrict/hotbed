@@ -15,7 +15,7 @@ import {
 
 export { CommandDO, ControllerDO, TenantRegistryDO };
 
-const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/admin/"];
+const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/admin/", "/board/attachments/"];
 
 const STATIC_ASSET_EXT_RE =
 	/\.(?:js|mjs|cjs|css|map|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|json|txt|xml|webmanifest|wasm)$/i;

@@ -101,6 +101,29 @@ func writeOutput(w io.Writer, name string, cmd command, data any, opts outputOpt
 		_, err := io.WriteString(w, formatFreshenShowReport(res))
 		return err
 	}
+	if res, ok := data.(*pb.ListBoardThreadsResponse); ok {
+		_, err := io.WriteString(w, formatBoardThreadsReport(res))
+		return err
+	}
+	if res, ok := data.(*pb.GetBoardThreadResponse); ok {
+		_, err := io.WriteString(w, formatBoardThreadReport(res))
+		return err
+	}
+	if res, ok := data.(*pb.ListBoardTasksResponse); ok {
+		_, err := io.WriteString(w, formatBoardTasksReport(res))
+		return err
+	}
+	if res, ok := data.(*pb.ListBoardEventsResponse); ok {
+		_, err := io.WriteString(w, formatBoardEventsReport(res))
+		return err
+	}
+	if res, ok := data.(boardImportSummary); ok {
+		_, err := io.WriteString(w, formatBoardImportSummary(res))
+		return err
+	}
+	if data == nil {
+		return nil
+	}
 	if wantsOutputTimestamps(cmd) {
 		if res, ok := asProtoResponse(data, func() *pb.OutputQuery { return &pb.OutputQuery{} }); ok {
 			_, err := io.WriteString(w, formatOutputQueryWithTimestamps(res, time.Now()))

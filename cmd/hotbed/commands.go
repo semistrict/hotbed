@@ -111,6 +111,7 @@ type cli struct {
 	Step      stepCmd      `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
 	Schedule  scheduleCmd  `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
 	Review    reviewCmd    `cmd:"" help:"Reviews of an exact version by reviewer agents: request one, read and decide its findings, send the user its link, read the user's responses (request, ls, show, link, start, findings, finish, fail, cancel, accept, dismiss, reopen, respond, responses)."`
+	Board     boardCmd     `cmd:"" help:"Project-scoped message board & task queue (read, post, reply, edit, delete, react, label, wait, tail, upload, download, actors, schema, schedule, task, import)."`
 	UI        uiCmd        `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
 	Login     loginCmd     `cmd:"" help:"Sign in to a WorkOS-enabled Hotbed controller (Google / AuthKit browser login, or --device for headless machines)."`
 	Logout    logoutCmd    `cmd:"" help:"Remove locally stored credentials for a Hotbed controller."`

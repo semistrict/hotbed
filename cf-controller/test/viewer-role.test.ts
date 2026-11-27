@@ -73,6 +73,10 @@ describe("viewer role enforcement", () => {
 			"/hotbed.v1.MemoryService/ListMemories",
 			"/hotbed.v1.ScheduleService/ListSchedules",
 			"/hotbed.v1.ReviewService/ListReviews",
+			"/hotbed.v1.BoardService/ListBoardThreads",
+			"/hotbed.v1.BoardService/ListBoardTasks",
+			"/hotbed.v1.BoardService/ListBoardSchemas",
+			"/hotbed.v1.BoardService/ListBoardActors",
 		]) {
 			expect(VIEWER_ALLOWED_PROCEDURES.has(proc)).toBe(true);
 			const res = await doFetch(doName, proc, {
@@ -97,6 +101,9 @@ describe("viewer role enforcement", () => {
 			"/hotbed.v1.ScheduleService/PutSchedule",
 			"/hotbed.v1.ReviewService/RequestReview",
 			"/hotbed.v1.GitAuthService/MintGitToken",
+			"/hotbed.v1.BoardService/PostBoardMessage",
+			"/hotbed.v1.BoardService/CreateBoardTask",
+			"/hotbed.v1.BoardService/ImportBoard",
 		]) {
 			expect(VIEWER_ALLOWED_PROCEDURES.has(proc)).toBe(false);
 			const res = await doFetch(doName, proc, {

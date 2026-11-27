@@ -148,6 +148,13 @@
 			"when": 1795727972818,
 			"tag": "0020_deep_kylun",
 			"breakpoints": true
+		},
+		{
+			"idx": 21,
+			"version": "6",
+			"when": 1795779565626,
+			"tag": "0021_woozy_starfox",
+			"breakpoints": true
 		}
 	]
 }
