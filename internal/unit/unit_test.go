@@ -54,7 +54,7 @@ func TestParseShow(t *testing.T) {
 		{
 			"deactivating while frozen (e.g. OOMPolicy=stop)",
 			"LoadState=loaded\nActiveState=deactivating\nSubState=final-sigterm\nFreezerState=frozen\n",
-			State{Loaded: true, Running: false, Frozen: true, Exited: false},
+			State{Loaded: true, Deactivating: true, Frozen: true},
 		},
 		{
 			"loaded inactive dead",
@@ -385,7 +385,7 @@ func TestParseListAndSliceUnits(t *testing.T) {
 		"unrelated.service       loaded active running watches hotbed-ignored.service",
 		"",
 	}, "\n")
-	cands := parseListUnits(listOut)
+	cands := parseListUnits(listOut, "hotbed-")
 	wantCands := []string{"hotbed-worker.service", "hotbed-c-1.service", "hotbed-c-2.service", "hotbed-deadbeef.service", "hotbed-b-1.service"}
 	if !slices.Equal(cands, wantCands) {
 		t.Fatalf("parseListUnits = %q, want %q", cands, wantCands)
@@ -418,14 +418,72 @@ func TestParseListAndSliceUnits(t *testing.T) {
 		"ActiveState=active",
 		"",
 	}, "\n")
-	got := parseSliceUnits(showOut, DefaultSlice)
+	got := parseSliceUnits(showOut, "hotbed-", DefaultSlice)
 	want := []string{"hotbed-c-1", "hotbed-c-2"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("parseSliceUnits(hotbed.slice) = %q, want %q", got, want)
 	}
-	gotBench := parseSliceUnits(showOut, "hotbed_bench.slice")
+	gotBench := parseSliceUnits(showOut, "hotbed-", "hotbed_bench.slice")
 	if !slices.Equal(gotBench, []string{"hotbed-b-1"}) {
 		t.Fatalf("parseSliceUnits(hotbed_bench.slice) = %q, want [hotbed-b-1]", gotBench)
+	}
+}
+
+// ListSliceUnits serves VM units (prefix hotbed-vm-) too, which are listed
+// across every slice when none is named.
+func TestParseListAndSliceUnitsByPrefix(t *testing.T) {
+	listOut := strings.Join([]string{
+		"hotbed-vm-2x6xdsk5.service loaded active running Firecracker",
+		"hotbed-vm-base-cladefs-vm-b470a516.service loaded active running Firecracker",
+		"hotbed-vm-failed.service loaded failed failed Firecracker",
+		"hotbed-c-1.service loaded active running hotbed sleep 30",
+		"other.service loaded active running Other",
+	}, "\n")
+	cands := parseListUnits(listOut, "hotbed-vm-")
+	wantCands := []string{
+		"hotbed-vm-2x6xdsk5.service",
+		"hotbed-vm-base-cladefs-vm-b470a516.service",
+		"hotbed-vm-failed.service",
+	}
+	if !slices.Equal(cands, wantCands) {
+		t.Fatalf("parseListUnits = %q, want %q", cands, wantCands)
+	}
+
+	showOut := strings.Join([]string{
+		"Id=hotbed-vm-2x6xdsk5.service",
+		"Slice=user-1000-hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=active",
+		"",
+		"Id=hotbed-vm-base-cladefs-vm-b470a516.service",
+		"Slice=user-1000-hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=deactivating",
+		"",
+		"Id=hotbed-vm-other-slice.service",
+		"Slice=hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=active",
+		"",
+		"Id=hotbed-vm-inactive.service",
+		"Slice=user-1000-hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=inactive",
+		"",
+		"Id=hotbed-c-1.service",
+		"Slice=user-1000-hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=active",
+	}, "\n")
+	got := parseSliceUnits(showOut, "hotbed-vm-", "user-1000-hotbed.slice")
+	want := []string{"hotbed-vm-2x6xdsk5", "hotbed-vm-base-cladefs-vm-b470a516"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("parseSliceUnits(user slice) = %q, want %q", got, want)
+	}
+	gotAll := parseSliceUnits(showOut, "hotbed-vm-", "")
+	wantAll := []string{"hotbed-vm-2x6xdsk5", "hotbed-vm-base-cladefs-vm-b470a516", "hotbed-vm-other-slice"}
+	if !slices.Equal(gotAll, wantAll) {
+		t.Fatalf("parseSliceUnits(any slice) = %q, want %q", gotAll, wantAll)
 	}
 }
 

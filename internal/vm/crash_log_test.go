@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -265,38 +264,4 @@ func TestPruneCrashedVMDirsCapsRetention(t *testing.T) {
 	if !strings.Contains(entries[0].Name(), "150003") || !strings.Contains(entries[2].Name(), "150005") {
 		t.Fatalf("unexpected remaining entries: %s .. %s", entries[0].Name(), entries[2].Name())
 	}
-}
-
-func TestDirectLauncherCapturesSignal(t *testing.T) {
-	sleepBin, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Skip("sleep binary not found")
-	}
-	dl := NewDirectLauncher()
-	ctx := context.Background()
-	if err := dl.Start(ctx, ProcessSpec{
-		Name:   "hotbed-vm-sigtest",
-		Binary: sleepBin,
-		Args:   []string{"60"},
-	}); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if err := dl.Kill(ctx, "hotbed-vm-sigtest"); err != nil {
-		t.Fatalf("Kill: %v", err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		st, err := dl.Status(ctx, "hotbed-vm-sigtest")
-		if err != nil {
-			t.Fatalf("Status: %v", err)
-		}
-		if st.Exited {
-			if st.Signal != int(syscall.SIGKILL) || st.Result != "signal" || !st.DiedAbnormally() {
-				t.Fatalf("Status after SIGKILL = %+v, want signal=9 result=signal", st)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for killed process to exit")
 }

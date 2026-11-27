@@ -223,42 +223,27 @@ func firecrackerConfig(cfg Config, spec LaunchSpec, cid uint32, vsockUDS string,
 	if diskBytes == 0 {
 		diskBytes = cfg.DefaultDiskBytes
 	}
-	var bootParts []string
-	drives := []fcDrive{}
-	var pmems []fcPmem
-	if spec.ToolsDiskPath != "" {
-		// Boot from the read-only host tools disk mapped via virtio-pmem
-		// (/dev/pmem0, appended by Firecracker because root_device=true &
-		// read_only=true), then hotbed-guestd PID 1 mounts cladefs:rootfs and
-		// pivot_roots onto it. Using virtio-pmem shares the host page cache
-		// across VMs with zero block-queue I/O and avoids arm64 PCI virtio-blk
-		// boot hangs.
-		bootParts = []string{
-			"console=ttyS0",
-			"reboot=k",
-			"panic=1",
-			"psi=1",
-			"init=/hotbed-guestd",
-			"HOTBED_ROOT=cladefs:rootfs",
-		}
-		pmems = []fcPmem{{
-			ID:         "hotbed-tools",
-			PathOnHost: spec.ToolsDiskPath,
-			RootDevice: true,
-			ReadOnly:   true,
-		}}
-	} else {
-		bootParts = []string{
-			"root=rootfs",
-			"rootfstype=cladefs",
-			"rw",
-			"console=ttyS0",
-			"reboot=k",
-			"panic=1",
-			"psi=1",
-			"init=/sbin/hotbed-guestd",
-		}
+	// Boot from the read-only host tools disk mapped via virtio-pmem
+	// (/dev/pmem0, appended by Firecracker because root_device=true &
+	// read_only=true), then hotbed-guestd PID 1 mounts cladefs:rootfs and
+	// pivot_roots onto it. Using virtio-pmem shares the host page cache
+	// across VMs with zero block-queue I/O and avoids arm64 PCI virtio-blk
+	// boot hangs. Start always sets spec.ToolsDiskPath before building this.
+	bootParts := []string{
+		"console=ttyS0",
+		"reboot=k",
+		"panic=1",
+		"psi=1",
+		"init=/hotbed-guestd",
+		"HOTBED_ROOT=cladefs:rootfs",
 	}
+	drives := []fcDrive{}
+	pmems := []fcPmem{{
+		ID:         "hotbed-tools",
+		PathOnHost: spec.ToolsDiskPath,
+		RootDevice: true,
+		ReadOnly:   true,
+	}}
 	if ipArg := netAlloc.KernelIPArg(); ipArg != "" {
 		bootParts = append(bootParts, ipArg)
 	}

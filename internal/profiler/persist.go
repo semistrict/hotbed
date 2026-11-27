@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/semistrict/hotbed/internal/flame"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
 
@@ -97,3 +99,35 @@ func LoadProfile(path string) (*pb.CommandProfile, error) {
 
 // IsNotExist reports whether err is a missing profile file.
 func IsNotExist(err error) bool { return errors.Is(err, os.ErrNotExist) }
+
+// Admit checks a profile from elsewhere (stored, in a worker's event or its
+// reply) is one this build can read, or says why it is not: every frame and
+// stack index must name an entry of its table, and no sample count is negative.
+func Admit(p *pb.CommandProfile) error {
+	if err := flame.Check(p.Frames, p.Stacks, p.TopFunctions); err != nil {
+		return fmt.Errorf("profile %s: %w", p.CommandId, err)
+	}
+	nFrames := uint32(len(p.Frames))
+	nStacks := uint32(len(p.Stacks))
+	for i, b := range p.Buckets {
+		if b.TopFrame != noTopFrame && b.TopFrame >= nFrames {
+			return fmt.Errorf("profile %s: bucket %d names frame %d of %d", p.CommandId, i, b.TopFrame, nFrames)
+		}
+		if len(b.StackIndexes) != len(b.StackSamples) {
+			return fmt.Errorf("profile %s: bucket %d has %d stack indexes and %d sample counts", p.CommandId, i, len(b.StackIndexes), len(b.StackSamples))
+		}
+		for j, idx := range b.StackIndexes {
+			if idx >= nStacks {
+				return fmt.Errorf("profile %s: bucket %d stack %d names stack %d of %d", p.CommandId, i, j, idx, nStacks)
+			}
+			if b.StackSamples[j] < 0 {
+				return fmt.Errorf("profile %s: bucket %d stack %d has negative samples %d", p.CommandId, i, j, b.StackSamples[j])
+			}
+		}
+		if b.DurationMs == 0 {
+			// Buckets were all 5 seconds long before they said how long.
+			b.DurationMs = bucketDurationMs
+		}
+	}
+	return nil
+}

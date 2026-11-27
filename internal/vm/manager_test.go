@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/guestd"
+	"github.com/semistrict/hotbed/internal/unit"
 )
 
 type fakeLauncher struct {
@@ -182,9 +183,10 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 		ID:            "ws-1",
 		CellHostPath:  "/mnt/cells/ws-1",
 		CladefsVMSock: "/run/cladefsd/vm.sock",
+		ToolsDiskPath: "/var/lib/hotbed/vms/_tools/guestd-abc123.ext4",
 	}, 3, "/run/hotbed/vms/ws-1/vsock.sock", netAlloc)
 
-	if !strings.Contains(fc.BootSource.BootArgs, "init=/sbin/hotbed-guestd") {
+	if !strings.Contains(fc.BootSource.BootArgs, "init=/hotbed-guestd") {
 		t.Fatalf("boot_args missing init: %q", fc.BootSource.BootArgs)
 	}
 	if !strings.Contains(fc.BootSource.BootArgs, "psi=1") {
@@ -255,8 +257,8 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 		t.Fatalf("DisableDAX must omit dax_window_size and dax_private_max_bytes: %s", string(noDAXBytes))
 	}
 
-	// When ToolsDiskPath is set, Firecracker attaches it as a read-only root
-	// virtio-pmem device and boots /hotbed-guestd with HOTBED_ROOT=cladefs:rootfs.
+	// Firecracker attaches the tools disk as a read-only root virtio-pmem
+	// device and boots /hotbed-guestd with HOTBED_ROOT=cladefs:rootfs.
 	toolsFC := mgr.BuildFirecrackerConfig(LaunchSpec{
 		ID:            "ws-tools",
 		CellHostPath:  "/mnt/cells/ws-tools",
@@ -460,7 +462,7 @@ func (e *exitingLauncher) Status(context.Context, string) (ProcessStatus, error)
 }
 func (e *exitingLauncher) List(context.Context, string) ([]string, error) { return nil, nil }
 
-func TestInjectGuestdTar(t *testing.T) {
+func TestWriteGuestTar(t *testing.T) {
 	var baseBuf bytes.Buffer
 	tw := tar.NewWriter(&baseBuf)
 	_ = tw.WriteHeader(&tar.Header{Name: "etc/hostname", Typeflag: tar.TypeReg, Mode: 0o644, Size: 4})
@@ -469,15 +471,10 @@ func TestInjectGuestdTar(t *testing.T) {
 	_, _ = tw.Write([]byte("old"))
 	_ = tw.Close()
 
-	guestdBin := filepath.Join(t.TempDir(), "hotbed-guestd")
-	if err := os.WriteFile(guestdBin, []byte("ELF-FAKE-GUESTD"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	outTar := filepath.Join(t.TempDir(), "out.tar")
-	if err := InjectGuestdTar(&baseBuf, guestdBin, []string{"1.1.1.1"}, outTar); err != nil {
-		t.Fatalf("InjectGuestdTar: %v", err)
+	if err := WriteGuestTar(&baseBuf, []string{"1.1.1.1"}, outTar); err != nil {
+		t.Fatalf("WriteGuestTar: %v", err)
 	}
-
 	f, err := os.Open(outTar)
 	if err != nil {
 		t.Fatal(err)
@@ -485,6 +482,7 @@ func TestInjectGuestdTar(t *testing.T) {
 	defer f.Close()
 	tr := tar.NewReader(f)
 	seen := map[string]string{}
+	var order []string
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -495,189 +493,63 @@ func TestInjectGuestdTar(t *testing.T) {
 		}
 		b, _ := io.ReadAll(tr)
 		seen[hdr.Name] = string(b)
+		order = append(order, hdr.Name)
 	}
-	if seen["sbin/hotbed-guestd"] != "ELF-FAKE-GUESTD" {
-		t.Fatalf("guestd entry = %q", seen["sbin/hotbed-guestd"])
+	if seen["etc/hostname"] != "deb\n" {
+		t.Fatalf("hostname = %q, want the base image's", seen["etc/hostname"])
 	}
-	if !strings.Contains(seen["etc/resolv.conf"], "nameserver 1.1.1.1") {
-		t.Fatalf("resolv.conf = %q", seen["etc/resolv.conf"])
+	if seen["etc/resolv.conf"] != "nameserver 1.1.1.1\n" {
+		t.Fatalf("resolv.conf = %q, want only the configured nameserver", seen["etc/resolv.conf"])
 	}
 	if _, ok := seen["work/"]; !ok {
 		t.Fatalf("missing work/ directory in tar")
 	}
-}
-
-func TestInjectGuestdTarUsrmergeSymlink(t *testing.T) {
-	var baseBuf bytes.Buffer
-	tw := tar.NewWriter(&baseBuf)
-	_ = tw.WriteHeader(&tar.Header{Name: "usr/", Typeflag: tar.TypeDir, Mode: 0o755})
-	_ = tw.WriteHeader(&tar.Header{Name: "usr/sbin/", Typeflag: tar.TypeDir, Mode: 0o755})
-	_ = tw.WriteHeader(&tar.Header{Name: "sbin", Typeflag: tar.TypeSymlink, Linkname: "usr/sbin", Mode: 0o777})
-	_ = tw.Close()
-
-	guestdBin := filepath.Join(t.TempDir(), "hotbed-guestd")
-	if err := os.WriteFile(guestdBin, []byte("ELF-USRMERGE"), 0o755); err != nil {
-		t.Fatal(err)
+	if n := strings.Count(strings.Join(order, "\n"), "etc/resolv.conf"); n != 1 {
+		t.Fatalf("resolv.conf appears %d times in %q, want once", n, order)
 	}
-	outTar := filepath.Join(t.TempDir(), "out.tar")
-	if err := InjectGuestdTar(&baseBuf, guestdBin, []string{"1.1.1.1"}, outTar); err != nil {
-		t.Fatalf("InjectGuestdTar: %v", err)
-	}
-	f, err := os.Open(outTar)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	tr := tar.NewReader(f)
-	seen := map[string]string{}
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
+	for name := range seen {
+		if strings.Contains(name, "hotbed-guestd") {
+			t.Fatalf("guestd entry %q in guest tar: guestd boots from the tools disk", name)
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, _ := io.ReadAll(tr)
-		seen[hdr.Name] = string(b)
-	}
-	if seen["usr/sbin/hotbed-guestd"] != "ELF-USRMERGE" {
-		t.Fatalf("expected usr/sbin/hotbed-guestd in usrmerge tar, got keys: %v", seen)
-	}
-	if _, bad := seen["sbin/hotbed-guestd"]; bad {
-		t.Fatalf("must not emit sbin/hotbed-guestd under symlinked sbin")
 	}
 }
 
-func TestInjectGuestdTarWithoutGuestdOmitsBinary(t *testing.T) {
-	var baseBuf bytes.Buffer
-	tw := tar.NewWriter(&baseBuf)
-	_ = tw.WriteHeader(&tar.Header{Name: "sbin/hotbed-guestd", Typeflag: tar.TypeReg, Mode: 0o755, Size: 5})
-	_, _ = tw.Write([]byte("stale"))
-	_ = tw.WriteHeader(&tar.Header{Name: "etc/hostname", Typeflag: tar.TypeReg, Mode: 0o644, Size: 4})
-	_, _ = tw.Write([]byte("deb\n"))
-	_ = tw.Close()
-
-	outTar := filepath.Join(t.TempDir(), "out.tar")
-	if err := InjectGuestdTar(&baseBuf, "", []string{"1.1.1.1"}, outTar); err != nil {
-		t.Fatalf("InjectGuestdTar(empty guestd): %v", err)
-	}
-	f, err := os.Open(outTar)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	tr := tar.NewReader(f)
-	seen := map[string]string{}
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, _ := io.ReadAll(tr)
-		seen[hdr.Name] = string(b)
-	}
-	if _, ok := seen["sbin/hotbed-guestd"]; ok {
-		t.Fatalf("empty guestdBin must omit sbin/hotbed-guestd")
-	}
-	if !strings.Contains(seen["etc/resolv.conf"], "nameserver 1.1.1.1") {
-		t.Fatalf("resolv.conf = %q", seen["etc/resolv.conf"])
-	}
-	if _, ok := seen["work/"]; !ok {
-		t.Fatalf("missing work/ directory in tar")
-	}
-}
-
-func TestParseSystemdProcessStatus(t *testing.T) {
+func TestProcessStatusFromUnitState(t *testing.T) {
 	cases := []struct {
 		name string
-		raw  string
+		st   unit.State
 		want ProcessStatus
 	}{
 		{
 			name: "oom-kill by systemd-oomd",
-			raw:  "LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=oom-kill\nExecMainCode=2\nExecMainStatus=9\n",
+			st:   unit.State{Loaded: true, Exited: true, Signal: 9, Result: "oom-kill", OOMKilled: true},
 			want: ProcessStatus{Loaded: true, Exited: true, Signal: 9, Result: "oom-kill", OOMKilled: true},
 		},
 		{
 			name: "normal exit 158",
-			raw:  "LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=158\n",
+			st:   unit.State{Loaded: true, Exited: true, ExitCode: 158, Result: "exit-code"},
 			want: ProcessStatus{Loaded: true, Exited: true, ExitCode: 158, Result: "exit-code"},
 		},
 		{
-			name: "signal kill non-oom",
-			raw:  "LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=2\nExecMainStatus=15\n",
-			want: ProcessStatus{Loaded: true, Exited: true, Signal: 15, Result: "signal"},
-		},
-		{
 			name: "running",
-			raw:  "LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainCode=0\nExecMainStatus=0\n",
+			st:   unit.State{Loaded: true, Running: true, Result: "success", PID: 42, Cgroup: "/hotbed.slice/x.service"},
 			want: ProcessStatus{Loaded: true, Running: true, Result: "success"},
 		},
 		{
 			name: "deactivating",
-			raw:  "LoadState=loaded\nActiveState=deactivating\nSubState=stop-sigterm\nResult=success\nExecMainCode=0\nExecMainStatus=0\n",
+			st:   unit.State{Loaded: true, Deactivating: true, Result: "success"},
 			want: ProcessStatus{Loaded: true, Deactivating: true, Result: "success"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseSystemdProcessStatus(tc.raw)
-			if got != tc.want {
-				t.Fatalf("parseSystemdProcessStatus = %+v, want %+v", got, tc.want)
+			if got := processStatus(tc.st); got != tc.want {
+				t.Fatalf("processStatus = %+v, want %+v", got, tc.want)
 			}
 		})
 	}
 	if !(ProcessStatus{Deactivating: true}).Alive() {
 		t.Fatal("Deactivating status must report Alive() == true")
-	}
-}
-
-func TestParseVMListAndSliceUnits(t *testing.T) {
-	listOut := strings.Join([]string{
-		"hotbed-vm-2x6xdsk5.service loaded active running Firecracker",
-		"hotbed-vm-base-cladefs-vm-b470a516.service loaded active running Firecracker",
-		"hotbed-vm-failed.service loaded failed failed Firecracker",
-		"other.service loaded active running Other",
-	}, "\n")
-	cands := parseVMListUnits(listOut)
-	wantCands := []string{
-		"hotbed-vm-2x6xdsk5.service",
-		"hotbed-vm-base-cladefs-vm-b470a516.service",
-		"hotbed-vm-failed.service",
-	}
-	if !slices.Equal(cands, wantCands) {
-		t.Fatalf("parseVMListUnits = %q, want %q", cands, wantCands)
-	}
-
-	showOut := strings.Join([]string{
-		"Id=hotbed-vm-2x6xdsk5.service",
-		"Slice=user-1000-hotbed.slice",
-		"LoadState=loaded",
-		"ActiveState=active",
-		"",
-		"Id=hotbed-vm-base-cladefs-vm-b470a516.service",
-		"Slice=user-1000-hotbed.slice",
-		"LoadState=loaded",
-		"ActiveState=deactivating",
-		"",
-		"Id=hotbed-vm-other-slice.service",
-		"Slice=hotbed.slice",
-		"LoadState=loaded",
-		"ActiveState=active",
-		"",
-		"Id=hotbed-vm-inactive.service",
-		"Slice=user-1000-hotbed.slice",
-		"LoadState=loaded",
-		"ActiveState=inactive",
-	}, "\n")
-	got := parseVMSliceUnits(showOut, "user-1000-hotbed.slice")
-	want := []string{"hotbed-vm-2x6xdsk5", "hotbed-vm-base-cladefs-vm-b470a516"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("parseVMSliceUnits = %q, want %q", got, want)
 	}
 }
 

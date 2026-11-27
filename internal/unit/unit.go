@@ -324,8 +324,11 @@ func appendLimits(args []string, s Spec) []string {
 type State struct {
 	Loaded  bool
 	Running bool // the command has not exited
-	Frozen  bool
-	Exited  bool
+	// Deactivating is set while systemd tears the unit down: its processes
+	// may still be executing, though it is neither Running nor Exited.
+	Deactivating bool
+	Frozen       bool
+	Exited       bool
 	// ExitCode is the command's status when it exited normally; Signal is
 	// the signal that ended it, if one did.
 	ExitCode int
@@ -505,6 +508,7 @@ func stateFromKV(kv map[string]string) State {
 	s.Loaded = true
 	sub := kv["SubState"]
 	s.Running = kv["ActiveState"] == "active" && sub == "running" || kv["ActiveState"] == "activating"
+	s.Deactivating = kv["ActiveState"] == "deactivating"
 	s.Exited = sub == "exited" || sub == "failed" || sub == "dead" || kv["ActiveState"] == "failed" || kv["ActiveState"] == "inactive"
 	s.Frozen = kv["FreezerState"] == "frozen" || kv["FreezerState"] == "freezing"
 	s.Result = kv["Result"]
@@ -615,12 +619,18 @@ func statField(stat, key string) (int64, error) {
 // Units in other slices — notably hotbed-worker.service in system.slice — are
 // excluded.
 func List(ctx context.Context, slice string) ([]string, error) {
-	slice = cmp.Or(slice, DefaultSlice)
-	out, err := run(ctx, "systemctl", "list-units", "--type=service", "--no-legend", "--plain", "--full", "--", "hotbed-*.service")
+	return ListSliceUnits(ctx, "hotbed-", cmp.Or(slice, DefaultSlice))
+}
+
+// ListSliceUnits returns the sorted names (without ".service") of all loaded,
+// non-inactive service units whose name starts with prefix and that run in
+// slice (any slice when slice is empty).
+func ListSliceUnits(ctx context.Context, prefix, slice string) ([]string, error) {
+	out, err := run(ctx, "systemctl", "list-units", "--type=service", "--no-legend", "--plain", "--full", "--", prefix+"*.service")
 	if err != nil {
 		return nil, err
 	}
-	candidates := parseListUnits(out)
+	candidates := parseListUnits(out, prefix)
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -631,11 +641,11 @@ func List(ctx context.Context, slice string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseSliceUnits(showOut, slice), nil
+	return parseSliceUnits(showOut, prefix, slice), nil
 }
 
-// parseListUnits extracts hotbed-*.service unit names from `systemctl list-units --no-legend --plain --full`.
-func parseListUnits(out string) []string {
+// parseListUnits extracts prefix*.service unit names from `systemctl list-units --no-legend --plain --full`.
+func parseListUnits(out, prefix string) []string {
 	var names []string
 	seen := make(map[string]bool)
 	for _, raw := range strings.Split(out, "\n") {
@@ -643,7 +653,7 @@ func parseListUnits(out string) []string {
 			if !strings.HasSuffix(f, ".service") {
 				continue
 			}
-			if strings.HasPrefix(f, "hotbed-") && !seen[f] {
+			if strings.HasPrefix(f, prefix) && !seen[f] {
 				seen[f] = true
 				names = append(names, f)
 			}
@@ -654,9 +664,9 @@ func parseListUnits(out string) []string {
 }
 
 // parseSliceUnits filters `systemctl show --property=Id,Slice,LoadState,ActiveState`
-// blocks to loaded, non-inactive hotbed-* services belonging to slice, returning
-// sorted unit names without the ".service" suffix.
-func parseSliceUnits(out, slice string) []string {
+// blocks to loaded, non-inactive prefix* services belonging to slice (any slice
+// when empty), returning sorted unit names without the ".service" suffix.
+func parseSliceUnits(out, prefix, slice string) []string {
 	var res []string
 	seen := make(map[string]bool)
 	var block []string
@@ -671,11 +681,14 @@ func parseSliceUnits(out, slice string) []string {
 			}
 		}
 		block = block[:0]
-		if kv["LoadState"] != "loaded" || kv["Slice"] != slice || kv["ActiveState"] == "inactive" {
+		if kv["LoadState"] != "loaded" || kv["ActiveState"] == "inactive" {
+			return
+		}
+		if slice != "" && kv["Slice"] != slice {
 			return
 		}
 		id := kv["Id"]
-		if !strings.HasPrefix(id, "hotbed-") || !strings.HasSuffix(id, ".service") {
+		if !strings.HasPrefix(id, prefix) || !strings.HasSuffix(id, ".service") {
 			return
 		}
 		name := strings.TrimSuffix(id, ".service")
@@ -703,10 +716,26 @@ func Stop(ctx context.Context, name string) error {
 		return err
 	}
 	// A unit that failed stays loaded until its failure is reset.
-	if _, err := run(ctx, "systemctl", "reset-failed", name+".service"); err != nil && !strings.Contains(err.Error(), "not loaded") {
+	if err := ResetFailed(ctx, name); err != nil && !strings.Contains(err.Error(), "not loaded") {
 		return err
 	}
 	return nil
+}
+
+// Kill sends SIGKILL to every process of the unit. A unit that is not loaded
+// or not active has nothing to kill and is not an error.
+func Kill(ctx context.Context, name string) error {
+	_, err := run(ctx, "systemctl", "kill", "--kill-who=all", "--signal=SIGKILL", name+".service")
+	if err != nil && (strings.Contains(err.Error(), "not loaded") || strings.Contains(err.Error(), "not active")) {
+		return nil
+	}
+	return err
+}
+
+// ResetFailed forgets a failed unit so systemd unloads it.
+func ResetFailed(ctx context.Context, name string) error {
+	_, err := run(ctx, "systemctl", "reset-failed", name+".service")
+	return err
 }
 
 // StartSlice starts a slice, which stays when its last unit ends, until

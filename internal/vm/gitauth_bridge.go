@@ -2,7 +2,6 @@ package vm
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/user"
@@ -83,23 +82,7 @@ func (b *gitAuthBridge) proxy(src net.Conn) {
 	}
 	defer dst.Close()
 
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(dst, src)
-		if uc, ok := dst.(*net.UnixConn); ok {
-			_ = uc.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(src, dst)
-		if uc, ok := src.(*net.UnixConn); ok {
-			_ = uc.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
+	guestd.BridgeConns(src, dst)
 }
 
 func (b *gitAuthBridge) Close() error {
