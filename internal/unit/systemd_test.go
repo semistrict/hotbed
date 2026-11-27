@@ -359,8 +359,18 @@ func TestStartSliceAndSetProperties(t *testing.T) {
 	if err := SetProperties(t.Context(), slice, "AllowedCPUs=", "IOWriteBandwidthMax="); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(dir + "/cpuset.cpus"); strings.TrimSpace(string(b)) != "" {
-		t.Errorf("cpuset.cpus after the reset = %q, want none", b)
+	// systemd applies property resets to cgroupfs asynchronously; allow a brief
+	// settle window before asserting cpuset.cpus is cleared.
+	var cpusetAfter []byte
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		cpusetAfter, _ = os.ReadFile(dir + "/cpuset.cpus")
+		if strings.TrimSpace(string(cpusetAfter)) == "" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if strings.TrimSpace(string(cpusetAfter)) != "" {
+		t.Errorf("cpuset.cpus after the reset = %q, want none", cpusetAfter)
 	}
 	if b, _ := os.ReadFile(dir + "/io.max"); strings.Contains(string(b), "wbps=32000000") {
 		t.Errorf("io.max after the reset = %q, want no cap", b)
