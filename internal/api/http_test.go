@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestNewResilientTransportConfiguresHTTP2HealthChecks(t *testing.T) {
@@ -60,12 +59,13 @@ func TestNewResilientStreamClientConfiguresHTTP2PingsWithoutHeaderTimeout(t *tes
 
 func TestResilientTransportResetEscapesWedgedHTTP2Connection(t *testing.T) {
 	var attempts atomic.Int32
+	entered := make(chan string, 1)
 	unblock := make(chan struct{})
-	defer close(unblock)
 
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
 		if n == 1 {
+			entered <- r.RemoteAddr
 			// Simulate a half-open / stalled HTTP/2 stream that never sends headers.
 			select {
 			case <-unblock:
@@ -79,18 +79,27 @@ func TestResilientTransportResetEscapesWedgedHTTP2Connection(t *testing.T) {
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	defer srv.Close()
+	defer close(unblock)
 
 	base := srv.Client().Transport.(*http.Transport)
 	rt := NewResilientTransport(base)
 	rt.cooldown = 0
 	hc := &http.Client{Transport: rt}
 
-	// 1. First request times out on connection 1.
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel1()
-	req1, _ := http.NewRequestWithContext(ctx1, http.MethodGet, srv.URL, nil)
-	if _, err := hc.Do(req1); err == nil {
-		t.Fatal("expected first request to time out")
+	// 1. Wait until the first request actually reaches the server over HTTP/2
+	// before cancelling it, so TLS/HTTP2 handshake latency under -race / load
+	// can never abort req1 before the handler runs and leave req2 hitting n==1.
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	req1Err := make(chan error, 1)
+	go func() {
+		req1, _ := http.NewRequestWithContext(ctx1, http.MethodGet, srv.URL, nil)
+		_, err := hc.Do(req1)
+		req1Err <- err
+	}()
+	addr1 := <-entered
+	cancel1()
+	if err := <-req1Err; err == nil {
+		t.Fatal("expected first request to fail when cancelled")
 	}
 
 	// 2. Reset swaps in a fresh transport pool so retry dials a fresh socket.
@@ -101,16 +110,18 @@ func TestResilientTransportResetEscapesWedgedHTTP2Connection(t *testing.T) {
 		t.Fatalf("Resets() = %d, want 1", got)
 	}
 
-	// 3. Second request succeeds immediately on the fresh pool.
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel2()
-	req2, _ := http.NewRequestWithContext(ctx2, http.MethodGet, srv.URL, nil)
+	// 3. Second request succeeds on a fresh connection, bounded only by t.Context().
+	req2, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
 	resp, err := hc.Do(req2)
 	if err != nil {
 		t.Fatalf("second request after reset failed: %v", err)
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if addr2 := string(body); addr2 == "" || addr2 == addr1 {
+		t.Fatalf("second request reused wedged connection %q (got %q)", addr1, addr2)
 	}
 }
