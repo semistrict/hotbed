@@ -70,6 +70,7 @@ export interface OAuthStatePayload {
 	cliRedirectUri?: string;
 	cliState?: string;
 	cliCodeChallenge?: string;
+	cliDeviceCode?: string;
 	exp: number;
 }
 
@@ -80,6 +81,7 @@ export interface PendingOrgSelectionPayload {
 	cliRedirectUri?: string;
 	cliState?: string;
 	cliCodeChallenge?: string;
+	cliDeviceCode?: string;
 	exp: number;
 }
 
@@ -97,6 +99,17 @@ export interface CliHandoffPayload {
 	exp: number;
 }
 
+export interface CliDevicePayload {
+	accessToken: string;
+	refreshToken: string;
+	expiresAt: number;
+	user: WorkOSUser;
+	organizationId: string;
+	organizationName: string;
+	role: string;
+	exp: number;
+}
+
 export interface PendingSignupPayload {
 	user: WorkOSUser;
 	accessToken: string;
@@ -108,6 +121,7 @@ export interface PendingSignupPayload {
 	cliRedirectUri?: string;
 	cliState?: string;
 	cliCodeChallenge?: string;
+	cliDeviceCode?: string;
 	exp: number;
 }
 
@@ -116,7 +130,8 @@ export type SealPurpose =
 	| "oauth-state"
 	| "pending-org"
 	| "pending-signup"
-	| "cli-handoff";
+	| "cli-handoff"
+	| "cli-device";
 
 export interface VerifiedWorkOSClaims {
 	sub: string;
@@ -854,97 +869,6 @@ export async function authenticateWithRefreshToken(
 	pruneRecentRefreshes(doneAt);
 	recentRefreshes.set(key, { result, expiresAt: doneAt + RECENT_REFRESH_TTL_MS });
 	return result;
-}
-
-export interface DeviceAuthStart {
-	deviceCode: string;
-	userCode: string;
-	verificationUri: string;
-	verificationUriComplete: string;
-	expiresIn: number;
-	interval: number;
-}
-
-export async function startDeviceAuthorization(env: WorkOSEnv): Promise<DeviceAuthStart> {
-	const res = await fetch(`${workosApiBase(env)}/user_management/authorize/device`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ client_id: workosClientId(env) }),
-	});
-	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-	if (!res.ok) {
-		const msg =
-			(typeof data.error_description === "string" && data.error_description) ||
-			(typeof data.message === "string" && data.message) ||
-			`WorkOS device authorization failed (HTTP ${res.status})`;
-		throw hotbedError(ErrorCode.Internal, msg);
-	}
-	const strField = (v: unknown): string => (typeof v === "string" ? v : "");
-	return {
-		deviceCode: strField(data.device_code),
-		userCode: strField(data.user_code),
-		verificationUri: strField(data.verification_uri),
-		verificationUriComplete:
-			strField(data.verification_uri_complete) || strField(data.verification_uri),
-		expiresIn: Number(data.expires_in ?? 300),
-		interval: Number(data.interval ?? 5),
-	};
-}
-
-export type DevicePollResult =
-	| { status: "pending" }
-	| { status: "slow_down" }
-	| {
-			status: "complete";
-			auth: Extract<AuthenticateResult, { kind: "authenticated" }>;
-	  };
-
-export async function pollDeviceToken(
-	env: WorkOSEnv,
-	deviceCode: string,
-): Promise<DevicePollResult> {
-	const res = await fetch(`${workosApiBase(env)}/user_management/authenticate`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			client_id: workosClientId(env),
-			client_secret: workosApiKey(env),
-			grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-			device_code: deviceCode,
-		}),
-	});
-	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-	if (!res.ok) {
-		const errCode =
-			typeof data.error === "string" ? data.error : typeof data.code === "string" ? data.code : "";
-		if (errCode === "authorization_pending") {
-			return { status: "pending" };
-		}
-		if (errCode === "slow_down") {
-			return { status: "slow_down" };
-		}
-		const msg =
-			(typeof data.error_description === "string" && data.error_description) ||
-			(typeof data.message === "string" && data.message) ||
-			errCode ||
-			`WorkOS device authentication failed (HTTP ${res.status})`;
-		throw hotbedError(ErrorCode.NotAuthorized, msg);
-	}
-	const auth = parseAuthSuccess(
-		data as {
-			user: RawWorkOSUser;
-			organization_id?: string | null;
-			access_token: string;
-			refresh_token: string;
-			authentication_method?: string | null;
-			oauth_tokens?: { provider?: string | null } | null;
-		},
-	);
-	assertGoogleAuthMethod(auth.authenticationMethod);
-	return {
-		status: "complete",
-		auth,
-	};
 }
 
 async function workosAdminFetch<T>(env: WorkOSEnv, path: string, init?: RequestInit): Promise<T> {

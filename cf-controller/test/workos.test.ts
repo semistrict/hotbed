@@ -1956,7 +1956,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		).rejects.toThrow("organization mismatch: token belongs to org_seam, not org_other");
 	});
 
-	it("runs CLI device-code login and honors optional organizationId on poll", async () => {
+	it("runs first-party on-domain CLI device-code login and honors optional organizationId on poll", async () => {
 		const testEnv = makeWorkOSEnv();
 		const nowSec = Math.floor(Date.now() / 1000);
 		const jwtInitial = await signJwt({
@@ -1973,36 +1973,11 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			role: "member",
 			exp: nowSec + 3600,
 		});
-		let pollCount = 0;
 		mockHandlers.push((url, init) => {
-			if (url.pathname === "/user_management/authorize/device") {
-				return Response.json({
-					device_code: "dev_code_xyz",
-					user_code: "ABCD-1234",
-					verification_uri: "https://auth.test/device",
-					verification_uri_complete: "https://auth.test/device?user_code=ABCD-1234",
-					expires_in: 300,
-					interval: 5,
-				});
-			}
 			if (url.pathname === "/user_management/authenticate") {
 				const raw = typeof init?.body === "string" ? init.body : "";
-				let grant = "";
-				let orgId = "";
-				if (raw.startsWith("{")) {
-					const parsed = JSON.parse(raw) as Record<string, string>;
-					grant = parsed.grant_type ?? "";
-					orgId = parsed.organization_id ?? "";
-				} else {
-					const params = new URLSearchParams(raw);
-					grant = params.get("grant_type") ?? "";
-					orgId = params.get("organization_id") ?? "";
-				}
-				if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
-					pollCount++;
-					if (pollCount === 1) {
-						return Response.json({ error: "authorization_pending" }, { status: 400 });
-					}
+				const parsed = JSON.parse(raw) as Record<string, string>;
+				if (parsed.grant_type === "authorization_code") {
 					return Response.json({
 						access_token: jwtInitial,
 						refresh_token: "rt_dev_1",
@@ -2016,7 +1991,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 						},
 					});
 				}
-				if (grant === "refresh_token" && orgId === "org_beta") {
+				if (parsed.grant_type === "refresh_token" && parsed.organization_id === "org_beta") {
 					return Response.json({
 						access_token: jwtBeta,
 						refresh_token: "rt_dev_2",
@@ -2060,6 +2035,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			return null;
 		});
 
+		// 1. Start device login -> returns URLs on hotbed.semistrict.com (never external authkit.app)
 		const startRes = await callWorker(
 			testEnv,
 			"https://hotbed.semistrict.com/auth/cli/device/start",
@@ -2070,17 +2046,27 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			},
 		);
 		expect(startRes.status).toBe(200);
-		const started = (await startRes.json()) as { deviceCode: string; userCode: string };
-		expect(started.deviceCode).toBe("dev_code_xyz");
-		expect(started.userCode).toBe("ABCD-1234");
+		const started = (await startRes.json()) as {
+			deviceCode: string;
+			userCode: string;
+			verificationUri: string;
+			verificationUriComplete: string;
+		};
+		expect(started.deviceCode).toBeTruthy();
+		expect(started.userCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+		expect(started.verificationUri).toBe("https://hotbed.semistrict.com/auth/device");
+		expect(started.verificationUriComplete).toBe(
+			`https://hotbed.semistrict.com/auth/device?code=${started.userCode}`,
+		);
 
+		// 2. Poll before approval -> pending; bad orgId -> 400
 		const badOrgRes = await callWorker(
 			testEnv,
 			"https://hotbed.semistrict.com/auth/cli/device/poll",
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ deviceCode: "dev_code_xyz", organizationId: "bad org!" }),
+				body: JSON.stringify({ deviceCode: started.deviceCode, organizationId: "bad org!" }),
 			},
 		);
 		expect(badOrgRes.status).toBe(400);
@@ -2091,19 +2077,63 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ deviceCode: "dev_code_xyz", organizationId: "org_beta" }),
+				body: JSON.stringify({ deviceCode: started.deviceCode, organizationId: "org_beta" }),
 			},
 		);
 		expect(pendingRes.status).toBe(200);
 		expect(await pendingRes.json()).toEqual({ status: "pending" });
 
+		// 3. Browser opens /auth/device?code=... -> shows on-domain confirmation page
+		const pageRes = await callWorker(testEnv, started.verificationUriComplete);
+		expect(pageRes.status).toBe(200);
+		expect(await pageRes.text()).toContain(started.userCode);
+
+		// Wrong code is rejected before OAuth redirect
+		const badCodeRes = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/device", {
+			method: "POST",
+			headers: {
+				Origin: "https://hotbed.semistrict.com",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: "code=ZZZZ-9999",
+		});
+		expect(badCodeRes.status).toBe(400);
+
+		// 4. Browser submits valid code -> redirects to WorkOS Google OAuth
+		const submitRes = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/device", {
+			method: "POST",
+			headers: {
+				Origin: "https://hotbed.semistrict.com",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: `code=${encodeURIComponent(started.userCode)}`,
+		});
+		expect(submitRes.status).toBe(302);
+		const oauthLoc = new URL(submitRes.headers.get("Location")!);
+		expect(oauthLoc.origin).toBe(WORKOS_ORIGIN);
+		expect(oauthLoc.searchParams.get("provider")).toBe("GoogleOAuth");
+		const stateCookie = extractCookies(submitRes)
+			.map((c) => c.split(";")[0])
+			.join("; ");
+
+		// 5. WorkOS redirects back to /auth/callback -> approves device code, renders completion page, does NOT set browser session cookie
+		const cbRes = await callWorker(
+			testEnv,
+			`https://hotbed.semistrict.com/auth/callback?code=wos_code_1&state=${encodeURIComponent(oauthLoc.searchParams.get("state")!)}`,
+			{ headers: { Cookie: stateCookie } },
+		);
+		expect(cbRes.status).toBe(200);
+		expect(await cbRes.text()).toContain("CLI signed in");
+		expect(extractCookies(cbRes).some((c) => c.startsWith("hotbed_wos_session="))).toBe(false);
+
+		// 6. CLI polls -> completes with requested organizationId (org_beta)
 		const doneRes = await callWorker(
 			testEnv,
 			"https://hotbed.semistrict.com/auth/cli/device/poll",
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ deviceCode: "dev_code_xyz", organizationId: "org_beta" }),
+				body: JSON.stringify({ deviceCode: started.deviceCode, organizationId: "org_beta" }),
 			},
 		);
 		expect(doneRes.status).toBe(200);
@@ -2115,5 +2145,17 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		expect(done.status).toBe("complete");
 		expect(done.accessToken).toBe(jwtBeta);
 		expect(done.organization?.id).toBe("org_beta");
+
+		// 7. Replaying poll after consumption returns 401
+		const replayRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/cli/device/poll",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ deviceCode: started.deviceCode }),
+			},
+		);
+		expect(replayRes.status).toBe(401);
 	});
 });

@@ -512,6 +512,126 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		return { ok: true };
 	}
 
+	startCliDeviceAuth(deviceCodeRaw: string, userCodeRaw: string, expRaw: number): { ok: true } {
+		const deviceCode = deviceCodeRaw.trim();
+		const userCode = userCodeRaw.trim().toUpperCase();
+		const now = this.ctrl.now();
+		const exp = typeof expRaw === "number" && Number.isFinite(expRaw) ? expRaw : now + 600_000;
+		this.store.meta.prune(now);
+		this.store.meta.set(
+			`cli_device:${deviceCode}`,
+			JSON.stringify({ userCode, exp, status: "pending" }),
+		);
+		this.store.meta.set(`cli_device_code:${userCode}`, deviceCode);
+		return { ok: true };
+	}
+
+	checkCliDeviceCode(userCodeRaw: string): { ok: true } | { ok: false; message: string } {
+		const userCode = userCodeRaw.trim().toUpperCase();
+		const now = this.ctrl.now();
+		if (!userCode) {
+			return { ok: false, message: "Enter the code shown in your terminal." };
+		}
+		const deviceCode = this.store.meta.get(`cli_device_code:${userCode}`);
+		if (!deviceCode) {
+			return { ok: false, message: "Invalid or expired code. Run `hotbed login` again." };
+		}
+		const raw = this.store.meta.get(`cli_device:${deviceCode}`);
+		if (!raw) {
+			this.store.meta.delete(`cli_device_code:${userCode}`);
+			return { ok: false, message: "Invalid or expired code. Run `hotbed login` again." };
+		}
+		try {
+			const entry = JSON.parse(raw) as { exp?: number; status?: string };
+			if (typeof entry.exp !== "number" || entry.exp < now || entry.status !== "pending") {
+				this.store.meta.delete(`cli_device:${deviceCode}`);
+				this.store.meta.delete(`cli_device_code:${userCode}`);
+				return { ok: false, message: "That code has expired. Run `hotbed login` again." };
+			}
+		} catch {
+			return { ok: false, message: "Invalid or expired code. Run `hotbed login` again." };
+		}
+		return { ok: true };
+	}
+
+	approveCliDeviceAuth(
+		userCodeRaw: string,
+		sealedPayload: string,
+	): { ok: true } | { ok: false; message: string } {
+		const userCode = userCodeRaw.trim().toUpperCase();
+		const now = this.ctrl.now();
+		const deviceCode = this.store.meta.get(`cli_device_code:${userCode}`);
+		if (!deviceCode) {
+			return { ok: false, message: "Invalid or expired code. Run `hotbed login` again." };
+		}
+		const raw = this.store.meta.get(`cli_device:${deviceCode}`);
+		if (!raw) {
+			this.store.meta.delete(`cli_device_code:${userCode}`);
+			return { ok: false, message: "Invalid or expired code. Run `hotbed login` again." };
+		}
+		let entry: { userCode: string; exp: number; status: string };
+		try {
+			entry = JSON.parse(raw) as { userCode: string; exp: number; status: string };
+		} catch {
+			return { ok: false, message: "Invalid or expired code. Run `hotbed login` again." };
+		}
+		if (entry.exp < now || entry.status !== "pending") {
+			this.store.meta.delete(`cli_device:${deviceCode}`);
+			this.store.meta.delete(`cli_device_code:${userCode}`);
+			return { ok: false, message: "That code has expired. Run `hotbed login` again." };
+		}
+		this.store.meta.set(
+			`cli_device:${deviceCode}`,
+			JSON.stringify({
+				userCode,
+				exp: Math.max(entry.exp, now + 120_000),
+				status: "complete",
+				sealedPayload,
+			}),
+		);
+		this.store.meta.delete(`cli_device_code:${userCode}`);
+		return { ok: true };
+	}
+
+	pollCliDeviceAuth(deviceCodeRaw: string): {
+		status: "pending" | "complete" | "expired";
+		sealedPayload?: string;
+	} {
+		const deviceCode = deviceCodeRaw.trim();
+		const now = this.ctrl.now();
+		if (!deviceCode) {
+			return { status: "expired" };
+		}
+		const key = `cli_device:${deviceCode}`;
+		const raw = this.store.meta.get(key);
+		if (!raw) {
+			return { status: "expired" };
+		}
+		let entry: { userCode?: string; exp?: number; status?: string; sealedPayload?: string };
+		try {
+			entry = JSON.parse(raw) as {
+				userCode?: string;
+				exp?: number;
+				status?: string;
+				sealedPayload?: string;
+			};
+		} catch {
+			this.store.meta.delete(key);
+			return { status: "expired" };
+		}
+		if (typeof entry.exp !== "number" || entry.exp < now) {
+			this.store.meta.delete(key);
+			if (entry.userCode) this.store.meta.delete(`cli_device_code:${entry.userCode}`);
+			return { status: "expired" };
+		}
+		if (entry.status === "complete" && entry.sealedPayload) {
+			this.store.meta.delete(key);
+			if (entry.userCode) this.store.meta.delete(`cli_device_code:${entry.userCode}`);
+			return { status: "complete", sealedPayload: entry.sealedPayload };
+		}
+		return { status: "pending" };
+	}
+
 	async revokeUserApiTokens(params: {
 		caller: CallerIdentity;
 		orgId: string;

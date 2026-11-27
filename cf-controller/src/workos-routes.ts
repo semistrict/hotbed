@@ -23,7 +23,13 @@ import type { ControllerEnv } from "./controller-do.ts";
 import { decodePathSegment } from "./encoding.ts";
 import { ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
 import { randomHex } from "./ids.ts";
-import { renderLoginPage, renderOrgPickerPage, renderSignupCodePage } from "./pages.ts";
+import {
+	renderDeviceCodePage,
+	renderDeviceCompletePage,
+	renderLoginPage,
+	renderOrgPickerPage,
+	renderSignupCodePage,
+} from "./pages.ts";
 import {
 	authenticateWithCode,
 	authenticateWithOrgSelection,
@@ -52,13 +58,11 @@ import {
 	makeWorkOSSessionCookie,
 	parseOrgScopedToken,
 	pkceS256,
-	pollDeviceToken,
 	randomBase64Url,
 	removeOrganizationMembership,
 	revokeOrganizationInvitation,
 	sealPayload,
 	sendOrganizationInvitation,
-	startDeviceAuthorization,
 	unsealPayload,
 	verifyWorkOSAccessToken,
 	WORKOS_OAUTH_STATE_COOKIE,
@@ -66,6 +70,7 @@ import {
 	WORKOS_PENDING_SIGNUP_COOKIE,
 	WORKOS_SESSION_COOKIE,
 	workosClientId,
+	type CliDevicePayload,
 	type CliHandoffPayload,
 	type OAuthStatePayload,
 	type PendingOrgSelectionPayload,
@@ -318,6 +323,27 @@ async function redeemSignupCode(
 	return { ok: false, message: res.message || "Invalid sign-up code." };
 }
 
+const DEVICE_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ23456789";
+
+function generateUserCode(): string {
+	const bytes = new Uint8Array(8);
+	crypto.getRandomValues(bytes);
+	let out = "";
+	for (let i = 0; i < 8; i++) {
+		if (i === 4) out += "-";
+		out += DEVICE_CODE_ALPHABET[bytes[i] % DEVICE_CODE_ALPHABET.length];
+	}
+	return out;
+}
+
+function normalizeUserCode(raw: string): string {
+	const clean = raw.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+	if (clean.length === 8) {
+		return `${clean.slice(0, 4)}-${clean.slice(4)}`;
+	}
+	return raw.trim().toUpperCase();
+}
+
 async function finalizeWorkOSLogin(
 	request: Request,
 	url: URL,
@@ -336,6 +362,7 @@ async function finalizeWorkOSLogin(
 		cliRedirectUri?: string;
 		cliState?: string;
 		cliCodeChallenge?: string;
+		cliDeviceCode?: string;
 	},
 	clearCookies: string[] = [],
 	prefetchedOrgs?: WorkOSOrganizationSummary[],
@@ -392,6 +419,40 @@ async function finalizeWorkOSLogin(
 	};
 	const headers = new Headers();
 	for (const c of clearCookies) headers.append("Set-Cookie", c);
+
+	// First-party CLI device-code handoff (initiated via /auth/device on this controller's own domain).
+	// Do NOT also set hotbed_wos_session on the browser with the same single-use refresh token,
+	// or the first refresh from either client invalidates the other.
+	if (flow.cliDeviceCode) {
+		const payload: CliDevicePayload = {
+			accessToken: session.accessToken,
+			refreshToken: session.refreshToken,
+			expiresAt: session.expiresAt,
+			user: active.user,
+			organizationId: session.organizationId,
+			organizationName: session.organizationName,
+			role: session.role,
+			exp: Date.now() + 10 * 60_000,
+		};
+		const sealedDevice = await sealPayload(env, "cli-device", payload);
+		const approved = await env.CONTROLLER.getByName(
+			defaultDoName(request, url, env),
+		).approveCliDeviceAuth(flow.cliDeviceCode, sealedDevice);
+		headers.set("Content-Type", "text/html; charset=utf-8");
+		if (!approved.ok) {
+			return new Response(
+				renderDeviceCodePage({ code: flow.cliDeviceCode, error: approved.message }),
+				{ status: 400, headers },
+			);
+		}
+		return new Response(
+			renderDeviceCompletePage({
+				email: session.email,
+				organizationName: session.organizationName,
+			}),
+			{ status: 200, headers },
+		);
+	}
 
 	// CLI loopback handoff (if initiated by `hotbed login` via /auth/cli/authorize).
 	// Do NOT also set hotbed_wos_session on the browser with the same single-use refresh token,
@@ -783,6 +844,7 @@ export async function handleAuthRoute(
 					cliRedirectUri: savedState.cliRedirectUri,
 					cliState: savedState.cliState,
 					cliCodeChallenge: savedState.cliCodeChallenge,
+					cliDeviceCode: savedState.cliDeviceCode,
 					exp: Date.now() + 10 * 60_000,
 				};
 				const sealedPending = await sealPayload(env, "pending-org", pending);
@@ -824,6 +886,7 @@ export async function handleAuthRoute(
 					cliRedirectUri: savedState.cliRedirectUri,
 					cliState: savedState.cliState,
 					cliCodeChallenge: savedState.cliCodeChallenge,
+					cliDeviceCode: savedState.cliDeviceCode,
 					exp: Date.now() + 10 * 60_000,
 				};
 				const sealedSignup = await sealPayload(env, "pending-signup", pendingSignup);
@@ -847,6 +910,7 @@ export async function handleAuthRoute(
 					cliRedirectUri: savedState.cliRedirectUri,
 					cliState: savedState.cliState,
 					cliCodeChallenge: savedState.cliCodeChallenge,
+					cliDeviceCode: savedState.cliDeviceCode,
 				},
 				[clearStateCookie],
 				orgs,
@@ -959,6 +1023,7 @@ export async function handleAuthRoute(
 					cliRedirectUri: pending.cliRedirectUri,
 					cliState: pending.cliState,
 					cliCodeChallenge: pending.cliCodeChallenge,
+					cliDeviceCode: pending.cliDeviceCode,
 				},
 				[clearShortAuthCookie(WORKOS_PENDING_SIGNUP_COOKIE, secure)],
 			);
@@ -1011,6 +1076,7 @@ export async function handleAuthRoute(
 					cliRedirectUri: pending.cliRedirectUri,
 					cliState: pending.cliState,
 					cliCodeChallenge: pending.cliCodeChallenge,
+					cliDeviceCode: pending.cliDeviceCode,
 				},
 				[clearShortAuthCookie(WORKOS_PENDING_ORG_COOKIE, secure)],
 			);
@@ -1208,7 +1274,63 @@ export async function handleAuthRoute(
 		}
 	}
 
-	// 9. POST /auth/cli/device/start & /auth/cli/device/poll — Headless CLI Device Flow
+	// 9. First-party on-domain CLI Device Flow: GET/POST /auth/device, POST /auth/cli/device/start, POST /auth/cli/device/poll
+	if (pathname === "/auth/device") {
+		if (!workosEnabled) {
+			return Response.redirect(new URL("/auth/login", url).toString(), 302);
+		}
+		if (request.method === "GET") {
+			const prefill = normalizeUserCode(
+				url.searchParams.get("code") || url.searchParams.get("user_code") || "",
+			);
+			return new Response(renderDeviceCodePage({ code: prefill }), {
+				status: 200,
+				headers: { "Content-Type": "text/html; charset=utf-8" },
+			});
+		}
+		if (request.method === "POST") {
+			const csrfErr = checkSameOrigin(request);
+			if (csrfErr) {
+				return Response.json({ code: ErrorCode.NotAuthorized, message: csrfErr }, { status: 403 });
+			}
+			const body = await readBodyParams(request);
+			const userCode = normalizeUserCode(body.code || body.user_code || "");
+			const check = await env.CONTROLLER.getByName(
+				defaultDoName(request, url, env),
+			).checkCliDeviceCode(userCode);
+			if (!check.ok) {
+				return new Response(renderDeviceCodePage({ code: userCode, error: check.message }), {
+					status: 400,
+					headers: { "Content-Type": "text/html; charset=utf-8" },
+				});
+			}
+			const state = randomHex(16);
+			const codeVerifier = randomBase64Url(32);
+			const codeChallenge = await pkceS256(codeVerifier);
+			const payload: OAuthStatePayload = {
+				state,
+				codeVerifier,
+				returnTo: "/",
+				cliDeviceCode: userCode,
+				exp: Date.now() + 10 * 60_000,
+			};
+			const sealed = await sealPayload(env, "oauth-state", payload);
+			const authUrl = buildAuthorizeUrl(env, {
+				redirectUri: `${url.origin}/auth/callback`,
+				state,
+				codeChallenge,
+			});
+			return new Response(null, {
+				status: 302,
+				headers: {
+					Location: authUrl,
+					"Set-Cookie": makeShortAuthCookie(WORKOS_OAUTH_STATE_COOKIE, sealed, secure),
+				},
+			});
+		}
+		return new Response("Method Not Allowed", { status: 405 });
+	}
+
 	if (pathname === "/auth/cli/device/start" && request.method === "POST") {
 		if (!workosEnabled) {
 			return Response.json(
@@ -1216,13 +1338,24 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
-		try {
-			const d = await startDeviceAuthorization(env);
-			return Response.json(d);
-		} catch (err) {
-			const he = fromUnknownError(err);
-			return Response.json(he.toJSON(), { status: 502 });
-		}
+		const deviceCode = randomHex(32);
+		const userCode = generateUserCode();
+		const expiresIn = 600;
+		await env.CONTROLLER.getByName(defaultDoName(request, url, env)).startCliDeviceAuth(
+			deviceCode,
+			userCode,
+			Date.now() + expiresIn * 1000,
+		);
+		const verificationUri = `${url.origin}/auth/device`;
+		const verificationUriComplete = `${verificationUri}?code=${encodeURIComponent(userCode)}`;
+		return Response.json({
+			deviceCode,
+			userCode,
+			verificationUri,
+			verificationUriComplete,
+			expiresIn,
+			interval: 2,
+		});
 	}
 
 	if (pathname === "/auth/cli/device/poll" && request.method === "POST") {
@@ -1247,67 +1380,87 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
+		const polled = await env.CONTROLLER.getByName(
+			defaultDoName(request, url, env),
+		).pollCliDeviceAuth(deviceCode);
+		if (polled.status === "expired") {
+			return Response.json(
+				{
+					code: ErrorCode.NotAuthorized,
+					message: "device login code expired; run `hotbed login` again",
+				},
+				{ status: 401 },
+			);
+		}
+		if (polled.status !== "complete" || !polled.sealedPayload) {
+			return Response.json({ status: "pending" });
+		}
+		const decoded = await unsealPayload<CliDevicePayload>(env, "cli-device", polled.sealedPayload);
+		if (!decoded || decoded.exp < Date.now()) {
+			return Response.json(
+				{
+					code: ErrorCode.NotAuthorized,
+					message: "device login code expired; run `hotbed login` again",
+				},
+				{ status: 401 },
+			);
+		}
 		try {
-			const polled = await pollDeviceToken(env, deviceCode);
-			if (polled.status !== "complete") {
-				return Response.json({ status: polled.status });
-			}
-			let active = polled.auth;
+			let active: {
+				user: WorkOSUser;
+				organizationId: string;
+				organizationName: string;
+				accessToken: string;
+				refreshToken: string;
+				role: string;
+				expiresAt: number;
+			} = {
+				user: decoded.user,
+				organizationId: decoded.organizationId,
+				organizationName: decoded.organizationName,
+				accessToken: decoded.accessToken,
+				refreshToken: decoded.refreshToken,
+				role: decoded.role,
+				expiresAt: decoded.expiresAt,
+			};
 			let organizations: WorkOSOrganizationSummary[] = [];
 			try {
 				organizations = await listUserOrganizations(env, active.user.id);
 			} catch {
 				organizations = [];
 			}
-			const existingOrApproved =
-				Boolean(active.organizationId) ||
-				organizations.length > 0 ||
-				(await isUserSignupApproved(request, url, env, active.user.id));
-			if (!existingOrApproved) {
-				const submittedCode = (body.signupCode || body.signup_code || "").trim();
-				if (!submittedCode) {
-					return Response.json(
-						hotbedError(
-							ErrorCode.NotAuthorized,
-							"A valid sign-up code is required for new accounts.",
-						)
-							.withSuggestion("sign in via browser first to enter your sign-up code")
-							.toJSON(),
-						{ status: 403 },
-					);
-				}
-				const redeemed = await redeemSignupCode(request, url, env, {
-					userId: active.user.id,
-					email: active.user.email,
-					code: submittedCode,
-				});
-				if (!redeemed.ok) {
-					return Response.json(
-						{ code: ErrorCode.NotAuthorized, message: redeemed.message },
-						{ status: 403 },
-					);
-				}
-			}
 			const targetOrgId =
 				requestedOrgId ||
 				(!active.organizationId && organizations.length === 1 ? organizations[0].id : "");
 			if (targetOrgId && targetOrgId !== active.organizationId && active.refreshToken) {
 				try {
-					active = await authenticateWithRefreshToken(env, {
+					const refreshed = await authenticateWithRefreshToken(env, {
 						refreshToken: active.refreshToken,
 						organizationId: targetOrgId,
 						ipAddress: clientIp(request),
 						userAgent: clientUa(request),
 					});
+					active = {
+						user: refreshed.user,
+						organizationId: refreshed.organizationId,
+						organizationName:
+							organizations.find((o) => o.id === refreshed.organizationId)?.name ||
+							refreshed.organizationId,
+						accessToken: refreshed.accessToken,
+						refreshToken: refreshed.refreshToken,
+						role: refreshed.role,
+						expiresAt: refreshed.expiresAt,
+					};
 				} catch (err) {
 					if (requestedOrgId) {
 						throw err;
 					}
-					// leave unselected
 				}
 			}
 			const orgName =
-				organizations.find((o) => o.id === active.organizationId)?.name || active.organizationId;
+				active.organizationName ||
+				organizations.find((o) => o.id === active.organizationId)?.name ||
+				active.organizationId;
 			return Response.json({
 				status: "complete",
 				accessToken: active.accessToken,

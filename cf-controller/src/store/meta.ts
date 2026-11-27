@@ -23,10 +23,30 @@ export class MetaStore {
 			.run();
 	}
 
+	delete(key: string): void {
+		this.sql.db.delete(dbSchema.kvMeta).where(eq(dbSchema.kvMeta.key, key)).run();
+	}
+
 	prune(nowMs: number): void {
 		this.sql.exec(
 			"DELETE FROM kv_meta WHERE key LIKE 'cli_handoff:%' AND CAST(value AS INTEGER) < ?",
 			nowMs,
 		);
+		const rows = this.sql.exec<{ key: string; value: string }>(
+			"SELECT key, value FROM kv_meta WHERE key LIKE 'cli_device:%'",
+		);
+		for (const row of rows) {
+			try {
+				const parsed = JSON.parse(row.value) as { exp?: number; userCode?: string };
+				if (typeof parsed.exp !== "number" || parsed.exp < nowMs) {
+					this.delete(row.key);
+					if (parsed.userCode) {
+						this.delete(`cli_device_code:${parsed.userCode}`);
+					}
+				}
+			} catch {
+				this.delete(row.key);
+			}
+		}
 	}
 }

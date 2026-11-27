@@ -150,3 +150,38 @@ export function renderSignupCodePage(opts: {
 </div>`,
 	});
 }
+
+export function renderDeviceCodePage(opts: { code?: string; error?: string }): string {
+	return cardPage({
+		title: "hotbed — authorize CLI",
+		maxWidth: 400,
+		css: `
+  input[name=code]{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:18px;letter-spacing:.12em;text-align:center;text-transform:uppercase}`,
+		card: `<div class="card">
+  <h1>Authorize hotbed CLI</h1>
+  <p class="sub">Confirm the one-time code shown in your terminal, then sign in with Google.</p>
+  ${errorLine(opts.error)}
+  <form method="POST" action="/auth/device">
+    <input type="text" name="code" value="${escapeHtml(opts.code || "")}" placeholder="XXXX-XXXX" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" autofocus required />
+    <button type="submit" class="primary">Continue with Google</button>
+  </form>
+</div>`,
+	});
+}
+
+export function renderDeviceCompletePage(opts: {
+	email: string;
+	organizationName?: string;
+}): string {
+	const who = opts.organizationName
+		? `${escapeHtml(opts.email)} (${escapeHtml(opts.organizationName)})`
+		: escapeHtml(opts.email);
+	return cardPage({
+		title: "hotbed — CLI signed in",
+		maxWidth: 400,
+		card: `<div class="card">
+  <h1>CLI signed in</h1>
+  <p class="sub">Signed in as ${who}. You can close this tab and return to your terminal.</p>
+</div>`,
+	});
+}
