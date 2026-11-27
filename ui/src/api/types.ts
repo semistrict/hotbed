@@ -66,6 +66,27 @@ export function nodeAdmission(n: Node): Admission | undefined {
   return n.online ? n.admission : undefined;
 }
 
+export function commandStateLabel(s: CommandState): string {
+  switch (s) {
+    case CommandState.QUEUED:
+      return "queued";
+    case CommandState.RUNNING:
+      return "running";
+    case CommandState.PARKED:
+      return "parked";
+    case CommandState.PAUSED:
+      return "paused";
+    case CommandState.SUCCEEDED:
+      return "ok succeeded";
+    case CommandState.FAILED:
+      return "failed";
+    case CommandState.CANCELLED:
+      return "cancelled";
+    default:
+      return "unknown";
+  }
+}
+
 export function baseStateLabel(s: BaseState): string {
   switch (s) {
     case BaseState.BUILDING:

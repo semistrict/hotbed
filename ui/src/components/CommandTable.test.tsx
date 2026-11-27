@@ -21,7 +21,14 @@ vi.mock("../lib/project", () => ({
   useProject: () => [null, vi.fn()],
 }));
 
-import { commandRuntime, HistoryTable, LiveCommandTable } from "./CommandTable";
+import {
+  commandRuntime,
+  finishedCommandSearchValues,
+  HistoryTable,
+  liveCommandSearchValues,
+  LiveCommandTable,
+} from "./CommandTable";
+import { filterTableRows } from "./ui/table";
 
 describe("CommandTable runtime column", () => {
   it("resolves command runtime directly, falling back to workspace runtime", () => {
@@ -197,5 +204,105 @@ describe("CommandTable runtime column", () => {
     expect(hiddenHistoryHtml).not.toContain(">workspace<");
     expect(hiddenHistoryHtml).not.toContain(">node<");
     expect(hiddenHistoryHtml).not.toContain(">project<");
+  });
+
+  it("shows command IDs and filter bar in LiveCommandTable and HistoryTable, and filters across any column", () => {
+    const s = create(SnapshotSchema, {
+      now: 200_000n,
+      nodes: [
+        create(NodeSchema, { id: "n1", hostname: "ubu1", online: true }),
+        create(NodeSchema, { id: "n2", hostname: "asahimbp", online: true }),
+      ],
+      workspaces: [create(WorkspaceSchema, { id: "ws-alpha", runtime: "vm" })],
+    });
+    const live = [
+      create(CommandSchema, {
+        id: "cmd-live-1",
+        nodeId: "n1",
+        workspaceId: "ws-alpha",
+        sessionId: "swift-fox",
+        project: "hotbed",
+        repo: "hotbed",
+        kind: "test",
+        argv: "go test -race ./...",
+        state: CommandState.QUEUED,
+        queuedAt: 190_000n,
+        reason: "waiting: CPU pressure 75%",
+      }),
+      create(CommandSchema, {
+        id: "cmd-live-2",
+        nodeId: "n2",
+        workspaceId: "ws-beta",
+        sessionId: "calm-owl",
+        project: "cladefs",
+        repo: "cladefs",
+        kind: "build",
+        runtime: "cladefs",
+        argv: "cargo build --release",
+        state: CommandState.RUNNING,
+        queuedAt: 191_000n,
+        startedAt: 192_000n,
+      }),
+    ];
+    const liveHtml = renderToStaticMarkup(<LiveCommandTable s={s} commands={live} />);
+    expect(liveHtml).toContain(">id<");
+    expect(liveHtml).toContain("cmd-live-1");
+    expect(liveHtml).toContain("cmd-live-2");
+    expect(liveHtml).toContain("Filter commands…");
+
+    const wsMap = new Map(s.workspaces.map((w) => [w.id, w]));
+    const filterLive = (q: string) =>
+      filterTableRows(live, q, (c) => liveCommandSearchValues(s, c, wsMap)).map((c) => c.id);
+    expect(filterLive("cmd-live-1")).toEqual(["cmd-live-1"]);
+    expect(filterLive("asahimbp")).toEqual(["cmd-live-2"]);
+    expect(filterLive("swift-fox")).toEqual(["cmd-live-1"]);
+    expect(filterLive("CPU pressure")).toEqual(["cmd-live-1"]);
+    expect(filterLive("cargo build")).toEqual(["cmd-live-2"]);
+    expect(filterLive("firecracker")).toEqual(["cmd-live-1"]);
+    expect(filterLive("queued")).toEqual(["cmd-live-1"]);
+
+    const history = [
+      create(FinishedCommandSchema, {
+        id: "cmd-hist-1",
+        nodeId: "n1",
+        workspaceId: "ws-alpha",
+        sessionId: "swift-fox",
+        repoId: "hotbed",
+        argv: "go test ./...",
+        kind: "test",
+        runtime: "vm",
+        state: CommandState.CANCELLED,
+        reason: "nothing can queue for more than 15m",
+        endedAt: 195_000n,
+        seconds: 0,
+      }),
+      create(FinishedCommandSchema, {
+        id: "cmd-hist-2",
+        nodeId: "n2",
+        workspaceId: "ws-beta",
+        sessionId: "calm-owl",
+        repoId: "cladefs",
+        argv: "cargo test",
+        kind: "test",
+        runtime: "cladefs",
+        state: CommandState.FAILED,
+        failure: "oom",
+        endedAt: 196_000n,
+        seconds: 12,
+      }),
+    ];
+    const histHtml = renderToStaticMarkup(<HistoryTable s={s} rows={history} />);
+    expect(histHtml).toContain(">id<");
+    expect(histHtml).toContain("cmd-hist-1");
+    expect(histHtml).toContain("nothing can queue for more than 15m");
+    expect(histHtml).toContain("Filter commands…");
+
+    const filterHist = (q: string) =>
+      filterTableRows(history, q, (c) => finishedCommandSearchValues(s, c, wsMap)).map((c) => c.id);
+    expect(filterHist("cmd-hist-1")).toEqual(["cmd-hist-1"]);
+    expect(filterHist("more than 15m")).toEqual(["cmd-hist-1"]);
+    expect(filterHist("OOM killed")).toEqual(["cmd-hist-2"]);
+    expect(filterHist("ws-beta")).toEqual(["cmd-hist-2"]);
+    expect(filterHist("ubu1")).toEqual(["cmd-hist-1"]);
   });
 });

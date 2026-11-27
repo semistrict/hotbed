@@ -143,24 +143,52 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.Crea
 // prep.
 var createWorkspaceTimeout = 10 * time.Minute
 
+// maxQueueWait caps how long a run may queue at the controller waiting for
+// node capacity (NODES_BUSY) before it is cancelled.
+var maxQueueWait = 15 * time.Minute
+
 // createQueued creates the workspace, calling again while all eligible
 // nodes are full and the run is queued at the controller (NODES_BUSY, until
 // any eligible node frees up), saying so once on stderr. Each individual RPC
-// is bounded by createWorkspaceTimeout so a stuck controller fails promptly.
+// is bounded by createWorkspaceTimeout so a stuck controller fails promptly,
+// and total time spent queueing is bounded by maxQueueWait.
 func createQueued(ctx context.Context, d deps, ws hotbedv1connect.WorkspaceServiceClient, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
 	saidBusy := false
+	var queueDeadline time.Time
+	if maxQueueWait > 0 {
+		queueDeadline = time.Now().Add(maxQueueWait)
+	}
 	for {
+		timeout := createWorkspaceTimeout
+		if saidBusy && !queueDeadline.IsZero() {
+			rem := time.Until(queueDeadline)
+			if rem <= 0 {
+				return nil, api.Errorf(api.CodeInternal, "cancelled: nothing can queue for more than 15m")
+			}
+			if timeout <= 0 || rem < timeout {
+				timeout = rem
+			}
+		}
 		call := ctx
 		var cancel context.CancelFunc
-		if createWorkspaceTimeout > 0 {
-			call, cancel = context.WithTimeout(ctx, createWorkspaceTimeout)
+		if timeout > 0 {
+			call, cancel = context.WithTimeout(ctx, timeout)
 		}
 		w, err := ws.CreateWorkspace(call, req)
 		if cancel != nil {
 			cancel()
 		}
-		if api.CodeOf(err) != api.CodeNodesBusy || ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return w, err
+		}
+		if api.CodeOf(err) != api.CodeNodesBusy {
+			if err != nil && saidBusy && !queueDeadline.IsZero() && !time.Now().Before(queueDeadline) {
+				return nil, api.Errorf(api.CodeInternal, "cancelled: nothing can queue for more than 15m")
+			}
+			return w, err
+		}
+		if !queueDeadline.IsZero() && !time.Now().Before(queueDeadline) {
+			return nil, api.Errorf(api.CodeInternal, "cancelled: nothing can queue for more than 15m")
 		}
 		if !saidBusy {
 			fmt.Fprintf(d.stderr, "hotbed: %s\n", api.FromConnect(err).Message)

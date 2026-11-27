@@ -132,6 +132,11 @@ export class ControllerContext {
 	 * defaults. Only tests set it (POST /__test/config wakeWaitMs).
 	 */
 	placementWaitCapMs = 0;
+	/**
+	 * Caps total time a request may queue for capacity before cancellation; 0 uses
+	 * the 15-minute default. Only tests override it.
+	 */
+	maxQueueWaitMs = 0;
 	readonly sessionWakes = new Wakeups();
 	readonly boardWakes = new Wakeups();
 	boardCountsFn?: () => Map<

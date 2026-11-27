@@ -42,8 +42,8 @@ const (
 	// low-priority background optional freshen.
 	defaultFreshenIdleDelay = 15 * time.Second
 	// defaultFreshenPendingTTL discards stale deferred background triggers that
-	// never got an idle slot within 30m.
-	defaultFreshenPendingTTL = 30 * time.Minute
+	// never got an idle slot within maxQueueWait (15m).
+	defaultFreshenPendingTTL = maxQueueWait
 
 	// optionalFreshenPriority runs optional commit-only freshens at low priority
 	// so normal user commands (priority 0) automatically preempt/park them and
@@ -777,6 +777,11 @@ func (e *Engine) maybeStartPendingFreshens(ctx context.Context) {
 	policy := e.freshenBudget.currentPolicy()
 
 	e.mu.Lock()
+	for k, pf := range e.pendingFreshens {
+		if now.Sub(pf.requestedAt) >= defaultFreshenPendingTTL || e.projectRemoved(pf.project.GetName()) {
+			delete(e.pendingFreshens, k)
+		}
+	}
 	if e.hasActiveUserWorkLocked() {
 		e.recordUserActivityLocked(now)
 		e.mu.Unlock()

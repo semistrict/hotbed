@@ -1,4 +1,5 @@
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useState } from "react";
+import { filterTableRows, Table, TableBody, TableCell, TableFilterBar, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { RunOutcome, runOutcomeLabel, type ScheduledCommand, type ScheduledRun, type Snapshot } from "../api";
 import { CommandBlock } from "../components/CommandBlock";
 import { ProjectTag } from "../components/ProjectTag";
@@ -116,74 +117,100 @@ const MARK: Record<RunOutcome, string> = {
 };
 
 function RunTable({ s, runs, now }: { s: Snapshot; runs: ScheduledRun[]; now: number }) {
+  const [query, setQuery] = useState("");
+  const filtered = filterTableRows(runs, query, (r) => {
+    const started = Number(r.startedAt);
+    return [
+      r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : `${dayTime(started)} by hand`,
+      runOutcomeLabel(r.outcome),
+      r.sessionId,
+      r.nodeId ? nodeName(s, r.nodeId) : "",
+      r.nodeId,
+      r.commandId,
+      r.reason,
+    ];
+  });
   return (
     <>
-      <div className="space-y-2 lg:hidden">
-        {runs.map((r) => {
-          const started = Number(r.startedAt);
-          const took = ((r.endedAt !== undefined ? Number(r.endedAt) : now) - started) / 1000;
-          const ran = r.sessionId !== "" && r.outcome !== RunOutcome.NOT_STARTED;
-          return (
-            <div key={String(r.id)} className="rounded-lg border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <OutcomeBadge outcome={r.outcome} />
-                <span className="text-[10.5px] text-muted-foreground" title={new Date(started).toISOString()}>
-                  {r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : `${dayTime(started)} · by hand`}
-                </span>
-              </div>
-              <div className="num mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
-                <SessionLink id={r.sessionId} empty={null} />
-                {r.nodeId && <span>{nodeName(s, r.nodeId)}</span>}
-                <span>
-                  {ran ? duration(took) : "—"}
-                  {r.outcome === RunOutcome.RUNNING && <span className="text-faint"> so far</span>}
-                </span>
-              </div>
-              {r.reason && <p className="mt-1 font-sans text-[11.5px] text-muted-foreground">{r.reason}</p>}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="hidden lg:block">
-        <Table className="text-[12px]">
-          <TableHeader className="eyebrow">
-            <TableRow className="border-border hover:bg-transparent">
-              {["due", "outcome", "session", "node", "took", "why"].map((h) => (
-                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-                  {h}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody className="num font-mono text-[11px]">
-            {runs.map((r) => {
+      <TableFilterBar
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter runs…"
+        shown={filtered.length}
+        total={runs.length}
+      />
+      {filtered.length === 0 ? (
+        <Empty>No runs match “{query.trim()}”.</Empty>
+      ) : (
+        <>
+          <div className="space-y-2 lg:hidden">
+            {filtered.map((r) => {
               const started = Number(r.startedAt);
               const took = ((r.endedAt !== undefined ? Number(r.endedAt) : now) - started) / 1000;
               const ran = r.sessionId !== "" && r.outcome !== RunOutcome.NOT_STARTED;
               return (
-                <TableRow key={String(r.id)} className="border-border/60 align-top hover:bg-muted/60">
-                  <TableCell className="px-2 py-2 text-muted-foreground" title={new Date(started).toISOString()}>
-                    {r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : <span>{dayTime(started)} · by hand</span>}
-                  </TableCell>
-                  <TableCell className="px-2 py-2">
+                <div key={String(r.id)} className="rounded-lg border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <OutcomeBadge outcome={r.outcome} />
-                  </TableCell>
-                  <TableCell className="px-2 py-2">
-                    <SessionLink id={r.sessionId} />
-                  </TableCell>
-                  <TableCell className="px-2 py-2 text-muted-foreground">{r.nodeId ? nodeName(s, r.nodeId) : "—"}</TableCell>
-                  <TableCell className="px-2 py-2">
-                    {ran ? duration(took) : "—"}
-                    {r.outcome === RunOutcome.RUNNING && <span className="text-faint"> so far</span>}
-                  </TableCell>
-                  <TableCell className="max-w-[420px] px-2 py-2 font-sans whitespace-normal text-muted-foreground">{r.reason}</TableCell>
-                </TableRow>
+                    <span className="text-[10.5px] text-muted-foreground" title={new Date(started).toISOString()}>
+                      {r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : `${dayTime(started)} · by hand`}
+                    </span>
+                  </div>
+                  <div className="num mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
+                    <SessionLink id={r.sessionId} empty={null} />
+                    {r.nodeId && <span>{nodeName(s, r.nodeId)}</span>}
+                    <span>
+                      {ran ? duration(took) : "—"}
+                      {r.outcome === RunOutcome.RUNNING && <span className="text-faint"> so far</span>}
+                    </span>
+                  </div>
+                  {r.reason && <p className="mt-1 font-sans text-[11.5px] text-muted-foreground">{r.reason}</p>}
+                </div>
               );
             })}
-          </TableBody>
-        </Table>
-      </div>
+          </div>
+
+          <div className="hidden lg:block">
+            <Table filterable={false} className="text-[12px]">
+              <TableHeader className="eyebrow">
+                <TableRow className="border-border hover:bg-transparent">
+                  {["due", "outcome", "session", "node", "took", "why"].map((h) => (
+                    <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                      {h}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody className="num font-mono text-[11px]">
+                {filtered.map((r) => {
+                  const started = Number(r.startedAt);
+                  const took = ((r.endedAt !== undefined ? Number(r.endedAt) : now) - started) / 1000;
+                  const ran = r.sessionId !== "" && r.outcome !== RunOutcome.NOT_STARTED;
+                  return (
+                    <TableRow key={String(r.id)} className="border-border/60 align-top hover:bg-muted/60">
+                      <TableCell className="px-2 py-2 text-muted-foreground" title={new Date(started).toISOString()}>
+                        {r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : <span>{dayTime(started)} · by hand</span>}
+                      </TableCell>
+                      <TableCell className="px-2 py-2">
+                        <OutcomeBadge outcome={r.outcome} />
+                      </TableCell>
+                      <TableCell className="px-2 py-2">
+                        <SessionLink id={r.sessionId} />
+                      </TableCell>
+                      <TableCell className="px-2 py-2 text-muted-foreground">{r.nodeId ? nodeName(s, r.nodeId) : "—"}</TableCell>
+                      <TableCell className="px-2 py-2">
+                        {ran ? duration(took) : "—"}
+                        {r.outcome === RunOutcome.RUNNING && <span className="text-faint"> so far</span>}
+                      </TableCell>
+                      <TableCell className="max-w-[420px] px-2 py-2 font-sans whitespace-normal text-muted-foreground">{r.reason}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
     </>
   );
 }

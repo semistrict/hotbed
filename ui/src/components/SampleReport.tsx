@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Table } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type FileLock,
@@ -650,42 +651,44 @@ function FilesAndLocksTab({ files, locks }: { files: SampledOpenFile[]; locks: F
       {locks.length > 0 && (
         <div className="space-y-1.5">
           <div className="eyebrow">Active File Locks (/proc/locks · {locks.length})</div>
-          <div className="overflow-auto rounded-lg border border-border">
-            <table className="w-full border-collapse font-mono text-[11px]">
-              <thead className="bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="px-2.5 py-1.5">Status</th>
-                  <th className="px-2.5 py-1.5">PID</th>
-                  <th className="px-2.5 py-1.5">Lock</th>
-                  <th className="px-2.5 py-1.5">Range</th>
-                  <th className="px-2.5 py-1.5">Target / Inode</th>
+          <Table
+            containerClassName="overflow-auto rounded-lg border border-border"
+            filterPlaceholder="Filter locks…"
+            className="w-full border-collapse font-mono text-[11px]"
+          >
+            <thead className="bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+              <tr className="border-b border-border">
+                <th className="px-2.5 py-1.5">Status</th>
+                <th className="px-2.5 py-1.5">PID</th>
+                <th className="px-2.5 py-1.5">Lock</th>
+                <th className="px-2.5 py-1.5">Range</th>
+                <th className="px-2.5 py-1.5">Target / Inode</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {locks.map((lk, i) => (
+                <tr key={i} className={lk.blocked ? "bg-[color-mix(in_oklab,var(--critical)_10%,transparent)]" : "hover:bg-muted/40"}>
+                  <td className="px-2.5 py-1.5">
+                    {lk.blocked ? (
+                      <span className="rounded bg-[color-mix(in_oklab,var(--critical)_20%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold text-critical">
+                        BLOCKED →
+                      </span>
+                    ) : (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">HELD</span>
+                    )}
+                  </td>
+                  <td className="num px-2.5 py-1.5 text-foreground">
+                    {lk.pid} <span className="text-faint">{lk.comm}</span>
+                  </td>
+                  <td className="px-2.5 py-1.5 text-muted-foreground">
+                    {lk.kind} {lk.access} ({lk.mode})
+                  </td>
+                  <td className="num px-2.5 py-1.5 text-muted-foreground">{lk.range}</td>
+                  <td className="px-2.5 py-1.5 text-foreground">{lk.target || `inode ${lk.inode}`}</td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {locks.map((lk, i) => (
-                  <tr key={i} className={lk.blocked ? "bg-[color-mix(in_oklab,var(--critical)_10%,transparent)]" : "hover:bg-muted/40"}>
-                    <td className="px-2.5 py-1.5">
-                      {lk.blocked ? (
-                        <span className="rounded bg-[color-mix(in_oklab,var(--critical)_20%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold text-critical">
-                          BLOCKED →
-                        </span>
-                      ) : (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">HELD</span>
-                      )}
-                    </td>
-                    <td className="num px-2.5 py-1.5 text-foreground">
-                      {lk.pid} <span className="text-faint">{lk.comm}</span>
-                    </td>
-                    <td className="px-2.5 py-1.5 text-muted-foreground">
-                      {lk.kind} {lk.access} ({lk.mode})
-                    </td>
-                    <td className="num px-2.5 py-1.5 text-muted-foreground">{lk.range}</td>
-                    <td className="px-2.5 py-1.5 text-foreground">{lk.target || `inode ${lk.inode}`}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </Table>
         </div>
       )}
 

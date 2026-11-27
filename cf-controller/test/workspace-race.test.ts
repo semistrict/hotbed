@@ -2,8 +2,21 @@ import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vite-plus/test";
 import type { ControllerContext } from "../src/context.ts";
 import { ErrorCode, hotbedError } from "../src/errors.ts";
-import { WorkspaceSchema, type Workspace } from "../src/gen/hotbed/v1/hotbed_pb.ts";
-import { discardRacedWorkspace } from "../src/services/workspaces.ts";
+import {
+	AdmissionSchema,
+	AdmissionSignalSchema,
+	CreateWorkspaceRequestSchema,
+	HeartbeatRequestSchema,
+	NodeSchema,
+	ProjectSchema,
+	RepoSchema,
+	ResourcesSchema,
+	SessionSchema,
+	WorkspaceSchema,
+	type Workspace,
+} from "../src/gen/hotbed/v1/hotbed_pb.ts";
+import { createWorkspaceService, discardRacedWorkspace } from "../src/services/workspaces.ts";
+import { Wakeups } from "../src/wakeups.ts";
 
 /** The parts of ControllerContext discardRacedWorkspace uses, recording what it did. */
 function fakeController(opts: { releaseFails?: unknown } = {}) {
@@ -79,5 +92,75 @@ describe("discardRacedWorkspace", () => {
 		creating.resolve({ ws: create(WorkspaceSchema, { id: "ws-gone" }) });
 		await Promise.all(f.background);
 		expect(f.rowsReleased).toEqual(["ws-gone"]);
+	});
+});
+
+describe("createWhenFree max queue wait", () => {
+	it("cancels with an error once maxQueueWaitMs elapses while all nodes stay busy", async () => {
+		const busyNode = (id: string, hostname: string) => ({
+			node: create(NodeSchema, { id, hostname, online: true }),
+			online: true,
+			tunnelConnected: true,
+			hb: create(HeartbeatRequestSchema, {
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: 32n * 1024n ** 3n,
+					runtimes: ["vm"],
+				}),
+				admission: create(AdmissionSchema, {
+					holding: true,
+					reason: "CPU pressure 90%",
+					signals: [create(AdmissionSignalSchema, { name: "cpu-pressure", holding: true })],
+				}),
+			}),
+			commands: [],
+			bases: [],
+			workspaces: [],
+		});
+		const ctrl = {
+			now: () => 10_000,
+			placementWaitCapMs: 20,
+			maxQueueWaitMs: 60,
+			nodeChanges: new Wakeups(),
+			capacityChanges: new Wakeups(),
+			sessionRaces: new Map(),
+			creatingWS: new Map(),
+			cladefsTenantId: null,
+			follows: () => 0,
+			views: () => [busyNode("n1", "ubu1"), busyNode("n2", "vm1")],
+			withPlacementLock: async <T>(fn: () => T) => fn(),
+			store: {
+				fleet: {
+					addPlacement: () => {},
+				},
+				sessions: {
+					live: (id: string) => create(SessionSchema, { id, project: "hotbed", agent: "agent" }),
+				},
+				projects: {
+					get: (name: string) =>
+						create(ProjectSchema, { name, repos: ["github.com/semistrict/hotbed"] }),
+					listRepos: () => [
+						create(RepoSchema, { id: "hotbed", url: "https://github.com/semistrict/hotbed.git" }),
+					],
+				},
+				workspaces: {
+					ofSession: () => [],
+				},
+				cladefs: {
+					hasSharedBase: () => false,
+				},
+			},
+		} as unknown as ControllerContext;
+
+		const { helpers } = createWorkspaceService(ctrl);
+		await expect(
+			helpers.createWhenFree(
+				create(CreateWorkspaceRequestSchema, {
+					sessionId: "busy-owl",
+					waitForCapacity: true,
+				}),
+			),
+		).rejects.toThrow(/nothing can queue for more than 15m/);
 	});
 });

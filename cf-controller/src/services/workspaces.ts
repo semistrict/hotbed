@@ -144,6 +144,8 @@ const DEFAULT_DAEMON_LOG_LIMIT = 200;
 const MAX_DAEMON_LOG_LIMIT = 1000;
 const UPGRADE_WAIT_MS = 40_000;
 const CAPACITY_WAIT_MS = 35_000;
+const MAX_QUEUE_WAIT_MS = 15 * 60_000;
+const MAX_QUEUE_WAIT_ERROR = "cancelled: nothing can queue for more than 15m";
 const WORKSPACE_RACE_HEDGE_MS = 2_000;
 const WORKSPACE_RACE_PREPARE_WAIT_MS = 1_500;
 
@@ -784,6 +786,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		req: CreateWorkspaceRequest,
 		syncHost: string,
 		signal?: AbortSignal,
+		queueDeadlineMs?: number,
 	): Promise<Workspace> {
 		const requestedRt = req.placement?.runtime ?? req.runtime ?? "";
 		if (requestedRt && requestedRt !== "vm" && requestedRt !== "cladefs") {
@@ -798,6 +801,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		let upgradeDeadline = 0;
 		let capacityWaitStartedAt = 0;
 		let capacityDeadline = 0;
+		let effectiveQueueDeadline = queueDeadlineMs ?? 0;
 
 		while (true) {
 			if (!req.throwaway) {
@@ -810,16 +814,26 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			const claimed = await claim(sess, req, syncHost, skip, signal, capacityWaitStartedAt);
 			if (claimed.allBusy) {
 				const hosts = claimed.busyHosts ?? [];
+				const nowMs = Date.now();
 				if (capacityWaitStartedAt === 0) {
-					capacityWaitStartedAt = Date.now();
-					capacityDeadline =
+					capacityWaitStartedAt = nowMs;
+					if (effectiveQueueDeadline === 0) {
+						effectiveQueueDeadline =
+							capacityWaitStartedAt + (ctrl.maxQueueWaitMs || MAX_QUEUE_WAIT_MS);
+					}
+					capacityDeadline = Math.min(
 						capacityWaitStartedAt +
-						Math.min(CAPACITY_WAIT_MS, ctrl.placementWaitCapMs || CAPACITY_WAIT_MS);
+							Math.min(CAPACITY_WAIT_MS, ctrl.placementWaitCapMs || CAPACITY_WAIT_MS),
+						effectiveQueueDeadline,
+					);
 				}
 				if (signal?.aborted) {
 					throw hotbedError(ErrorCode.Internal, "placement canceled");
 				}
-				if (Date.now() >= capacityDeadline) {
+				if (nowMs >= effectiveQueueDeadline) {
+					throw hotbedError(ErrorCode.Internal, MAX_QUEUE_WAIT_ERROR);
+				}
+				if (nowMs >= capacityDeadline) {
 					throw hotbedError(
 						ErrorCode.NodesBusy,
 						`all eligible nodes are currently full (${hosts.join(", ")}); queued at controller, waiting for any to free up`,
@@ -1136,11 +1150,15 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		req: CreateWorkspaceRequest,
 		signal?: AbortSignal,
 	): Promise<Workspace> {
+		const queueDeadline = Date.now() + (ctrl.maxQueueWaitMs || MAX_QUEUE_WAIT_MS);
 		while (true) {
 			try {
-				return await createWorkspaceInternal(req, "", signal);
+				return await createWorkspaceInternal(req, "", signal, queueDeadline);
 			} catch (err) {
 				if (signal?.aborted || codeOf(err) !== ErrorCode.NodesBusy) throw err;
+				if (Date.now() >= queueDeadline) {
+					throw hotbedError(ErrorCode.Internal, MAX_QUEUE_WAIT_ERROR);
+				}
 			}
 		}
 	}

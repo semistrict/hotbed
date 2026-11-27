@@ -1,6 +1,17 @@
 import { Link } from "@tanstack/react-router";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CommandState, type Command, type FinishedCommand, type PlacementDecision, type Snapshot } from "../api";
+import { useState } from "react";
+import {
+  filterTableRows,
+  Table,
+  TableBody,
+  TableCell,
+  TableFilterBar,
+  TableHead,
+  TableHeader,
+  TableRow,
+  type TableFilterValue,
+} from "@/components/ui/table";
+import { CommandState, commandStateLabel, type Command, type FinishedCommand, type PlacementDecision, type Snapshot } from "../api";
 import { nodeName } from "../lib/data";
 import { ago, bytes, duration, limit, speedup } from "../lib/format";
 import { useProject } from "../lib/project";
@@ -18,6 +29,7 @@ export type CommandTableColumn = "workspace" | "node" | "project";
 function identityColumns(showProject: boolean, showWorkspace: boolean, showNode: boolean): string[] {
   return [
     "state",
+    "id",
     "command",
     "session",
     ...(showProject ? ["project"] : []),
@@ -25,6 +37,75 @@ function identityColumns(showProject: boolean, showWorkspace: boolean, showNode:
     ...(showWorkspace ? ["workspace"] : []),
     "runtime",
     ...(showNode ? ["node"] : []),
+  ];
+}
+
+function runtimeSearchTerms(runtime: string): string {
+  if (runtime === "vm") return "vm Firecracker microVM runtime";
+  if (runtime === "cladefs") return "cladefs host-FUSE runtime";
+  return runtime;
+}
+
+function placementSearchTerms(p?: PlacementDecision): string[] {
+  if (!p) return [];
+  const reqs = placementRequirements(p);
+  return [p.reason, ...(reqs ? reqs.map((r) => r.label) : [])];
+}
+
+export function liveCommandSearchValues(
+  s: Snapshot,
+  c: Command,
+  workspacesById?: Map<string, Snapshot["workspaces"][number]>,
+): TableFilterValue[] {
+  const runtime = commandRuntime(s, c, workspacesById);
+  const project = c.project || commandProject(s, c.sessionId, c.repo || null);
+  return [
+    c.id,
+    commandStateLabel(c.state),
+    c.argv,
+    c.args.join(" "),
+    c.kind,
+    c.bench ? "bench" : "",
+    c.url,
+    c.sessionId,
+    project,
+    c.repo,
+    c.workspaceId,
+    runtimeSearchTerms(runtime),
+    nodeName(s, c.nodeId),
+    c.nodeId,
+    ...placementSearchTerms(c.placement),
+    c.rebuilt ? `${c.rebuilt.units}/${c.rebuilt.of}` : "",
+    c.reason,
+  ];
+}
+
+export function finishedCommandSearchValues(
+  s: Snapshot,
+  c: FinishedCommand,
+  workspacesById?: Map<string, Snapshot["workspaces"][number]>,
+): TableFilterValue[] {
+  const runtime = commandRuntime(s, c, workspacesById);
+  const project = commandProject(s, c.sessionId, c.repoId);
+  const why = c.failure ? (FAILURE[c.failure] ?? c.failure) : c.reason;
+  return [
+    c.id,
+    commandStateLabel(c.state),
+    c.argv,
+    c.kind,
+    c.bench ? "bench" : "",
+    c.sessionId,
+    project,
+    c.repoId,
+    c.workspaceId,
+    runtimeSearchTerms(runtime),
+    nodeName(s, c.nodeId),
+    c.nodeId,
+    ...placementSearchTerms(c.placement),
+    c.rebuilt !== undefined ? `${c.rebuilt}/${c.of ?? 0}` : "",
+    c.failure,
+    why,
+    c.reason,
   ];
 }
 
@@ -88,182 +169,205 @@ export function LiveCommandTable({
 }) {
   const now = Number(s.now);
   const [project] = useProject();
+  const [query, setQuery] = useState("");
   if (commands.length === 0) return <Empty>{empty}</Empty>;
   const hidden = new Set(hideColumns);
   const showProject = !project && !hidden.has("project");
   const showWorkspace = !hidden.has("workspace");
   const showNode = !hidden.has("node");
   const workspacesById = new Map(s.workspaces.map((w) => [w.id, w]));
+  const filtered = filterTableRows(commands, query, (c) => liveCommandSearchValues(s, c, workspacesById));
   return (
     <>
-      <div className="space-y-2.5 lg:hidden">
-        {commands.map((c) => {
-          const since = Number(c.startedAt ?? c.queuedAt);
-          const repoId = c.repo;
-          const runtime = commandRuntime(s, c, workspacesById);
-          const memLow = c.limits?.memoryLowBytes ?? 0n;
-          const memHigh = c.limits?.memoryHighBytes ?? 0n;
-          return (
-            <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-[11px]">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <StateBadge state={c.state} />
-                <KindTag kind={c.kind} />
-                {runtime && <RuntimeBadge runtime={runtime} />}
-                {c.bench && <BenchTag />}
-                {c.state !== CommandState.QUEUED && (
-                  <Link
-                    to="/commands/$id"
-                    params={{ id: c.id }}
-                    search={{ take: true }}
-                    className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 text-[9.5px] text-primary"
-                  >
-                    ◎ Sample
-                  </Link>
-                )}
-                <span className="num ml-auto text-[10.5px] text-muted-foreground">{duration((now - since) / 1000)}</span>
-              </div>
-
-              <Link to="/commands/$id" params={{ id: c.id }} className="mt-2 block text-[12px] text-foreground hover:text-primary">
-                <CommandInline argv={c.argv} args={c.args} />
-              </Link>
-
-              <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
-                <SessionLink id={c.sessionId} />
-                {showProject && <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />}
-                {repoId && <span>{repoId}</span>}
-                {showNode && <span>{nodeName(s, c.nodeId)}</span>}
-                {c.state === CommandState.RUNNING && <span className="num text-foreground">{c.cpuCores.toFixed(1)} cores</span>}
-                {c.rebuilt && <span className="num">{c.rebuilt.units}/{c.rebuilt.of} units</span>}
-              </div>
-
-              {c.url && (
-                <div className="mt-1">
-                  <a href={c.url} className="text-[10.5px] text-primary hover:underline" target="_blank" rel="noreferrer">
-                    {c.url.replace("http://", "")} ↗
-                  </a>
-                </div>
-              )}
-
-              <div className="mt-2 border-t border-border/60 pt-2">
-                {c.state === CommandState.QUEUED ? (
-                  <span className="text-[10.5px] text-faint">memory.low {limit(memLow)}</span>
-                ) : (
-                  <div>
-                    <div className="num mb-1 flex items-baseline justify-between text-[10.5px] text-muted-foreground">
-                      <span>
-                        {bytes(c.memoryBytes)} · high {limit(memHigh)}
-                        {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
-                      </span>
-                      {showWorkspace && <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />}
-                    </div>
-                    {memHigh > 0n && <Meter value={Number(c.memoryBytes) / Number(memHigh)} marker={Number(memLow) / Number(memHigh)} />}
-                  </div>
-                )}
-              </div>
-
-              {(c.reason || c.state === CommandState.RUNNING) && (
-                <div className="mt-1.5 font-sans text-[11px] text-muted-foreground">
-                  {c.reason || `started ${ago(since, now)}`}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="hidden lg:block">
-        <Table className="text-[12px]">
-          <TableHeader className="eyebrow">
-            <TableRow className="border-border hover:bg-transparent">
-              {[...identityColumns(showProject, showWorkspace, showNode), "for", "cpu", "memory · high", "units", "why"].map((h) => (
-                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-                  {h}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {commands.map((c) => {
+      <TableFilterBar
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter commands…"
+        shown={filtered.length}
+        total={commands.length}
+      />
+      {filtered.length === 0 ? (
+        <Empty>No commands match “{query.trim()}”.</Empty>
+      ) : (
+        <>
+          <div className="space-y-2.5 lg:hidden">
+            {filtered.map((c) => {
               const since = Number(c.startedAt ?? c.queuedAt);
               const repoId = c.repo;
               const runtime = commandRuntime(s, c, workspacesById);
               const memLow = c.limits?.memoryLowBytes ?? 0n;
               const memHigh = c.limits?.memoryHighBytes ?? 0n;
               return (
-                <TableRow key={c.id} className="border-border/60 align-top hover:bg-muted/60">
-                  <TableCell className="px-2 py-2.5">
+                <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-[11px]">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <StateBadge state={c.state} />
-                  </TableCell>
-                  <TableCell className="max-w-[320px] px-2 py-2.5 whitespace-normal">
-                    <Link to="/commands/$id" params={{ id: c.id }} className="block font-mono text-[11.5px] text-foreground hover:text-primary">
-                      <CommandInline argv={c.argv} args={c.args} />
+                    <Link to="/commands/$id" params={{ id: c.id }} className="text-[10.5px] text-muted-foreground hover:text-primary">
+                      {c.id}
                     </Link>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-2">
-                      <KindTag kind={c.kind} />
-                      {c.bench && <BenchTag />}
-                      {c.state !== CommandState.QUEUED && (
-                        <Link
-                          to="/commands/$id"
-                          params={{ id: c.id }}
-                          search={{ take: true }}
-                          title="Sample stacks, syscalls, open files & Linux diagnostics"
-                          className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 font-mono text-[9.5px] text-primary hover:brightness-110"
-                        >
-                          ◎ Sample
-                        </Link>
-                      )}
-                      {c.url && (
-                        <a href={c.url} className="font-mono text-[10px] text-primary hover:underline" target="_blank" rel="noreferrer">
-                          {c.url.replace("http://", "")} ↗
-                        </a>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-2 py-2.5">
+                    <KindTag kind={c.kind} />
+                    {runtime && <RuntimeBadge runtime={runtime} />}
+                    {c.bench && <BenchTag />}
+                    {c.state !== CommandState.QUEUED && (
+                      <Link
+                        to="/commands/$id"
+                        params={{ id: c.id }}
+                        search={{ take: true }}
+                        className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 text-[9.5px] text-primary"
+                      >
+                        ◎ Sample
+                      </Link>
+                    )}
+                    <span className="num ml-auto text-[10.5px] text-muted-foreground">{duration((now - since) / 1000)}</span>
+                  </div>
+
+                  <Link to="/commands/$id" params={{ id: c.id }} className="mt-2 block text-[12px] text-foreground hover:text-primary">
+                    <CommandInline argv={c.argv} args={c.args} />
+                  </Link>
+
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
                     <SessionLink id={c.sessionId} />
-                  </TableCell>
-                  {showProject && (
-                    <TableCell className="px-2 py-2.5">
-                      <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />
-                    </TableCell>
+                    {showProject && <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />}
+                    {repoId && <span>{repoId}</span>}
+                    {showNode && <span>{nodeName(s, c.nodeId)}</span>}
+                    {c.state === CommandState.RUNNING && <span className="num text-foreground">{c.cpuCores.toFixed(1)} cores</span>}
+                    {c.rebuilt && <span className="num">{c.rebuilt.units}/{c.rebuilt.of} units</span>}
+                  </div>
+
+                  {c.url && (
+                    <div className="mt-1">
+                      <a href={c.url} className="text-[10.5px] text-primary hover:underline" target="_blank" rel="noreferrer">
+                        {c.url.replace("http://", "")} ↗
+                      </a>
+                    </div>
                   )}
-                  <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{repoId || "—"}</TableCell>
-                  {showWorkspace && (
-                    <TableCell className="px-2 py-2.5">
-                      <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
-                    </TableCell>
-                  )}
-                  <TableCell className="px-2 py-2.5">
-                    <RuntimeBadge runtime={runtime} />
-                  </TableCell>
-                  {showNode && (
-                    <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">
-                      <NodePlacementCell host={nodeName(s, c.nodeId)} placement={c.placement} />
-                    </TableCell>
-                  )}
-                  <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{duration((now - since) / 1000)}</TableCell>
-                  <TableCell className="num px-2 py-2.5 font-mono text-[11px]">{c.state === CommandState.RUNNING ? `${c.cpuCores.toFixed(1)} cores` : "—"}</TableCell>
-                  <TableCell className="w-40 px-2 py-2.5">
+
+                  <div className="mt-2 border-t border-border/60 pt-2">
                     {c.state === CommandState.QUEUED ? (
-                      <span className="font-mono text-[11px] text-faint">low {limit(memLow)}</span>
+                      <span className="text-[10.5px] text-faint">memory.low {limit(memLow)}</span>
                     ) : (
-                      <>
-                        <div className="num mb-1 font-mono text-[10.5px] text-muted-foreground">
-                          {bytes(c.memoryBytes)} · {limit(memHigh)}
-                          {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
+                      <div>
+                        <div className="num mb-1 flex items-baseline justify-between text-[10.5px] text-muted-foreground">
+                          <span>
+                            {bytes(c.memoryBytes)} · high {limit(memHigh)}
+                            {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
+                          </span>
+                          {showWorkspace && <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />}
                         </div>
                         {memHigh > 0n && <Meter value={Number(c.memoryBytes) / Number(memHigh)} marker={Number(memLow) / Number(memHigh)} />}
-                      </>
+                      </div>
                     )}
-                  </TableCell>
-                  <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{c.rebuilt ? `${c.rebuilt.units}/${c.rebuilt.of}` : "—"}</TableCell>
-                  <TableCell className="max-w-[260px] px-2 py-2.5 text-[11px] whitespace-normal text-muted-foreground">{c.reason || (c.state === CommandState.RUNNING ? `started ${ago(since, now)}` : "")}</TableCell>
-                </TableRow>
+                  </div>
+
+                  {(c.reason || c.state === CommandState.RUNNING) && (
+                    <div className="mt-1.5 font-sans text-[11px] text-muted-foreground">
+                      {c.reason || `started ${ago(since, now)}`}
+                    </div>
+                  )}
+                </div>
               );
             })}
-          </TableBody>
-        </Table>
-      </div>
+          </div>
+
+          <div className="hidden lg:block">
+            <Table filterable={false} className="text-[12px]">
+              <TableHeader className="eyebrow">
+                <TableRow className="border-border hover:bg-transparent">
+                  {[...identityColumns(showProject, showWorkspace, showNode), "for", "cpu", "memory · high", "units", "why"].map((h) => (
+                    <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                      {h}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((c) => {
+                  const since = Number(c.startedAt ?? c.queuedAt);
+                  const repoId = c.repo;
+                  const runtime = commandRuntime(s, c, workspacesById);
+                  const memLow = c.limits?.memoryLowBytes ?? 0n;
+                  const memHigh = c.limits?.memoryHighBytes ?? 0n;
+                  return (
+                    <TableRow key={c.id} className="border-border/60 align-top hover:bg-muted/60">
+                      <TableCell className="px-2 py-2.5">
+                        <StateBadge state={c.state} />
+                      </TableCell>
+                      <TableCell className="px-2 py-2.5 font-mono text-[11px]">
+                        <Link to="/commands/$id" params={{ id: c.id }} className="text-muted-foreground hover:text-primary">
+                          {c.id}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="max-w-[320px] px-2 py-2.5 whitespace-normal">
+                        <Link to="/commands/$id" params={{ id: c.id }} className="block font-mono text-[11.5px] text-foreground hover:text-primary">
+                          <CommandInline argv={c.argv} args={c.args} />
+                        </Link>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                          <KindTag kind={c.kind} />
+                          {c.bench && <BenchTag />}
+                          {c.state !== CommandState.QUEUED && (
+                            <Link
+                              to="/commands/$id"
+                              params={{ id: c.id }}
+                              search={{ take: true }}
+                              title="Sample stacks, syscalls, open files & Linux diagnostics"
+                              className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 font-mono text-[9.5px] text-primary hover:brightness-110"
+                            >
+                              ◎ Sample
+                            </Link>
+                          )}
+                          {c.url && (
+                            <a href={c.url} className="font-mono text-[10px] text-primary hover:underline" target="_blank" rel="noreferrer">
+                              {c.url.replace("http://", "")} ↗
+                            </a>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-2 py-2.5">
+                        <SessionLink id={c.sessionId} />
+                      </TableCell>
+                      {showProject && (
+                        <TableCell className="px-2 py-2.5">
+                          <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />
+                        </TableCell>
+                      )}
+                      <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{repoId || "—"}</TableCell>
+                      {showWorkspace && (
+                        <TableCell className="px-2 py-2.5">
+                          <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
+                        </TableCell>
+                      )}
+                      <TableCell className="px-2 py-2.5">
+                        <RuntimeBadge runtime={runtime} />
+                      </TableCell>
+                      {showNode && (
+                        <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">
+                          <NodePlacementCell host={nodeName(s, c.nodeId)} placement={c.placement} />
+                        </TableCell>
+                      )}
+                      <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{duration((now - since) / 1000)}</TableCell>
+                      <TableCell className="num px-2 py-2.5 font-mono text-[11px]">{c.state === CommandState.RUNNING ? `${c.cpuCores.toFixed(1)} cores` : "—"}</TableCell>
+                      <TableCell className="w-40 px-2 py-2.5">
+                        {c.state === CommandState.QUEUED ? (
+                          <span className="font-mono text-[11px] text-faint">low {limit(memLow)}</span>
+                        ) : (
+                          <>
+                            <div className="num mb-1 font-mono text-[10.5px] text-muted-foreground">
+                              {bytes(c.memoryBytes)} · {limit(memHigh)}
+                              {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
+                            </div>
+                            {memHigh > 0n && <Meter value={Number(c.memoryBytes) / Number(memHigh)} marker={Number(memLow) / Number(memHigh)} />}
+                          </>
+                        )}
+                      </TableCell>
+                      <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{c.rebuilt ? `${c.rebuilt.units}/${c.rebuilt.of}` : "—"}</TableCell>
+                      <TableCell className="max-w-[260px] px-2 py-2.5 text-[11px] whitespace-normal text-muted-foreground">{c.reason || (c.state === CommandState.RUNNING ? `started ${ago(since, now)}` : "")}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
     </>
   );
 }
@@ -284,116 +388,140 @@ export function HistoryTable({
 }) {
   const now = Number(s.now);
   const [project] = useProject();
+  const [query, setQuery] = useState("");
   if (rows.length === 0) return <Empty>{empty}</Empty>;
   const hidden = new Set(hideColumns);
   const showProject = !project && !hidden.has("project");
   const showWorkspace = !hidden.has("workspace");
   const showNode = !hidden.has("node");
   const workspacesById = new Map(s.workspaces.map((w) => [w.id, w]));
-  const shown = rows.slice(0, limit);
+  const filtered = filterTableRows(rows, query, (c) => finishedCommandSearchValues(s, c, workspacesById));
+  const shown = filtered.slice(0, limit);
   return (
     <div>
-      <div className="space-y-2 xl:hidden">
-        {shown.map((c) => {
-          const runtime = commandRuntime(s, c, workspacesById);
-          return (
-            <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <StateBadge state={c.state} />
-                {runtime && <RuntimeBadge runtime={runtime} />}
-                {c.bench && <BenchTag />}
-                <span className="num ml-auto text-foreground">{duration(c.seconds)}</span>
-                {c.coldSeconds !== undefined && <span className="num text-primary">{speedup(c.coldSeconds, c.seconds)}</span>}
-              </div>
+      <TableFilterBar
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter commands…"
+        shown={filtered.length}
+        total={rows.length}
+      />
+      {filtered.length === 0 ? (
+        <Empty>No commands match “{query.trim()}”.</Empty>
+      ) : (
+        <>
+          <div className="space-y-2 xl:hidden">
+            {shown.map((c) => {
+              const runtime = commandRuntime(s, c, workspacesById);
+              const why = c.failure ? (FAILURE[c.failure] ?? c.failure) : c.reason;
+              return (
+                <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <StateBadge state={c.state} />
+                    <Link to="/commands/$id" params={{ id: c.id }} className="text-[10.5px] text-muted-foreground hover:text-primary">
+                      {c.id}
+                    </Link>
+                    {runtime && <RuntimeBadge runtime={runtime} />}
+                    {c.bench && <BenchTag />}
+                    <span className="num ml-auto text-foreground">{duration(c.seconds)}</span>
+                    {c.coldSeconds !== undefined && <span className="num text-primary">{speedup(c.coldSeconds, c.seconds)}</span>}
+                  </div>
 
-              <Link to="/commands/$id" params={{ id: c.id }} className="mt-1.5 block text-[11.5px] text-foreground hover:text-primary">
-                <CommandInline argv={c.argv} />
-              </Link>
-
-              <div className="num mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
-                <SessionLink id={c.sessionId} />
-                {showProject && <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />}
-                {c.repoId && <span>{c.repoId}</span>}
-                {showWorkspace && c.workspaceId && <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />}
-                {showNode && <span>{nodeName(s, c.nodeId)}</span>}
-                <span className="text-faint">{ago(c.endedAt, now)}</span>
-              </div>
-
-              <div className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-faint">
-                {c.coldSeconds !== undefined && <span>cold {duration(c.coldSeconds)}</span>}
-                {c.rebuilt !== undefined && <span>{c.rebuilt}/{c.of ?? 0} units</span>}
-                <span>
-                  peak {bytes(c.peakMemoryBytes)}
-                  {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
-                </span>
-                {c.failure && <span className="font-sans text-critical">{FAILURE[c.failure] ?? c.failure}</span>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="hidden xl:block">
-        <Table className="text-[12px]">
-          <TableHeader className="eyebrow">
-            <TableRow className="border-border hover:bg-transparent">
-              {[...identityColumns(showProject, showWorkspace, showNode), "ended", "took", "cold", "speedup", "units", "peak mem", "why"].map((h) => (
-                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-                  {h}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody className="num font-mono text-[11px]">
-            {shown.map((c) => (
-              <TableRow key={c.id} className="border-border/60 align-top hover:bg-muted/60">
-                <TableCell className="px-2 py-2">
-                  <StateBadge state={c.state} />
-                </TableCell>
-                <TableCell className="max-w-[300px] px-2 py-2 whitespace-normal">
-                  <Link to="/commands/$id" params={{ id: c.id }} className="block text-foreground hover:text-primary">
+                  <Link to="/commands/$id" params={{ id: c.id }} className="mt-1.5 block text-[11.5px] text-foreground hover:text-primary">
                     <CommandInline argv={c.argv} />
                   </Link>
-                  {c.bench && <BenchTag />}
-                </TableCell>
-                <TableCell className="px-2 py-2">
-                  <SessionLink id={c.sessionId} />
-                </TableCell>
-                {showProject && (
-                  <TableCell className="px-2 py-2">
-                    <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />
-                  </TableCell>
-                )}
-                <TableCell className="px-2 py-2 text-muted-foreground">{c.repoId || "—"}</TableCell>
-                {showWorkspace && (
-                  <TableCell className="px-2 py-2">
-                    <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
-                  </TableCell>
-                )}
-                <TableCell className="px-2 py-2">
-                  <RuntimeBadge runtime={commandRuntime(s, c, workspacesById)} />
-                </TableCell>
-                {showNode && (
-                  <TableCell className="px-2 py-2 text-muted-foreground">
-                    <NodePlacementCell host={nodeName(s, c.nodeId)} placement={c.placement} />
-                  </TableCell>
-                )}
-                <TableCell className="px-2 py-2 text-muted-foreground">{ago(c.endedAt, now)}</TableCell>
-                <TableCell className="px-2 py-2">{duration(c.seconds)}</TableCell>
-                <TableCell className="px-2 py-2 text-faint">{c.coldSeconds !== undefined ? duration(c.coldSeconds) : "—"}</TableCell>
-                <TableCell className="px-2 py-2 text-primary">{c.coldSeconds !== undefined ? speedup(c.coldSeconds, c.seconds) : "—"}</TableCell>
-                <TableCell className="px-2 py-2 text-muted-foreground">{c.rebuilt !== undefined ? `${c.rebuilt}/${c.of ?? 0}` : "—"}</TableCell>
-                <TableCell className="px-2 py-2 text-muted-foreground">
-                  {bytes(c.peakMemoryBytes)}
-                  {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
-                </TableCell>
-                <TableCell className="max-w-[260px] px-2 py-2 font-sans whitespace-normal text-muted-foreground">{c.failure ? (FAILURE[c.failure] ?? c.failure) : ""}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-      {rows.length > limit && <p className="mt-3 text-center font-mono text-[10.5px] text-faint">showing {limit} of {rows.length}</p>}
+
+                  <div className="num mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
+                    <SessionLink id={c.sessionId} />
+                    {showProject && <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />}
+                    {c.repoId && <span>{c.repoId}</span>}
+                    {showWorkspace && c.workspaceId && <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />}
+                    {showNode && <span>{nodeName(s, c.nodeId)}</span>}
+                    <span className="text-faint">{ago(c.endedAt, now)}</span>
+                  </div>
+
+                  <div className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-faint">
+                    {c.coldSeconds !== undefined && <span>cold {duration(c.coldSeconds)}</span>}
+                    {c.rebuilt !== undefined && <span>{c.rebuilt}/{c.of ?? 0} units</span>}
+                    <span>
+                      peak {bytes(c.peakMemoryBytes)}
+                      {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
+                    </span>
+                    {why && <span className={`font-sans ${c.failure ? "text-critical" : "text-muted-foreground"}`}>{why}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="hidden xl:block">
+            <Table filterable={false} className="text-[12px]">
+              <TableHeader className="eyebrow">
+                <TableRow className="border-border hover:bg-transparent">
+                  {[...identityColumns(showProject, showWorkspace, showNode), "ended", "took", "cold", "speedup", "units", "peak mem", "why"].map((h) => (
+                    <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                      {h}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody className="num font-mono text-[11px]">
+                {shown.map((c) => (
+                  <TableRow key={c.id} className="border-border/60 align-top hover:bg-muted/60">
+                    <TableCell className="px-2 py-2">
+                      <StateBadge state={c.state} />
+                    </TableCell>
+                    <TableCell className="px-2 py-2">
+                      <Link to="/commands/$id" params={{ id: c.id }} className="text-muted-foreground hover:text-primary">
+                        {c.id}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="max-w-[300px] px-2 py-2 whitespace-normal">
+                      <Link to="/commands/$id" params={{ id: c.id }} className="block text-foreground hover:text-primary">
+                        <CommandInline argv={c.argv} />
+                      </Link>
+                      {c.bench && <BenchTag />}
+                    </TableCell>
+                    <TableCell className="px-2 py-2">
+                      <SessionLink id={c.sessionId} />
+                    </TableCell>
+                    {showProject && (
+                      <TableCell className="px-2 py-2">
+                        <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />
+                      </TableCell>
+                    )}
+                    <TableCell className="px-2 py-2 text-muted-foreground">{c.repoId || "—"}</TableCell>
+                    {showWorkspace && (
+                      <TableCell className="px-2 py-2">
+                        <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
+                      </TableCell>
+                    )}
+                    <TableCell className="px-2 py-2">
+                      <RuntimeBadge runtime={commandRuntime(s, c, workspacesById)} />
+                    </TableCell>
+                    {showNode && (
+                      <TableCell className="px-2 py-2 text-muted-foreground">
+                        <NodePlacementCell host={nodeName(s, c.nodeId)} placement={c.placement} />
+                      </TableCell>
+                    )}
+                    <TableCell className="px-2 py-2 text-muted-foreground">{ago(c.endedAt, now)}</TableCell>
+                    <TableCell className="px-2 py-2">{duration(c.seconds)}</TableCell>
+                    <TableCell className="px-2 py-2 text-faint">{c.coldSeconds !== undefined ? duration(c.coldSeconds) : "—"}</TableCell>
+                    <TableCell className="px-2 py-2 text-primary">{c.coldSeconds !== undefined ? speedup(c.coldSeconds, c.seconds) : "—"}</TableCell>
+                    <TableCell className="px-2 py-2 text-muted-foreground">{c.rebuilt !== undefined ? `${c.rebuilt}/${c.of ?? 0}` : "—"}</TableCell>
+                    <TableCell className="px-2 py-2 text-muted-foreground">
+                      {bytes(c.peakMemoryBytes)}
+                      {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
+                    </TableCell>
+                    <TableCell className="max-w-[260px] px-2 py-2 font-sans whitespace-normal text-muted-foreground">{c.failure ? (FAILURE[c.failure] ?? c.failure) : c.reason}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {filtered.length > limit && <p className="mt-3 text-center font-mono text-[10.5px] text-faint">showing {limit} of {filtered.length}</p>}
+        </>
+      )}
     </div>
   );
 }

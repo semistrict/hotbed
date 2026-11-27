@@ -1,6 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useState } from "react";
+import { filterTableRows, Table, TableBody, TableCell, TableFilterBar, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { clients, WorkspaceState, workspaceStateLabel, type FileEntry, type Snapshot, type Workspace } from "../api";
 import { SessionLink } from "../components/SessionLink";
 import { SegmentedBar } from "../components/charts/Bars";
@@ -20,59 +21,77 @@ const WORKSPACE_HIDDEN_COLS = ["workspace", "node", "project"] as const;
 /** Each of a workspace's checkouts: where it stands against its base, and what was synced into it. */
 function RepoTable({ s, w }: { s: Snapshot; w: Workspace }) {
   const base = s.bases.find((b) => b.id === w.baseId);
+  const [query, setQuery] = useState("");
   if (w.repos.length === 0) return <Empty>No repos recorded for this workspace.</Empty>;
+  const filtered = filterTableRows(w.repos, query, (r) => {
+    const at = base?.repos.find((b) => b.repo === r.repo);
+    return [r.repo, at?.commit, at?.message, r.head, r.filesChanged, r.syncDir || "nothing synced"];
+  });
   return (
     <>
-      <div className="space-y-2 md:hidden">
-        {w.repos.map((r) => {
-          const at = base?.repos.find((b) => b.repo === r.repo);
-          return (
-            <div key={r.repo} className="rounded-lg border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <span className="font-medium text-foreground">{r.repo}</span>
-                <span className="num text-[10.5px] text-muted-foreground">{r.filesChanged} changed</span>
-              </div>
-              <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-muted-foreground">
-                <span title={at?.message}>base {at ? shortSha(at.commit) : "—"}</span>
-                <span>head {shortSha(r.head)}</span>
-              </div>
-              <div className="mt-1 break-all text-[10.5px] text-faint">
-                {r.syncDir ? `synced from ${r.syncDir}` : "nothing synced"}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="hidden md:block">
-        <Table className="text-[12px]">
-          <TableHeader className="eyebrow">
-            <TableRow className="border-border hover:bg-transparent">
-              {["repo", "base", "head", "files changed", "synced from"].map((h) => (
-                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-                  {h}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody className="num font-mono text-[11px]">
-            {w.repos.map((r) => {
+      <TableFilterBar
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter repos…"
+        shown={filtered.length}
+        total={w.repos.length}
+      />
+      {filtered.length === 0 ? (
+        <Empty>No repos match “{query.trim()}”.</Empty>
+      ) : (
+        <>
+          <div className="space-y-2 md:hidden">
+            {filtered.map((r) => {
               const at = base?.repos.find((b) => b.repo === r.repo);
               return (
-                <TableRow key={r.repo} className="border-border/60 align-top">
-                  <TableCell className="px-2 py-2 text-foreground">{r.repo}</TableCell>
-                  <TableCell className="px-2 py-2 text-muted-foreground" title={at?.message}>
-                    {at ? shortSha(at.commit) : "—"}
-                  </TableCell>
-                  <TableCell className="px-2 py-2 text-muted-foreground">{shortSha(r.head)}</TableCell>
-                  <TableCell className="px-2 py-2">{r.filesChanged}</TableCell>
-                  <TableCell className="px-2 py-2 break-all whitespace-normal text-faint">{r.syncDir || "nothing synced"}</TableCell>
-                </TableRow>
+                <div key={r.repo} className="rounded-lg border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="font-medium text-foreground">{r.repo}</span>
+                    <span className="num text-[10.5px] text-muted-foreground">{r.filesChanged} changed</span>
+                  </div>
+                  <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-muted-foreground">
+                    <span title={at?.message}>base {at ? shortSha(at.commit) : "—"}</span>
+                    <span>head {shortSha(r.head)}</span>
+                  </div>
+                  <div className="mt-1 break-all text-[10.5px] text-faint">
+                    {r.syncDir ? `synced from ${r.syncDir}` : "nothing synced"}
+                  </div>
+                </div>
               );
             })}
-          </TableBody>
-        </Table>
-      </div>
+          </div>
+
+          <div className="hidden md:block">
+            <Table filterable={false} className="text-[12px]">
+              <TableHeader className="eyebrow">
+                <TableRow className="border-border hover:bg-transparent">
+                  {["repo", "base", "head", "files changed", "synced from"].map((h) => (
+                    <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                      {h}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody className="num font-mono text-[11px]">
+                {filtered.map((r) => {
+                  const at = base?.repos.find((b) => b.repo === r.repo);
+                  return (
+                    <TableRow key={r.repo} className="border-border/60 align-top">
+                      <TableCell className="px-2 py-2 text-foreground">{r.repo}</TableCell>
+                      <TableCell className="px-2 py-2 text-muted-foreground" title={at?.message}>
+                        {at ? shortSha(at.commit) : "—"}
+                      </TableCell>
+                      <TableCell className="px-2 py-2 text-muted-foreground">{shortSha(r.head)}</TableCell>
+                      <TableCell className="px-2 py-2">{r.filesChanged}</TableCell>
+                      <TableCell className="px-2 py-2 break-all whitespace-normal text-faint">{r.syncDir || "nothing synced"}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
     </>
   );
 }

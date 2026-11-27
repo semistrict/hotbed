@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Table } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { clients, type ProfileBucket, type ProfileFrame } from "../api";
 import { foldStack } from "../api/folded";
@@ -350,48 +351,50 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
           ) : view === "flamegraph" ? (
             <FlameGraph stacks={p.stacks} frames={p.frames} highlight={queryText} />
           ) : view === "top" ? (
-            <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
-              <table className="w-full border-collapse font-mono text-[11.5px]">
-                <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-                  <tr className="border-b border-border">
-                    <th className="px-3 py-2 text-right">Self %</th>
-                    <th className="px-3 py-2 text-right">Total %</th>
-                    <th className="px-3 py-2 text-right">Samples</th>
-                    <th className="px-3 py-2">Runtime</th>
-                    <th className="px-3 py-2">Function</th>
-                    <th className="px-3 py-2">Module</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {p.topFunctions.map((fn, i) => {
-                    const fr = p.frames[fn.frame];
-                    const name = fr?.name ?? "[unknown]";
-                    const module = fr?.module ?? "";
-                    const frameType = fr?.frameType ?? "";
-                    const sourceFile = fr?.sourceFile ?? "";
-                    const sourceLine = fr?.sourceLine ?? 0;
-                    return (
-                      <tr key={`${name}-${i}`} className="hover:bg-muted/40">
-                        <td className="num px-3 py-1.5 text-right text-primary">{fn.selfPct.toFixed(1)}%</td>
-                        <td className="num px-3 py-1.5 text-right text-foreground">{fn.totalPct.toFixed(1)}%</td>
-                        <td className="num px-3 py-1.5 text-right text-muted-foreground">
-                          {String(fn.selfSamples)} / {String(fn.totalSamples)}
-                        </td>
-                        <td className="px-3 py-1.5">
-                          <RuntimePill type={frameType} />
-                        </td>
-                        <td className="max-w-[380px] truncate px-3 py-1.5 text-foreground" title={name}>
-                          {name}
-                        </td>
-                        <td className="max-w-[160px] truncate px-3 py-1.5 text-muted-foreground" title={sourceFile ? `${sourceFile}:${sourceLine}` : module}>
-                          {module || "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <Table
+              containerClassName="max-h-[420px] overflow-auto rounded-lg border border-border"
+              filterPlaceholder="Filter functions…"
+              className="w-full border-collapse font-mono text-[11.5px]"
+            >
+              <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                <tr className="border-b border-border">
+                  <th className="px-3 py-2 text-right">Self %</th>
+                  <th className="px-3 py-2 text-right">Total %</th>
+                  <th className="px-3 py-2 text-right">Samples</th>
+                  <th className="px-3 py-2">Runtime</th>
+                  <th className="px-3 py-2">Function</th>
+                  <th className="px-3 py-2">Module</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {p.topFunctions.map((fn, i) => {
+                  const fr = p.frames[fn.frame];
+                  const name = fr?.name ?? "[unknown]";
+                  const module = fr?.module ?? "";
+                  const frameType = fr?.frameType ?? "";
+                  const sourceFile = fr?.sourceFile ?? "";
+                  const sourceLine = fr?.sourceLine ?? 0;
+                  return (
+                    <tr key={`${name}-${i}`} className="hover:bg-muted/40">
+                      <td className="num px-3 py-1.5 text-right text-primary">{fn.selfPct.toFixed(1)}%</td>
+                      <td className="num px-3 py-1.5 text-right text-foreground">{fn.totalPct.toFixed(1)}%</td>
+                      <td className="num px-3 py-1.5 text-right text-muted-foreground">
+                        {String(fn.selfSamples)} / {String(fn.totalSamples)}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <RuntimePill type={frameType} />
+                      </td>
+                      <td className="max-w-[380px] truncate px-3 py-1.5 text-foreground" title={name}>
+                        {name}
+                      </td>
+                      <td className="max-w-[160px] truncate px-3 py-1.5 text-muted-foreground" title={sourceFile ? `${sourceFile}:${sourceLine}` : module}>
+                        {module || "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </Table>
           ) : (
             <div className="space-y-2">
               <div className="flex items-center justify-end gap-2">

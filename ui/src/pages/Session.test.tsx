@@ -81,6 +81,10 @@ describe("SessionPage", () => {
     );
     expect(html).toContain("go build ./...");
     expect(html).toContain("go test ./...");
+    expect(html).toContain(">id<");
+    expect(html).toContain("c1");
+    expect(html).toContain("c2");
+    expect(html).toContain("Filter commands…");
     expect(html).not.toContain("Nothing run yet.");
   });
 

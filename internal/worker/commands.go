@@ -993,6 +993,11 @@ func (e *Engine) admit(ctx context.Context) {
 			e.mu.Unlock()
 			continue
 		}
+		if e.queueExpiredLocked(c, e.nowMs()) {
+			e.end(c, cancelled, nil, queueExpiredReason(c.cmd().Reason))
+			e.mu.Unlock()
+			continue
+		}
 		kind, reason, holds := e.admissionBlockerFor(c, ahead, holder, mem, hasMem)
 		// A command sizing its VM may boot it again at its size: nothing else
 		// may use the VM meanwhile, until its unit has started.
@@ -1744,7 +1749,22 @@ func (e *Engine) reap(ctx context.Context) {
 	}
 }
 
-// limit holds commands to their time limits. One past its hard limit is
+// queueExpiredLocked reports whether a queued command has waited at least
+// maxQueueWait without starting. Call with e.mu held.
+func (e *Engine) queueExpiredLocked(c *command, nowMs int64) bool {
+	cmd := c.cmd()
+	return cmd.State == queued && cmd.QueuedAt > 0 && nowMs-cmd.QueuedAt >= maxQueueWait.Milliseconds()
+}
+
+func queueExpiredReason(lastWait string) string {
+	if lastWait != "" {
+		return fmt.Sprintf("nothing can queue for more than 15m (last wait: %s)", lastWait)
+	}
+	return "nothing can queue for more than 15m"
+}
+
+// limit holds commands to their time limits. A queued command that waits past
+// maxQueueWait is cancelled. One past its hard limit is
 // stopped (even if a hand intervention or diagnostic capture is in flight:
 // hard-limit expiry takes precedence and cancels in-flight diagnostics). One
 // that ran its soft limit without ending, counted from its start or from when
@@ -1757,6 +1777,12 @@ func (e *Engine) limit(ctx context.Context) {
 	var stop, pause []*command
 	for _, c := range e.commands {
 		cmd := c.cmd()
+		if cmd.State == queued {
+			if !c.stopping && !c.admitting && !c.intervening && e.queueExpiredLocked(c, now) {
+				e.end(c, cancelled, nil, queueExpiredReason(cmd.Reason))
+			}
+			continue
+		}
 		if !started(cmd.State) || cmd.StartedAt == nil || c.stopping {
 			continue
 		}

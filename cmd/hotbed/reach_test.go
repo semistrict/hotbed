@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 )
 
 // session start must reload-modify-write sessions.json after StartSession
@@ -368,5 +370,54 @@ func TestReachWorkspaceForTimesOutOnStuckController(t *testing.T) {
 			t.Fatalf("workspaceFor took %v, expected prompt timeout around %v", elapsed, createWorkspaceTimeout)
 		}
 	})
+}
 
+type busyWorkspaceClient struct {
+	hotbedv1connect.WorkspaceServiceClient
+	calls int
+	delay time.Duration
+}
+
+func (b *busyWorkspaceClient) CreateWorkspace(ctx context.Context, _ *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
+	b.calls++
+	if b.delay > 0 {
+		select {
+		case <-time.After(b.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return nil, api.ToConnect(&api.Error{
+		Code:      api.CodeNodesBusy,
+		Message:   "all eligible nodes are currently full (ubu1, vm1); queued at controller, waiting for any to free up",
+		Retryable: true,
+	})
+}
+
+func TestCreateQueuedCancelsAfterMaxQueueWait(t *testing.T) {
+	prev := maxQueueWait
+	maxQueueWait = 60 * time.Millisecond
+	t.Cleanup(func() { maxQueueWait = prev })
+
+	var stderr bytes.Buffer
+	client := &busyWorkspaceClient{delay: 25 * time.Millisecond}
+	_, err := createQueued(t.Context(), deps{stderr: &stderr}, client, &pb.CreateWorkspaceRequest{
+		SessionId:       "busy-fox",
+		WaitForCapacity: true,
+	})
+	if err == nil {
+		t.Fatal("createQueued succeeded while nodes stayed busy past maxQueueWait, want cancellation error")
+	}
+	if code := api.CodeOf(err); code != api.CodeInternal {
+		t.Fatalf("createQueued code = %s (%v), want %s", code, err, api.CodeInternal)
+	}
+	if !strings.Contains(err.Error(), "nothing can queue for more than 15m") {
+		t.Fatalf("createQueued error = %q, want mention of nothing can queue for more than 15m", err.Error())
+	}
+	if client.calls < 2 {
+		t.Errorf("createQueued calls = %d, want >= 2 retries before maxQueueWait", client.calls)
+	}
+	if !strings.Contains(stderr.String(), "all eligible nodes are currently full") {
+		t.Errorf("stderr = %q, want busy wait notice", stderr.String())
+	}
 }

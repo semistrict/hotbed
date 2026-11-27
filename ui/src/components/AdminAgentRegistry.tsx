@@ -404,7 +404,7 @@ function DataTableView({
         className="overflow-auto"
         style={props.maxHeight ? { maxHeight: `${props.maxHeight}px` } : { maxHeight: "420px" }}
       >
-        <Table>
+        <Table filterable={false}>
           <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
             <TableRow className="border-border hover:bg-transparent">
               {columns.map((col) => {

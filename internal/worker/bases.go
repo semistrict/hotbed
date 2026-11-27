@@ -558,6 +558,9 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 		b.BuiltAt = &now
 		b.BuildSeconds = seconds
 		why := baseFailure(b)
+		if c.cmd().Reason != "" && failedStep(b) == "" {
+			why = fmt.Sprintf("base %s failed: %s (its log is command %s)", b.Id, c.cmd().Reason, c.cmd().Id)
+		}
 		b.FailureReason = cmp.Or(c.cmd().Reason, why)
 		stepFailed := failedStep(b) != ""
 		activeDur := time.Duration((b.PrepSeconds + activeRunSecs) * float64(time.Second))

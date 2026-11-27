@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { filterTableRows, Table, TableFilterBar } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   clients,
@@ -401,32 +402,34 @@ export function LiveDiagnosticsPanel({ id, ended = false, onSamplePid }: { id: s
 
             {/* Structured strace -c syscall table */}
             {traceSummary && traceSummary.syscalls.length > 0 && (
-              <div className="max-h-[340px] overflow-auto rounded-lg border border-border">
-                <table className="w-full border-collapse font-mono text-[11.5px]">
-                  <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-                    <tr className="border-b border-border">
-                      <th className="px-3 py-2">Syscall</th>
-                      <th className="px-3 py-2 text-right">% Time</th>
-                      <th className="px-3 py-2 text-right">Seconds</th>
-                      <th className="px-3 py-2 text-right">µs/call</th>
-                      <th className="px-3 py-2 text-right">Calls</th>
-                      <th className="px-3 py-2 text-right">Errors</th>
+              <Table
+                containerClassName="max-h-[340px] overflow-auto rounded-lg border border-border"
+                filterPlaceholder="Filter syscalls…"
+                className="w-full border-collapse font-mono text-[11.5px]"
+              >
+                <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="px-3 py-2">Syscall</th>
+                    <th className="px-3 py-2 text-right">% Time</th>
+                    <th className="px-3 py-2 text-right">Seconds</th>
+                    <th className="px-3 py-2 text-right">µs/call</th>
+                    <th className="px-3 py-2 text-right">Calls</th>
+                    <th className="px-3 py-2 text-right">Errors</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {traceSummary.syscalls.map((sc) => (
+                    <tr key={sc.name} className="hover:bg-muted/40">
+                      <td className="px-3 py-1.5 text-foreground">{sc.name}</td>
+                      <td className="num px-3 py-1.5 text-right text-primary">{sc.pctTime.toFixed(1)}%</td>
+                      <td className="num px-3 py-1.5 text-right text-muted-foreground">{sc.seconds.toFixed(4)}</td>
+                      <td className="num px-3 py-1.5 text-right text-muted-foreground">{String(sc.usecsPerCall)}</td>
+                      <td className="num px-3 py-1.5 text-right text-foreground">{sc.calls.toLocaleString()}</td>
+                      <td className={`num px-3 py-1.5 text-right ${sc.errors > 0n ? "text-critical" : "text-faint"}`}>{sc.errors > 0n ? sc.errors.toLocaleString() : "—"}</td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {traceSummary.syscalls.map((sc) => (
-                      <tr key={sc.name} className="hover:bg-muted/40">
-                        <td className="px-3 py-1.5 text-foreground">{sc.name}</td>
-                        <td className="num px-3 py-1.5 text-right text-primary">{sc.pctTime.toFixed(1)}%</td>
-                        <td className="num px-3 py-1.5 text-right text-muted-foreground">{sc.seconds.toFixed(4)}</td>
-                        <td className="num px-3 py-1.5 text-right text-muted-foreground">{String(sc.usecsPerCall)}</td>
-                        <td className="num px-3 py-1.5 text-right text-foreground">{sc.calls.toLocaleString()}</td>
-                        <td className={`num px-3 py-1.5 text-right ${sc.errors > 0n ? "text-critical" : "text-faint"}`}>{sc.errors > 0n ? sc.errors.toLocaleString() : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </Table>
             )}
 
             {/* Streamed or raw textual output */}
@@ -593,25 +596,45 @@ function ProcsView({
   onSamplePid?: (pid: number) => void;
 }) {
   const [expandedPid, setExpandedPid] = useState<number | null>(null);
+  const [query, setQuery] = useState("");
   if (procs.length === 0) return <Empty>No live processes found in this command's cgroup.</Empty>;
+  const filteredProcs = filterTableRows(procs, query, (p) => [
+    p.pid,
+    p.state,
+    p.comm,
+    p.cmdline,
+    p.threads.length,
+    p.wchan,
+    ...p.threads.flatMap((t) => [t.tid, t.state, t.name, t.wchan]),
+  ]);
   return (
-    <div className="overflow-auto">
-      <table className="w-full border-collapse font-mono text-[11.5px]">
-        <thead className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-          <tr className="border-b border-border">
-            <th className="px-2 py-1.5">PID</th>
-            <th className="px-2 py-1.5">State</th>
-            <th className="px-2 py-1.5">Comm / Cmdline</th>
-            <th className="px-2 py-1.5 text-right">Threads</th>
-            <th className="px-2 py-1.5 text-right">RSS</th>
-            <th className="px-2 py-1.5 text-right">CPU</th>
-            <th className="px-2 py-1.5 text-right">IO R/W</th>
-            <th className="px-2 py-1.5">Wait channel (wchan)</th>
-            <th className="px-2 py-1.5" />
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {procs.map((p) => {
+    <div>
+      <TableFilterBar
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter processes…"
+        shown={filteredProcs.length}
+        total={procs.length}
+      />
+      {filteredProcs.length === 0 ? (
+        <Empty>No processes match “{query.trim()}”.</Empty>
+      ) : (
+        <Table filterable={false} containerClassName="overflow-auto" className="w-full border-collapse font-mono text-[11.5px]">
+          <thead className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+            <tr className="border-b border-border">
+              <th className="px-2 py-1.5">PID</th>
+              <th className="px-2 py-1.5">State</th>
+              <th className="px-2 py-1.5">Comm / Cmdline</th>
+              <th className="px-2 py-1.5 text-right">Threads</th>
+              <th className="px-2 py-1.5 text-right">RSS</th>
+              <th className="px-2 py-1.5 text-right">CPU</th>
+              <th className="px-2 py-1.5 text-right">IO R/W</th>
+              <th className="px-2 py-1.5">Wait channel (wchan)</th>
+              <th className="px-2 py-1.5" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {filteredProcs.map((p) => {
             const stateTone = p.state === "R" ? "bg-ember-wash text-primary" : p.state === "D" ? "bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] text-critical" : "bg-muted text-muted-foreground";
             const expanded = expandedPid === p.pid;
             return (
@@ -680,7 +703,8 @@ function ProcsView({
             );
           })}
         </tbody>
-      </table>
+        </Table>
+      )}
     </div>
   );
 }
@@ -734,7 +758,7 @@ function LimitsView({ limits }: { limits: ProcessLimits[] }) {
             <span className="text-muted-foreground">Seccomp: {l.seccomp || "—"}</span>
             <span className="text-muted-foreground">NoNewPrivs: {l.noNewPrivs ? "yes" : "no"}</span>
           </div>
-          <table className="w-full border-collapse text-[11px]">
+          <Table className="w-full border-collapse text-[11px]" filterPlaceholder="Filter limits…">
             <thead>
               <tr className="border-b border-border text-left text-[10px] uppercase text-faint">
                 <th className="py-1">Limit</th>
@@ -753,7 +777,7 @@ function LimitsView({ limits }: { limits: ProcessLimits[] }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         </div>
       ))}
     </div>

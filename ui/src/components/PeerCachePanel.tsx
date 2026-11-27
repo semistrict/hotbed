@@ -5,6 +5,7 @@
 // reads were found.
 
 import { Link } from "@tanstack/react-router";
+import { Table } from "@/components/ui/table";
 import { PartCacheShardState, type Node, type ObjectStoreStats, type PartFetches, type Snapshot } from "../api";
 import { SegmentedBar } from "./charts/Bars";
 import { LineChart } from "./charts/LineChart";
@@ -266,8 +267,8 @@ export function ClusterPeerCacheCard({ s, colors }: { s: Snapshot; colors: Map<s
         <div className="eyebrow mb-2">where parts were found, all nodes, since start · bytes</div>
         <FetchSourcesBar f={sum.fetches} />
       </div>
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full text-left font-mono text-[11px]">
+      <div className="mt-4">
+        <Table className="w-full text-left font-mono text-[11px]" filterPlaceholder="Filter peers…">
           <thead>
             <tr className="border-b border-border text-[9.5px] tracking-wider text-faint uppercase">
               <th className="py-1.5 pr-2 font-medium">node</th>
@@ -312,7 +313,7 @@ export function ClusterPeerCacheCard({ s, colors }: { s: Snapshot; colors: Map<s
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
         <div className="mt-2 text-[10px] text-faint">
           Counts are since each cladefsd started. Local hit is the share of part bytes read from memory or the node's own SSD cache.
         </div>

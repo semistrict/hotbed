@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useState } from "react";
+import { filterTableRows, Table, TableBody, TableCell, TableFilterBar, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { clients, projectScope, ReviewState, type Review, type Snapshot } from "../api";
 import { SessionLink } from "../components/SessionLink";
 import { ProjectTag } from "../components/ProjectTag";
@@ -67,109 +68,143 @@ export const REVIEW_STATE: Record<ReviewState, { text: string; className: string
 };
 
 function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: number; showProject: boolean }) {
+  const [query, setQuery] = useState("");
+  const filtered = filterTableRows(reviews, query, (r) => {
+    const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
+    return [
+      `#${r.id}`,
+      r.id,
+      r.title,
+      r.repo ? remoteName(r.repo) : "",
+      r.repo,
+      r.branch,
+      r.base,
+      r.head,
+      versionLine(r),
+      r.snapshotOf ? "uncommitted" : "",
+      r.project,
+      st.text,
+      r.implementerModel || r.implementer?.model || "",
+      r.implementer?.session || r.requested?.session || "",
+      ...reviewerModels(r),
+    ];
+  });
   return (
     <>
-      <div className="space-y-3 lg:hidden">
-        {reviews.map((r) => {
-          const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
-          return (
-            <div key={r.id} className="rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-[11px]">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-faint">#{r.id}</span>
-                {showProject && <ProjectTag name={r.project} />}
-                <span className={st.className}>{st.text}</span>
-                {r.open > 0 && r.state === ReviewState.DONE && <span className="ml-auto text-primary">{r.open} open</span>}
-              </div>
-              <Link to="/reviews/$id" params={{ id: String(r.id) }} className="mt-1.5 block font-sans text-[14.5px] leading-snug font-medium text-foreground hover:text-primary">
-                {r.title}
-              </Link>
-              <div className="mt-1 break-words text-[10.5px] text-muted-foreground" title={`${r.base}..${r.head}`}>
-                {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
-                {r.branch && <span>{r.branch} · </span>}
-                {versionLine(r)}
-                {r.snapshotOf && <span className="text-warning-ink"> · uncommitted</span>}
-              </div>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2 text-[10.5px]">
-                <SeverityCounts r={r} />
-                <span className="text-muted-foreground">{r.responses} resp</span>
-              </div>
-              <div className="mt-1.5 text-[10.5px] text-muted-foreground">
-                {r.requested && (
-                  <span>
-                    impl: {r.implementerModel || r.implementer?.model || "unknown"} <SessionLink id={r.implementer?.session || r.requested.session} empty={null} />{" "}
-                    <span className="text-faint">{ago(r.requested.at, now)}</span>
-                  </span>
-                )}
-                <div className="text-faint">
-                  {(() => {
-                    const models = reviewerModels(r);
-                    return models.length > 0 ? `rev: ${models.join(", ")}` : "no reviewer yet";
-                  })()}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="hidden lg:block">
-        <Table className="text-[12px]">
-          <TableHeader className="eyebrow">
-            <TableRow className="border-border hover:bg-transparent">
-              {["review", ...(showProject ? ["project"] : []), "state", "findings", "open", "responses", "implementer · reviewers"].map((h) => (
-                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-                  {h}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody className="font-mono text-[11px]">
-            {reviews.map((r) => {
+      <TableFilterBar
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter reviews…"
+        shown={filtered.length}
+        total={reviews.length}
+      />
+      {filtered.length === 0 ? (
+        <Empty>No reviews match “{query.trim()}”.</Empty>
+      ) : (
+        <>
+          <div className="space-y-3 lg:hidden">
+            {filtered.map((r) => {
               const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
-              const models = reviewerModels(r);
               return (
-                <TableRow key={r.id} className="border-border/60 align-top hover:bg-muted/60">
-                  <TableCell className="px-2 py-2.5 whitespace-normal">
-                    <Link to="/reviews/$id" params={{ id: String(r.id) }} className="font-sans text-[14px] font-medium text-foreground hover:text-primary">
-                      {r.title}
-                    </Link>
-                    <span className="ml-2 text-faint">#{r.id}</span>
-                    <div className="mt-0.5 text-[10.5px] text-muted-foreground" title={`${r.base}..${r.head}`}>
-                      {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
-                      {r.branch && <span>{r.branch} · </span>}
-                      {versionLine(r)}
-                      {r.snapshotOf && <span className="text-warning-ink"> · uncommitted</span>}
-                    </div>
-                  </TableCell>
-                  {showProject && (
-                    <TableCell className="px-2 py-2.5">
-                      <ProjectTag name={r.project} />
-                    </TableCell>
-                  )}
-                  <TableCell className={`px-2 py-2.5 ${st.className}`}>{st.text}</TableCell>
-                  <TableCell className="px-2 py-2.5">
-                    <SeverityCounts r={r} stacked />
-                  </TableCell>
-                  <TableCell className={`px-2 py-2.5 ${r.open > 0 && r.state === ReviewState.DONE ? "text-primary" : "text-faint"}`}>{r.open}</TableCell>
-                  <TableCell className="px-2 py-2.5 text-muted-foreground">{r.responses}</TableCell>
-                  <TableCell className="px-2 py-2.5 text-muted-foreground">
+                <div key={r.id} className="rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-[11px]">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-faint">#{r.id}</span>
+                    {showProject && <ProjectTag name={r.project} />}
+                    <span className={st.className}>{st.text}</span>
+                    {r.open > 0 && r.state === ReviewState.DONE && <span className="ml-auto text-primary">{r.open} open</span>}
+                  </div>
+                  <Link to="/reviews/$id" params={{ id: String(r.id) }} className="mt-1.5 block font-sans text-[14.5px] leading-snug font-medium text-foreground hover:text-primary">
+                    {r.title}
+                  </Link>
+                  <div className="mt-1 break-words text-[10.5px] text-muted-foreground" title={`${r.base}..${r.head}`}>
+                    {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
+                    {r.branch && <span>{r.branch} · </span>}
+                    {versionLine(r)}
+                    {r.snapshotOf && <span className="text-warning-ink"> · uncommitted</span>}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2 text-[10.5px]">
+                    <SeverityCounts r={r} />
+                    <span className="text-muted-foreground">{r.responses} resp</span>
+                  </div>
+                  <div className="mt-1.5 text-[10.5px] text-muted-foreground">
                     {r.requested && (
-                      <div>
-                        <span className="text-foreground">{r.implementerModel || r.implementer?.model || "unknown"}</span>{" "}
-                        <SessionLink id={r.implementer?.session || r.requested.session} empty={null} />{" "}
+                      <span>
+                        impl: {r.implementerModel || r.implementer?.model || "unknown"} <SessionLink id={r.implementer?.session || r.requested.session} empty={null} />{" "}
                         <span className="text-faint">{ago(r.requested.at, now)}</span>
-                      </div>
+                      </span>
                     )}
                     <div className="text-faint">
-                      {models.length > 0 ? `→ ${models.join(", ")}${r.reviewers.length > 1 ? ` (${r.reviewers.length})` : ""}` : "no reviewer yet"}
+                      {(() => {
+                        const models = reviewerModels(r);
+                        return models.length > 0 ? `rev: ${models.join(", ")}` : "no reviewer yet";
+                      })()}
                     </div>
-                  </TableCell>
-                </TableRow>
+                  </div>
+                </div>
               );
             })}
-          </TableBody>
-        </Table>
-      </div>
+          </div>
+
+          <div className="hidden lg:block">
+            <Table filterable={false} className="text-[12px]">
+              <TableHeader className="eyebrow">
+                <TableRow className="border-border hover:bg-transparent">
+                  {["review", ...(showProject ? ["project"] : []), "state", "findings", "open", "responses", "implementer · reviewers"].map((h) => (
+                    <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                      {h}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody className="font-mono text-[11px]">
+                {filtered.map((r) => {
+                  const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
+                  const models = reviewerModels(r);
+                  return (
+                    <TableRow key={r.id} className="border-border/60 align-top hover:bg-muted/60">
+                      <TableCell className="px-2 py-2.5 whitespace-normal">
+                        <Link to="/reviews/$id" params={{ id: String(r.id) }} className="font-sans text-[14px] font-medium text-foreground hover:text-primary">
+                          {r.title}
+                        </Link>
+                        <span className="ml-2 text-faint">#{r.id}</span>
+                        <div className="mt-0.5 text-[10.5px] text-muted-foreground" title={`${r.base}..${r.head}`}>
+                          {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
+                          {r.branch && <span>{r.branch} · </span>}
+                          {versionLine(r)}
+                          {r.snapshotOf && <span className="text-warning-ink"> · uncommitted</span>}
+                        </div>
+                      </TableCell>
+                      {showProject && (
+                        <TableCell className="px-2 py-2.5">
+                          <ProjectTag name={r.project} />
+                        </TableCell>
+                      )}
+                      <TableCell className={`px-2 py-2.5 ${st.className}`}>{st.text}</TableCell>
+                      <TableCell className="px-2 py-2.5">
+                        <SeverityCounts r={r} stacked />
+                      </TableCell>
+                      <TableCell className={`px-2 py-2.5 ${r.open > 0 && r.state === ReviewState.DONE ? "text-primary" : "text-faint"}`}>{r.open}</TableCell>
+                      <TableCell className="px-2 py-2.5 text-muted-foreground">{r.responses}</TableCell>
+                      <TableCell className="px-2 py-2.5 text-muted-foreground">
+                        {r.requested && (
+                          <div>
+                            <span className="text-foreground">{r.implementerModel || r.implementer?.model || "unknown"}</span>{" "}
+                            <SessionLink id={r.implementer?.session || r.requested.session} empty={null} />{" "}
+                            <span className="text-faint">{ago(r.requested.at, now)}</span>
+                          </div>
+                        )}
+                        <div className="text-faint">
+                          {models.length > 0 ? `→ ${models.join(", ")}${r.reviewers.length > 1 ? ` (${r.reviewers.length})` : ""}` : "no reviewer yet"}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
     </>
   );
 }

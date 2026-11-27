@@ -1,7 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { filterTableRows, Table, TableBody, TableCell, TableFilterBar, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BaseState, CommandState, WorkspaceState, workspaceStateLabel, type Project, type RepoSummary, type Snapshot, type Workspace } from "../api";
 import { SessionLink } from "../components/SessionLink";
 import { SetupSteps } from "../components/SetupSteps";
@@ -313,87 +313,116 @@ function BasesSummary({ s, bases }: { s: Snapshot; bases: Snapshot["bases"] }) {
 }
 
 function RepoWorkspaceTable({ s, rows, now }: { s: Snapshot; rows: Workspace[]; now: number }) {
+  const [query, setQuery] = useState("");
+  const filtered = filterTableRows(rows, query, (w) => {
+    const base = s.bases.find((b) => b.id === w.baseId);
+    const live = s.commands.filter((c) => c.workspaceId === w.id && isLive(c)).length;
+    return [
+      w.id,
+      workspaceStateLabel(w.state),
+      w.sessionId,
+      w.agent,
+      nodeName(s, w.nodeId),
+      w.nodeId,
+      base ? `g${base.generation}` : "",
+      filesChanged(w),
+      live > 0 ? `${live} live` : "",
+    ];
+  });
   return (
     <>
-      <div className="space-y-2 md:hidden">
-        {rows.map((w) => {
-          const base = s.bases.find((b) => b.id === w.baseId);
-          const live = s.commands.filter((c) => c.workspaceId === w.id && isLive(c)).length;
-          return (
-            <div
-              key={w.id}
-              className={`rounded-lg border border-border/70 bg-card/60 p-2.5 font-mono text-[11px] ${w.state === WorkspaceState.RELEASED ? "opacity-50" : ""}`}
-            >
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <div className="min-w-0">
-                  <Link to="/workspaces/$id" params={{ id: w.id }} className="font-medium text-foreground hover:text-primary">
-                    {w.id}
-                  </Link>
-                  {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && (
-                    <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>
-                  )}
-                </div>
-                <span className="shrink-0 text-[10.5px]">
-                  {live > 0 ? <span className="text-primary">{live} live</span> : <span className="text-faint">{ago(w.lastActiveAt, now)}</span>}
-                </span>
-              </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
-                <SessionLink id={w.sessionId} empty={null} />
-                <span>{nodeName(s, w.nodeId)}</span>
-                <span className="text-faint">g{base?.generation ?? "?"}</span>
-                <span>{w.agent}</span>
-              </div>
-              <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-faint">
-                <span>{filesChanged(w)} files</span>
-                <span>{bytes(w.exclusiveBytes)} owned</span>
-                <span>{String(w.forkMillis)} ms fork</span>
-                <span>created {ago(w.createdAt, now)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="hidden md:block">
-        <Table className="text-[12px]">
-          <TableHeader className="eyebrow">
-            <TableRow className="border-border/70 hover:bg-transparent">
-              {["workspace", "session", "agent", "node", "base", "files", "owns", "fork", "created", "active"].map((h) => (
-                <TableHead key={h} className="h-auto px-2 py-1.5 font-normal text-muted-foreground">
-                  {h}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody className="num font-mono text-[11px]">
-            {rows.map((w) => {
+      <TableFilterBar
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter workspaces…"
+        shown={filtered.length}
+        total={rows.length}
+      />
+      {filtered.length === 0 ? (
+        <Empty>No workspaces match “{query.trim()}”.</Empty>
+      ) : (
+        <>
+          <div className="space-y-2 md:hidden">
+            {filtered.map((w) => {
               const base = s.bases.find((b) => b.id === w.baseId);
               const live = s.commands.filter((c) => c.workspaceId === w.id && isLive(c)).length;
               return (
-                <TableRow key={w.id} className={`border-border/50 hover:bg-muted/60 ${w.state === WorkspaceState.RELEASED ? "opacity-45" : ""}`}>
-                  <TableCell className="px-2 py-2">
-                    <Link to="/workspaces/$id" params={{ id: w.id }} className="text-foreground hover:text-primary">
-                      {w.id}
-                    </Link>
-                    {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>}
-                  </TableCell>
-                  <TableCell className="px-2 py-2">
-                    <SessionLink id={w.sessionId} />
-                  </TableCell>
-                  <TableCell className="px-2 py-2 text-muted-foreground">{w.agent}</TableCell>
-                  <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, w.nodeId)}</TableCell>
-                  <TableCell className="px-2 py-2 text-faint">g{base?.generation ?? "?"}</TableCell>
-                  <TableCell className="px-2 py-2">{filesChanged(w)}</TableCell>
-                  <TableCell className="px-2 py-2">{bytes(w.exclusiveBytes)}</TableCell>
-                  <TableCell className="px-2 py-2 text-faint">{String(w.forkMillis)} ms</TableCell>
-                  <TableCell className="px-2 py-2 text-muted-foreground">{ago(w.createdAt, now)}</TableCell>
-                  <TableCell className="px-2 py-2">{live > 0 ? <span className="text-primary">{live} live</span> : <span className="text-faint">{ago(w.lastActiveAt, now)}</span>}</TableCell>
-                </TableRow>
+                <div
+                  key={w.id}
+                  className={`rounded-lg border border-border/70 bg-card/60 p-2.5 font-mono text-[11px] ${w.state === WorkspaceState.RELEASED ? "opacity-50" : ""}`}
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <div className="min-w-0">
+                      <Link to="/workspaces/$id" params={{ id: w.id }} className="font-medium text-foreground hover:text-primary">
+                        {w.id}
+                      </Link>
+                      {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && (
+                        <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>
+                      )}
+                    </div>
+                    <span className="shrink-0 text-[10.5px]">
+                      {live > 0 ? <span className="text-primary">{live} live</span> : <span className="text-faint">{ago(w.lastActiveAt, now)}</span>}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
+                    <SessionLink id={w.sessionId} empty={null} />
+                    <span>{nodeName(s, w.nodeId)}</span>
+                    <span className="text-faint">g{base?.generation ?? "?"}</span>
+                    <span>{w.agent}</span>
+                  </div>
+                  <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-faint">
+                    <span>{filesChanged(w)} files</span>
+                    <span>{bytes(w.exclusiveBytes)} owned</span>
+                    <span>{String(w.forkMillis)} ms fork</span>
+                    <span>created {ago(w.createdAt, now)}</span>
+                  </div>
+                </div>
               );
             })}
-          </TableBody>
-        </Table>
-      </div>
+          </div>
+
+          <div className="hidden md:block">
+            <Table filterable={false} className="text-[12px]">
+              <TableHeader className="eyebrow">
+                <TableRow className="border-border/70 hover:bg-transparent">
+                  {["workspace", "session", "agent", "node", "base", "files", "owns", "fork", "created", "active"].map((h) => (
+                    <TableHead key={h} className="h-auto px-2 py-1.5 font-normal text-muted-foreground">
+                      {h}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody className="num font-mono text-[11px]">
+                {filtered.map((w) => {
+                  const base = s.bases.find((b) => b.id === w.baseId);
+                  const live = s.commands.filter((c) => c.workspaceId === w.id && isLive(c)).length;
+                  return (
+                    <TableRow key={w.id} className={`border-border/50 hover:bg-muted/60 ${w.state === WorkspaceState.RELEASED ? "opacity-45" : ""}`}>
+                      <TableCell className="px-2 py-2">
+                        <Link to="/workspaces/$id" params={{ id: w.id }} className="text-foreground hover:text-primary">
+                          {w.id}
+                        </Link>
+                        {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>}
+                      </TableCell>
+                      <TableCell className="px-2 py-2">
+                        <SessionLink id={w.sessionId} />
+                      </TableCell>
+                      <TableCell className="px-2 py-2 text-muted-foreground">{w.agent}</TableCell>
+                      <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, w.nodeId)}</TableCell>
+                      <TableCell className="px-2 py-2 text-faint">g{base?.generation ?? "?"}</TableCell>
+                      <TableCell className="px-2 py-2">{filesChanged(w)}</TableCell>
+                      <TableCell className="px-2 py-2">{bytes(w.exclusiveBytes)}</TableCell>
+                      <TableCell className="px-2 py-2 text-faint">{String(w.forkMillis)} ms</TableCell>
+                      <TableCell className="px-2 py-2 text-muted-foreground">{ago(w.createdAt, now)}</TableCell>
+                      <TableCell className="px-2 py-2">{live > 0 ? <span className="text-primary">{live} live</span> : <span className="text-faint">{ago(w.lastActiveAt, now)}</span>}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
     </>
   );
 }

@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { Table } from "@/components/ui/table";
 import type { Node, ObjectStoreStats, Snapshot } from "../api";
 import { Meter, SegmentedBar } from "./charts/Bars";
 import { Columns } from "./charts/Columns";
@@ -416,8 +417,8 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
 
         <Card className="col-span-12 lg:col-span-5" title="Upload mix & nodes" sub="Cumulative cladefsd counters since each daemon started">
           <UploadMixBar segments={sum.sinceBootSegments} extents={sum.sinceBootExtents} checkpoints={sum.sinceBootCheckpoints} other={sum.sinceBootOther} />
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-left font-mono text-[11px]">
+          <div className="mt-4">
+            <Table className="w-full text-left font-mono text-[11px]" filterPlaceholder="Filter nodes…">
               <thead>
                 <tr className="border-b border-border text-[9.5px] tracking-wider text-faint uppercase">
                   <th className="py-1.5 pr-2 font-medium">node</th>
@@ -450,7 +451,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
                   );
                 })}
               </tbody>
-            </table>
+            </Table>
           </div>
         </Card>
 

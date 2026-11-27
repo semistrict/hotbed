@@ -2,6 +2,7 @@ import { CheckCircle2, Play, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Table } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   nextSixHourCronMs,
@@ -259,8 +260,8 @@ export function ClusterGcSection({ now }: { now: number }) {
           ) : (
             <>
               <SegmentedBar tall format={bytes} parts={barParts} />
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full text-left font-mono text-[11px]">
+              <div className="mt-4">
+                <Table className="w-full text-left font-mono text-[11px]" filterPlaceholder="Filter kinds…">
                   <thead>
                     <tr className="border-b border-border text-[9.5px] tracking-wider text-faint uppercase">
                       <th className="py-1.5 pr-2 font-medium">kind</th>
@@ -284,7 +285,7 @@ export function ClusterGcSection({ now }: { now: number }) {
                       );
                     })}
                   </tbody>
-                </table>
+                </Table>
               </div>
             </>
           )}

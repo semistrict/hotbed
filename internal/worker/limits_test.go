@@ -377,3 +377,93 @@ func TestSessionScopedHintsIncludeSessionFlag(t *testing.T) {
 		}
 	})
 }
+
+// Nothing may stay queued for more than 15 minutes: once maxQueueWait passes,
+// queued commands (regular commands, freshens, and deferred background freshens)
+// are cancelled with an error stating nothing can queue for more than 15m.
+func TestQueuedCommandCancelledAfter15Minutes(t *testing.T) {
+	t.Run("user command cancelled by admit and limit at 15m", func(t *testing.T) {
+		now := time.Unix(1795300000, 0)
+		e := limited(t, &now)
+		sys := e.cfg.System.(*fake.System)
+		sys.SetCPUPressure(70)
+		e.Sample()
+
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: "c-q1", WorkspaceId: "w", Args: []string{"echo", "hi"}}); err != nil {
+			t.Fatal(err)
+		}
+		e.admit(t.Context())
+		if got, _ := e.Command("c-q1"); got.State != queued {
+			t.Fatalf("c-q1 at t=0: state = %v, want queued", got.State)
+		}
+
+		// Just under 15 minutes: still queued.
+		now = now.Add(14*time.Minute + 59*time.Second)
+		e.Sample()
+		e.admit(t.Context())
+		e.limit(t.Context())
+		if got, _ := e.Command("c-q1"); got.State != queued {
+			t.Fatalf("c-q1 at 14m59s: state = %v, want queued", got.State)
+		}
+
+		// At 15 minutes: cancelled even if CPU pressure clears at the exact same tick.
+		now = now.Add(time.Second)
+		sys.SetCPUPressure(0)
+		e.Sample()
+		e.admit(t.Context())
+
+		got, ok := e.Command("c-q1")
+		if !ok {
+			t.Fatal("c-q1 missing")
+		}
+		if got.State != cancelled {
+			t.Fatalf("c-q1 at 15m: state = %v, want cancelled", got.State)
+		}
+		if !strings.Contains(got.Reason, "nothing can queue for more than 15m") {
+			t.Errorf("c-q1 reason = %q, want mention of nothing can queue for more than 15m", got.Reason)
+		}
+		if !strings.Contains(got.Reason, "CPU pressure") {
+			t.Errorf("c-q1 reason = %q, want last wait context preserved", got.Reason)
+		}
+	})
+
+	t.Run("limit also cancels queued command past 15m", func(t *testing.T) {
+		now := time.Unix(1795300000, 0)
+		e := limited(t, &now)
+		sys := e.cfg.System.(*fake.System)
+		sys.SetCPUPressure(70)
+		e.Sample()
+
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: "c-q2", WorkspaceId: "w", Args: []string{"echo", "hi"}}); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(15 * time.Minute)
+		e.limit(t.Context())
+
+		got, _ := e.Command("c-q2")
+		if got.State != cancelled || got.Reason != "nothing can queue for more than 15m" {
+			t.Fatalf("c-q2 after limit() at 15m: state=%v reason=%q, want cancelled with 15m error", got.State, got.Reason)
+		}
+	})
+
+	t.Run("deferred optional freshen is dropped after 15m even while node is busy", func(t *testing.T) {
+		now := time.Unix(1795300000, 0)
+		e := limited(t, &now)
+		e.scheduleOptionalFreshen(&pb.HostedProject{Name: "app"}, "vm", nil)
+		e.mu.Lock()
+		before := len(e.pendingFreshens)
+		e.mu.Unlock()
+		if before != 1 {
+			t.Fatalf("pendingFreshens = %d, want 1", before)
+		}
+		now = now.Add(15 * time.Minute)
+		// c-1 is still running (node busy), yet expired pending freshen must still be dropped.
+		e.maybeStartPendingFreshens(t.Context())
+		e.mu.Lock()
+		after := len(e.pendingFreshens)
+		e.mu.Unlock()
+		if after != 0 {
+			t.Fatalf("pendingFreshens after 15m = %d, want 0", after)
+		}
+	})
+}
