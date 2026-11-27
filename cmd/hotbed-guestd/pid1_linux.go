@@ -304,14 +304,14 @@ const (
 )
 
 type zramSwapOps struct {
-	readFile    func(path string) ([]byte, error)
-	writeFile   func(path string, data []byte, perm os.FileMode) error
-	stat        func(path string) (os.FileInfo, error)
-	modprobe    func(module string) error
-	formatSwap  func(devPath string, diskSize int64, pageSize int) error
-	swapon      func(devPath string, flags int) error
-	pageSize    func() int
-	waitForDev  func(devPath string) error
+	readFile   func(path string) ([]byte, error)
+	writeFile  func(path string, data []byte, perm os.FileMode) error
+	stat       func(path string) (os.FileInfo, error)
+	modprobe   func(module string) error
+	formatSwap func(devPath string, diskSize int64, pageSize int) error
+	swapon     func(devPath string, flags int) error
+	pageSize   func() int
+	waitForDev func(devPath string) error
 }
 
 var defaultZramSwapOps = zramSwapOps{

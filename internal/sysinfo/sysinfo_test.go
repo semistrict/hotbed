@@ -320,7 +320,7 @@ func TestParseSwaps(t *testing.T) {
 				"/dev/nvme0n1p3 partition " + strconv.FormatInt((math.MaxInt64/1024)/2, 10) + " 0 -1",
 			}, "\n"),
 			want: Swap{
-				ZramBytes: ((math.MaxInt64 / 1024) / 2 + 1) * 1024,
+				ZramBytes: ((math.MaxInt64/1024)/2 + 1) * 1024,
 				DiskBytes: ((math.MaxInt64 / 1024) / 2) * 1024,
 			},
 		},

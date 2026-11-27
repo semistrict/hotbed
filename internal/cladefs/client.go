@@ -365,7 +365,7 @@ func parseBase32ID(s string) (uint64, bool) {
 		default:
 			return 0, false
 		}
-		if val > (^(uint64(0)) - d) / 32 {
+		if val > (^(uint64(0))-d)/32 {
 			return 0, false
 		}
 		val = val*32 + d

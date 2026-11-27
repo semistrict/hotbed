@@ -34,23 +34,23 @@ type boardImportCmd struct {
 }
 
 type boardImportSummary struct {
-	SourceURL          string            `json:"sourceUrl"`
-	DryRun             bool              `json:"dryRun"`
-	ChannelMap         map[string]string `json:"channelMap"`
-	ProjectCounts      map[string]int    `json:"projectCounts,omitempty"`
-	Channels           int               `json:"channels"`
-	ActorsFetched      int               `json:"actorsFetched"`
-	SchemasFetched     int               `json:"schemasFetched"`
-	MessagesFetched    int               `json:"messagesFetched"`
-	TasksFetched       int               `json:"tasksFetched"`
-	AttachmentsCopied  int               `json:"attachmentsCopied"`
-	ActorsImported     int32             `json:"actorsImported"`
-	SchemasImported    int32             `json:"schemasImported"`
-	MessagesImported   int32             `json:"messagesImported"`
-	MessagesSkipped    int32             `json:"messagesSkipped"`
-	TasksImported      int32             `json:"tasksImported"`
-	ProjectsCreated    int32             `json:"projectsCreated"`
-	UnmappedChannels   []string          `json:"unmappedChannels,omitempty"`
+	SourceURL         string            `json:"sourceUrl"`
+	DryRun            bool              `json:"dryRun"`
+	ChannelMap        map[string]string `json:"channelMap"`
+	ProjectCounts     map[string]int    `json:"projectCounts,omitempty"`
+	Channels          int               `json:"channels"`
+	ActorsFetched     int               `json:"actorsFetched"`
+	SchemasFetched    int               `json:"schemasFetched"`
+	MessagesFetched   int               `json:"messagesFetched"`
+	TasksFetched      int               `json:"tasksFetched"`
+	AttachmentsCopied int               `json:"attachmentsCopied"`
+	ActorsImported    int32             `json:"actorsImported"`
+	SchemasImported   int32             `json:"schemasImported"`
+	MessagesImported  int32             `json:"messagesImported"`
+	MessagesSkipped   int32             `json:"messagesSkipped"`
+	TasksImported     int32             `json:"tasksImported"`
+	ProjectsCreated   int32             `json:"projectsCreated"`
+	UnmappedChannels  []string          `json:"unmappedChannels,omitempty"`
 }
 
 // External @vercel/board JSON wire shapes.
@@ -98,15 +98,15 @@ type extBoardAttachment struct {
 }
 
 type extBoardTask struct {
-	State   string          `json:"state"`
-	Owner   string          `json:"owner"`
-	By      string          `json:"by"`
-	For     string          `json:"for"`
-	Needs   []json.RawMessage `json:"needs"`
-	Epoch   int32           `json:"epoch"`
-	Result  string          `json:"result"`
-	Reason  string          `json:"reason"`
-	Claim   *struct {
+	State  string            `json:"state"`
+	Owner  string            `json:"owner"`
+	By     string            `json:"by"`
+	For    string            `json:"for"`
+	Needs  []json.RawMessage `json:"needs"`
+	Epoch  int32             `json:"epoch"`
+	Result string            `json:"result"`
+	Reason string            `json:"reason"`
+	Claim  *struct {
 		Actor string `json:"actor"`
 		Until string `json:"until"`
 	} `json:"claim"`

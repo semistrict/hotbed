@@ -689,20 +689,20 @@ func TestSymbolizerLookupZeroSizeBounds(t *testing.T) {
 		wantName string
 		wantOK   bool
 	}{
-		{0x0fff, "", false},                            // before first symbol
-		{0x1000, "sized_fn", true},                     // sized start
-		{0x10ff, "sized_fn", true},                     // sized last byte
-		{0x1100, "", false},                            // past sized symbol end
-		{0x2000, "asm_close_next", true},               // zero-sized start
-		{0x21ff, "asm_close_next", true},               // just before close next symbol
-		{0x2200, "asm_distant_next", true},             // next symbol start
+		{0x0fff, "", false},                // before first symbol
+		{0x1000, "sized_fn", true},         // sized start
+		{0x10ff, "sized_fn", true},         // sized last byte
+		{0x1100, "", false},                // past sized symbol end
+		{0x2000, "asm_close_next", true},   // zero-sized start
+		{0x21ff, "asm_close_next", true},   // just before close next symbol
+		{0x2200, "asm_distant_next", true}, // next symbol start
 		{0x2200 + maxZeroSizeSymSlack - 1, "asm_distant_next", true},
-		{0x2200 + maxZeroSizeSymSlack, "", false},      // past 64 KiB slack before distant next
-		{0x080000, "", false},                          // far in gap before distant next
-		{0x102200, "asm_last_symbol", true},            // trailing zero-sized start
+		{0x2200 + maxZeroSizeSymSlack, "", false}, // past 64 KiB slack before distant next
+		{0x080000, "", false},                     // far in gap before distant next
+		{0x102200, "asm_last_symbol", true},       // trailing zero-sized start
 		{0x102200 + maxZeroSizeSymSlack - 1, "asm_last_symbol", true},
-		{0x102200 + maxZeroSizeSymSlack, "", false},    // past trailing symbol slack
-		{0x7fff00001234, "", false},                    // arbitrarily high address
+		{0x102200 + maxZeroSizeSymSlack, "", false}, // past trailing symbol slack
+		{0x7fff00001234, "", false},                 // arbitrarily high address
 	}
 	for _, tc := range cases {
 		gotName, _, _, _, gotOK := sym.Lookup("libtest", tc.addr)

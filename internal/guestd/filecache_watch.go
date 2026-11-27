@@ -22,10 +22,10 @@ type fileCacheWatcher struct {
 	minFreed       int64
 	growthOverride int64
 
-	lastAt      time.Time
-	cooldown    time.Duration
-	lastAfter   int64
-	backedOff   bool
+	lastAt    time.Time
+	cooldown  time.Duration
+	lastAfter int64
+	backedOff bool
 }
 
 func (s *Server) newFileCacheWatcher() *fileCacheWatcher {

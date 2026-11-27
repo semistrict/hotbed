@@ -220,7 +220,7 @@ func (c *cladefsCore) tenantID() uint64 {
 }
 
 func (c *cladefsCore) RestoreWorkspaceCell(string, *pb.CladefsCell, bool) {}
-func (c *cladefsCore) MountPath(string) (string, bool)              { return "", false }
+func (c *cladefsCore) MountPath(string) (string, bool)                    { return "", false }
 
 // HeartbeatMeta returns the cladefs peer address, incarnation, the project
 // bases held here and the base cells retired since, for HeartbeatRequest.

@@ -60,12 +60,12 @@ const (
 	// that turns out to hold more is charged what it held; one that outlasts
 	// its run's wait is detached, and charged as a long one from then on.
 	quickReservation int64 = 512 << 20
-	minFreeDisk = 0.05 // keep this share of the disk free before admitting
+	minFreeDisk            = 0.05 // keep this share of the disk free before admitting
 	// maxQueueWait caps how long anything may stay queued before it is cancelled.
 	maxQueueWait = 15 * time.Minute
 	orphanAfter  = 30 * time.Second
-	keepEnded              = 2 * time.Minute
-	keepReleased           = 10 * time.Minute
+	keepEnded    = 2 * time.Minute
+	keepReleased = 10 * time.Minute
 	// keepProfiles is how long a command's profile file stays when the
 	// controller may lack it: as long as the controller keeps history.
 	keepProfiles = 30 * 24 * time.Hour
