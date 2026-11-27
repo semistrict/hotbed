@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { clients, projectScope, ReviewState, type Review, type Snapshot } from "../api";
+import { SessionLink } from "../components/SessionLink";
 import { ProjectTag } from "../components/ProjectTag";
 import { Card, Empty, StatTile } from "../components/Panel";
 import { ago } from "../lib/format";
@@ -95,7 +96,7 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
               <div className="mt-1.5 text-[10.5px] text-muted-foreground">
                 {r.requested && (
                   <span>
-                    impl: {r.implementerModel || r.implementer?.model || "unknown"} ({r.implementer?.session || r.requested.session}){" "}
+                    impl: {r.implementerModel || r.implementer?.model || "unknown"} <SessionLink id={r.implementer?.session || r.requested.session} empty={null} />{" "}
                     <span className="text-faint">{ago(r.requested.at, now)}</span>
                   </span>
                 )}
@@ -155,9 +156,8 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
                     {r.requested && (
                       <div>
                         <span className="text-foreground">{r.implementerModel || r.implementer?.model || "unknown"}</span>{" "}
-                        <span className="text-faint">
-                          ({r.implementer?.session || r.requested.session}) {ago(r.requested.at, now)}
-                        </span>
+                        <SessionLink id={r.implementer?.session || r.requested.session} empty={null} />{" "}
+                        <span className="text-faint">{ago(r.requested.at, now)}</span>
                       </div>
                     )}
                     <div className="text-faint">

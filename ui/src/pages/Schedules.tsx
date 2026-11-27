@@ -116,7 +116,6 @@ const MARK: Record<RunOutcome, string> = {
 };
 
 function RunTable({ s, runs, now }: { s: Snapshot; runs: ScheduledRun[]; now: number }) {
-  const listed = new Set(s.sessions.map((x) => x.id));
   return (
     <>
       <div className="space-y-2 lg:hidden">
@@ -133,12 +132,7 @@ function RunTable({ s, runs, now }: { s: Snapshot; runs: ScheduledRun[]; now: nu
                 </span>
               </div>
               <div className="num mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
-                {r.sessionId !== "" &&
-                  (listed.has(r.sessionId) ? (
-                    <SessionLink id={r.sessionId} />
-                  ) : (
-                    <span className="text-faint">{r.sessionId}</span>
-                  ))}
+                <SessionLink id={r.sessionId} empty={null} />
                 {r.nodeId && <span>{nodeName(s, r.nodeId)}</span>}
                 <span>
                   {ran ? duration(took) : "—"}
@@ -176,7 +170,7 @@ function RunTable({ s, runs, now }: { s: Snapshot; runs: ScheduledRun[]; now: nu
                     <OutcomeBadge outcome={r.outcome} />
                   </TableCell>
                   <TableCell className="px-2 py-2">
-                    {r.sessionId === "" ? <span className="text-faint">—</span> : listed.has(r.sessionId) ? <SessionLink id={r.sessionId} /> : <span className="text-faint" title="ended over a day ago">{r.sessionId}</span>}
+                    <SessionLink id={r.sessionId} />
                   </TableCell>
                   <TableCell className="px-2 py-2 text-muted-foreground">{r.nodeId ? nodeName(s, r.nodeId) : "—"}</TableCell>
                   <TableCell className="px-2 py-2">

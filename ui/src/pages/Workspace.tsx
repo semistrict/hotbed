@@ -1,7 +1,8 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { clients, WorkspaceState, workspaceStateLabel, type FileEntry, type Snapshot, type Workspace } from "../api";
+import { SessionLink } from "../components/SessionLink";
 import { SegmentedBar } from "../components/charts/Bars";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { Crumbs } from "../components/Crumbs";
@@ -117,10 +118,7 @@ export function WorkspacePage() {
       />
       {w.sessionId && (
         <p className="rise -mt-3 text-[13px] text-muted-foreground">
-          session{" "}
-          <Link to="/sessions/$id" params={{ id: w.sessionId }} className="font-mono text-foreground hover:text-primary">
-            {w.sessionId}
-          </Link>
+          session <SessionLink id={w.sessionId} />
         </p>
       )}
       {w.reason && (w.state === WorkspaceState.PREPARING || w.state === WorkspaceState.FAILED) && (

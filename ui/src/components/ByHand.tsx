@@ -13,7 +13,6 @@ import {
   type Command,
   type CommandDiagnostics,
   type CommandIntervention,
-  type Snapshot,
 } from "../api";
 import { hhmmss } from "../lib/format";
 import { isLive } from "../lib/live";
@@ -204,11 +203,9 @@ const VERB: Record<InterventionKind, { label: string; glyph: string; tone: strin
  * diagnostics.
  */
 export function InterventionsCard({
-  s,
   id,
   interventions,
 }: {
-  s: Snapshot;
   id: string;
   interventions: CommandIntervention[] | null;
 }) {
@@ -234,7 +231,6 @@ export function InterventionsCard({
           {shown.map((iv) => (
             <InterventionRow
               key={iv.seq}
-              s={s}
               iv={iv}
               diagnostics={diagnostics.find((d) => d.intervention?.seq === iv.seq) ?? null}
               loading={taken.isPending}
@@ -270,13 +266,11 @@ export function InterventionsCard({
 }
 
 export function InterventionRow({
-  s,
   iv,
   diagnostics,
   loading,
   defaultOpen = null,
 }: {
-  s: Snapshot;
   iv: CommandIntervention;
   diagnostics: CommandDiagnostics | null;
   loading: boolean;
@@ -287,7 +281,6 @@ export function InterventionRow({
   const session = iv.by?.session ?? "";
   const host = iv.by?.host ?? "";
   const at = iv.by?.at ?? 0n;
-  const listed = session !== "" && s.sessions.some((x) => x.id === session);
 
   return (
     <li className="rounded-xl border border-border bg-background/40 p-3.5">
@@ -300,11 +293,7 @@ export function InterventionRow({
           by{" "}
           {session !== "" ? (
             <>
-              {listed ? (
-                <SessionLink id={session} />
-              ) : (
-                <span className="font-mono text-[11px] text-foreground">{session}</span>
-              )}
+              <SessionLink id={session} />
               {host && <span className="text-faint"> on {host}</span>}
             </>
           ) : host !== "" ? (

@@ -1936,6 +1936,9 @@ func formatBoardTasksReport(res *pb.ListBoardTasksResponse) string {
 		}
 		if m.Task.Claim != nil {
 			extra += "  claimed-by=" + m.Task.Claim.Actor
+			if m.Task.Claim.SessionId != "" {
+				extra += "  session=" + m.Task.Claim.SessionId
+			}
 		}
 		if m.Task.Blocked != nil && m.Task.Blocked.Reason != "" {
 			extra += "  blocked=" + boardFirstLine(m.Task.Blocked.Reason, 40)

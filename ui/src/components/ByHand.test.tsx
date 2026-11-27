@@ -1,7 +1,8 @@
 import { create } from "@bufbuild/protobuf";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import type { ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
 import {
   CommandDiagnosticsSchema,
   CommandInterventionSchema,
@@ -10,9 +11,13 @@ import {
   InspectCommandResponseSchema,
   InterventionKind,
   ProcessSampleSchema,
-  SnapshotSchema,
 } from "../api";
 import { hhmmss } from "../lib/format";
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, params }: { children?: ReactNode; params?: { id: string } }) => <a href={`/sessions/${params?.id}`}>{children}</a>,
+  useNavigate: () => vi.fn(),
+}));
 import { actsFor, ByHandButtons, ByHandForm, effectiveDiagnose, InterventionRow, InterventionsCard } from "./ByHand";
 
 function renderWithQuery(node: React.ReactNode, qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
@@ -101,7 +106,6 @@ describe("ByHand controls", () => {
 });
 
 describe("InterventionsCard & saved diagnostics", () => {
-  const emptySnap = create(SnapshotSchema, {});
   const atMs = 1795320050000n;
 
   const sample = create(ProcessSampleSchema, {
@@ -177,7 +181,7 @@ describe("InterventionsCard & saved diagnostics", () => {
 
     const sampleOpenHtml = renderToStaticMarkup(
       <ol>
-        <InterventionRow s={emptySnap} iv={iv} diagnostics={diag} loading={false} defaultOpen="sample" />
+        <InterventionRow iv={iv} diagnostics={diag} loading={false} defaultOpen="sample" />
       </ol>,
     );
     expect(sampleOpenHtml).toContain("Stopped");
@@ -197,7 +201,7 @@ describe("InterventionsCard & saved diagnostics", () => {
 
     const inspectOpenHtml = renderToStaticMarkup(
       <ol>
-        <InterventionRow s={emptySnap} iv={iv} diagnostics={diag} loading={false} defaultOpen="inspect" />
+        <InterventionRow iv={iv} diagnostics={diag} loading={false} defaultOpen="inspect" />
       </ol>,
     );
     expect(inspectOpenHtml).toContain("/hotbed/cmd-1");
@@ -231,13 +235,13 @@ describe("InterventionsCard & saved diagnostics", () => {
 
     const loadingHtml = renderToStaticMarkup(
       <ol>
-        <InterventionRow s={emptySnap} iv={pauseIv} diagnostics={null} loading={true} />
-        <InterventionRow s={emptySnap} iv={resumeIv} diagnostics={null} loading={false} />
-        <InterventionRow s={emptySnap} iv={failedDiagIv} diagnostics={null} loading={false} />
+        <InterventionRow iv={pauseIv} diagnostics={null} loading={true} />
+        <InterventionRow iv={resumeIv} diagnostics={null} loading={false} />
+        <InterventionRow iv={failedDiagIv} diagnostics={null} loading={false} />
       </ol>,
     );
     expect(loadingHtml).toContain("Paused");
-    expect(loadingHtml).toContain("brave-otter");
+    expect(loadingHtml).toContain('<a href="/sessions/brave-otter">brave-otter</a>');
     expect(loadingHtml).toContain("Loading its diagnostics…");
     expect(loadingHtml).toContain("Resumed");
     expect(loadingHtml).toContain("resuming now");
@@ -249,7 +253,7 @@ describe("InterventionsCard & saved diagnostics", () => {
       ["diagnostics", "cmd-1", -1],
       [create(CommandDiagnosticsSchema, { commandId: "cmd-1", intervention: pauseIv, sample, inspect })],
     );
-    const endedHtml = renderWithQuery(<InterventionsCard s={emptySnap} id="cmd-1" interventions={null} />, qc);
+    const endedHtml = renderWithQuery(<InterventionsCard id="cmd-1" interventions={null} />, qc);
     expect(endedHtml).toContain("Stopped &amp; paused by hand");
     expect(endedHtml).toContain("pausing while profiling another build");
     expect(endedHtml).toContain("Activity sample");
@@ -270,7 +274,7 @@ describe("InterventionsCard & saved diagnostics", () => {
 
     const hostOnlyHtml = renderToStaticMarkup(
       <ol>
-        <InterventionRow s={emptySnap} iv={hostOnlyIv} diagnostics={null} loading={false} />
+        <InterventionRow iv={hostOnlyIv} diagnostics={null} loading={false} />
       </ol>,
     );
     expect(hostOnlyHtml).toContain("by ");
@@ -280,7 +284,7 @@ describe("InterventionsCard & saved diagnostics", () => {
 
     const hostlessHtml = renderToStaticMarkup(
       <ol>
-        <InterventionRow s={emptySnap} iv={hostlessIv} diagnostics={null} loading={false} />
+        <InterventionRow iv={hostlessIv} diagnostics={null} loading={false} />
       </ol>,
     );
     expect(hostlessHtml).toContain("cockpit");
@@ -298,7 +302,7 @@ describe("InterventionsCard & saved diagnostics", () => {
       .catch(() => {});
 
     const failedArchivedHtml = renderWithQuery(
-      <InterventionsCard s={emptySnap} id="cmd-archived" interventions={null} />,
+      <InterventionsCard id="cmd-archived" interventions={null} />,
       failedQc,
     );
     expect(failedArchivedHtml).toContain("Stopped &amp; paused by hand");
@@ -320,7 +324,7 @@ describe("InterventionsCard & saved diagnostics", () => {
       .catch(() => {});
 
     const failedEmptyListHtml = renderWithQuery(
-      <InterventionsCard s={emptySnap} id="cmd-empty" interventions={[]} />,
+      <InterventionsCard id="cmd-empty" interventions={[]} />,
       failedEmptyListQc,
     );
     expect(failedEmptyListHtml).toContain('role="alert"');
@@ -330,16 +334,16 @@ describe("InterventionsCard & saved diagnostics", () => {
     // Archived command while pending renders loading state; once resolved empty, returns null.
     const pendingQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const pendingHtml = renderWithQuery(
-      <InterventionsCard s={emptySnap} id="cmd-loading" interventions={null} />,
+      <InterventionsCard id="cmd-loading" interventions={null} />,
       pendingQc,
     );
     expect(pendingHtml).toContain("Loading saved diagnostics");
 
     const emptyResolvedQc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     emptyResolvedQc.setQueryData(["diagnostics", "cmd-none", -1], []);
-    expect(renderWithQuery(<InterventionsCard s={emptySnap} id="cmd-none" interventions={null} />, emptyResolvedQc)).toBe("");
+    expect(renderWithQuery(<InterventionsCard id="cmd-none" interventions={null} />, emptyResolvedQc)).toBe("");
 
     // Live command with no interventions and no error still returns null.
-    expect(renderWithQuery(<InterventionsCard s={emptySnap} id="cmd-live-clean" interventions={[]} />)).toBe("");
+    expect(renderWithQuery(<InterventionsCard id="cmd-live-clean" interventions={[]} />)).toBe("");
   });
 });

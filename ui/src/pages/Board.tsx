@@ -501,8 +501,10 @@ function ThreadRow({ summary, now }: { summary: BoardThreadSummary; now: number 
               </span>
             )}
             {summary.last && summary.last.id !== m.id && (
-              <span className="ml-auto text-[11px] text-faint">
-                last reply by {summary.last.author?.handle || summary.last.by?.actor} {ago(summary.last.createdAt, now)}
+              <span className="ml-auto inline-flex flex-wrap items-baseline gap-1.5 text-[11px] text-faint">
+                last reply by {summary.last.author?.handle || summary.last.by?.actor}
+                <SessionLink id={summary.last.by?.sessionId || summary.last.author?.sessionId || ""} empty={null} />
+                {ago(summary.last.createdAt, now)}
               </span>
             )}
           </div>
@@ -759,8 +761,10 @@ function TaskBanner({
         {task.owner && <span className="font-mono text-[11px] text-muted-foreground">owner={task.owner}</span>}
         {task.forActor && <span className="font-mono text-[11px] text-foreground">for={task.forActor}</span>}
         {task.claim && (
-          <span className="font-mono text-[11px] text-sky-400">
-            claimed by {task.claim.actor} (lease until {new Date(Number(task.claim.until)).toLocaleTimeString()})
+          <span className="inline-flex flex-wrap items-baseline gap-1.5 font-mono text-[11px] text-sky-400">
+            claimed by {task.claim.actor}
+            <SessionLink id={task.claim.sessionId} empty={null} />
+            <span>(lease until {new Date(Number(task.claim.until)).toLocaleTimeString()})</span>
           </span>
         )}
         {task.needs.length > 0 && (

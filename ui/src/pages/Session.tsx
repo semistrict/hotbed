@@ -6,21 +6,21 @@ import { FAILURE } from "../components/CommandTable";
 import { Crumbs } from "../components/Crumbs";
 import { Card, Empty, StatTile } from "../components/Panel";
 import { BenchTag, KindTag, StateBadge } from "../components/StateBadges";
-import { nodeName, repoName, useSnapshot } from "../lib/data";
+import { nodeName, repoName, useSession } from "../lib/data";
 import { ago, duration, hhmmss, speedup } from "../lib/format";
 import { idleLeftMs, sessionCommands } from "../lib/sessions";
 import { filesChanged } from "../lib/workspaces";
 import { NotFound } from "./NotFound";
 import { PageTitle } from "../components/PageTitle";
 import { T3ThreadTag } from "../components/T3ThreadTag";
-import { IdleLeft, SessionStateLabel } from "./Sessions";
+import { SessionStateLabel } from "../components/SessionLink";
+import { IdleLeft } from "./Sessions";
 import { WorkspaceStateLabel } from "./Workspace";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/sessions/$id" });
-  const { data: s } = useSnapshot();
-  if (!s) return null;
-  const session = s.sessions.find((x) => x.id === id);
+  const { s, session, pending } = useSession(id);
+  if (pending || !s) return null;
   if (!session) return <NotFound />;
   return <SessionView s={s} session={session} />;
 }

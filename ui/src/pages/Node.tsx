@@ -3,6 +3,7 @@ import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { BaseState, baseStateLabel, CommandState, nodeAdmission, WorkspaceState, type Base } from "../api";
+import { SessionLink } from "../components/SessionLink";
 import { Meter, SegmentedBar } from "../components/charts/Bars";
 import { Columns } from "../components/charts/Columns";
 import { LineChart } from "../components/charts/LineChart";
@@ -280,6 +281,7 @@ export function NodePage() {
                   <Link to="/workspaces/$id" params={{ id: w.id }} className="font-mono text-foreground hover:text-primary">
                     {w.id}
                   </Link>
+                  <SessionLink id={w.sessionId} empty={null} />
                   <span className="truncate text-muted-foreground">{w.agent}</span>
                   <span className="ml-auto font-mono text-[11px] text-faint">{w.project}</span>
                   <span className="num font-mono text-[11px] text-muted-foreground">{bytes(w.exclusiveBytes)}</span>

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BaseState, CommandState, WorkspaceState, workspaceStateLabel, type Project, type RepoSummary, type Snapshot, type Workspace } from "../api";
+import { SessionLink } from "../components/SessionLink";
 import { SetupSteps } from "../components/SetupSteps";
 import { Card, Empty, StatTile } from "../components/Panel";
 import { nodeName, useSnapshot } from "../lib/data";
@@ -337,11 +338,7 @@ function RepoWorkspaceTable({ s, rows, now }: { s: Snapshot; rows: Workspace[]; 
                 </span>
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
-                {w.sessionId && (
-                  <Link to="/sessions/$id" params={{ id: w.sessionId }} className="text-foreground/85 hover:text-primary">
-                    {w.sessionId}
-                  </Link>
-                )}
+                <SessionLink id={w.sessionId} empty={null} />
                 <span>{nodeName(s, w.nodeId)}</span>
                 <span className="text-faint">g{base?.generation ?? "?"}</span>
                 <span>{w.agent}</span>
@@ -381,13 +378,7 @@ function RepoWorkspaceTable({ s, rows, now }: { s: Snapshot; rows: Workspace[]; 
                     {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>}
                   </TableCell>
                   <TableCell className="px-2 py-2">
-                    {w.sessionId ? (
-                      <Link to="/sessions/$id" params={{ id: w.sessionId }} className="text-muted-foreground hover:text-primary">
-                        {w.sessionId}
-                      </Link>
-                    ) : (
-                      <span className="text-faint">—</span>
-                    )}
+                    <SessionLink id={w.sessionId} />
                   </TableCell>
                   <TableCell className="px-2 py-2 text-muted-foreground">{w.agent}</TableCell>
                   <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, w.nodeId)}</TableCell>

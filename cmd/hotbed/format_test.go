@@ -260,13 +260,13 @@ func TestFormatByHandCommandsAndDiagnostics(t *testing.T) {
 						DiagnosticsError: "perf unavailable",
 					},
 					Sample: &pb.ProcessSample{
-						CommandId: "cmd-1",
-						Hostname:  "ubu1",
-						Arch:      "amd64",
-						Kernel:    "6.8.0",
-						UnitName:  "hotbed-cmd-1.scope",
-						StartedAt: 1700000000000,
-						EndedAt:   1700000002000,
+						CommandId:  "cmd-1",
+						Hostname:   "ubu1",
+						Arch:       "amd64",
+						Kernel:     "6.8.0",
+						UnitName:   "hotbed-cmd-1.scope",
+						StartedAt:  1700000000000,
+						EndedAt:    1700000002000,
 						DurationMs: 2000,
 						Procs: []*pb.SampledProcess{
 							{Pid: 42, Comm: "worker", State: "S", Cmdline: "worker --test"},
@@ -376,5 +376,29 @@ func TestReportFailsOnSchemaSkew(t *testing.T) {
 	err = writeOutput(&out, "freshen show", nil, newer, outputOpts{})
 	if e, ok := errors.AsType[*api.Error](err); !ok || !strings.Contains(e.Message, "read the hotbed.v1.GetFreshenResponse response as this client's") || !strings.Contains(e.Suggestion, "hotbed upgrade") {
 		t.Errorf("writeOutput of a skewed response = %v (printed %q), want it refused, suggesting an upgrade", err, out.String())
+	}
+}
+
+// A claimed task names the session at work on it, so a reader can find that agent.
+func TestFormatBoardTasksReportNamesClaimSession(t *testing.T) {
+	t.Parallel()
+	got := formatBoardTasksReport(&pb.ListBoardTasksResponse{
+		Tasks: []*pb.BoardThreadSummary{
+			{Message: &pb.BoardMessage{Id: 14537, Project: "cladefs", Text: "serve the extent device", Task: &pb.BoardTask{
+				State: pb.BoardTaskState_BOARD_TASK_STATE_CLAIMED,
+				Claim: &pb.BoardTaskClaimView{Actor: "user:ramon@echophase.com+amazing-phoenix", SessionId: "super-plover"},
+			}}},
+			{Message: &pb.BoardMessage{Id: 14538, Project: "cladefs", Text: "claimed outside a session", Task: &pb.BoardTask{
+				State: pb.BoardTaskState_BOARD_TASK_STATE_CLAIMED,
+				Claim: &pb.BoardTaskClaimView{Actor: "user:ramon@echophase.com"},
+			}}},
+		},
+		Cursor: 7,
+	})
+	want := "#14537   claimed    cladefs         serve the extent device  claimed-by=user:ramon@echophase.com+amazing-phoenix  session=super-plover\n" +
+		"#14538   claimed    cladefs         claimed outside a session  claimed-by=user:ramon@echophase.com\n" +
+		"cursor=7\n"
+	if got != want {
+		t.Fatalf("formatBoardTasksReport:\n got %q\nwant %q", got, want)
 	}
 }

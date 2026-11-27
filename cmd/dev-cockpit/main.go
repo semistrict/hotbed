@@ -384,6 +384,7 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 	questions := hotbedv1connect.NewQuestionServiceClient(conn)
 	reviews := hotbedv1connect.NewReviewServiceClient(conn)
 	schedules := hotbedv1connect.NewScheduleServiceClient(conn)
+	board := hotbedv1connect.NewBoardServiceClient(conn)
 
 	// Wait until both workers have reported online.
 	if err := waitUntil(ctx, 15*time.Second, func() (bool, error) {
@@ -426,8 +427,16 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 		return fmt.Errorf("put step: %w", err)
 	}
 
-	// Start two live sessions and place a workspace on each worker.
-	if _, err := sessions.StartSession(ctx, &pb.StartSessionRequest{Id: "brave-otter", Project: "cladefs", Agent: "builder"}); err != nil {
+	// Start two live sessions and place a workspace on each worker. brave-otter
+	// runs in a T3 Code thread, so a session badge's card has a thread to open.
+	if _, err := sessions.StartSession(ctx, &pb.StartSessionRequest{
+		Id:              "brave-otter",
+		Project:         "cladefs",
+		Agent:           "builder",
+		Model:           "claude-opus-5-5",
+		T3CodeThreadId:  "b7299e2a-f886-4442-9868-accf5d6075e3",
+		T3CodeThreadUrl: "https://app.t3.codes/threads/dev-env/b7299e2a-f886-4442-9868-accf5d6075e3",
+	}); err != nil {
 		return fmt.Errorf("start brave-otter: %w", err)
 	}
 	if _, err := sessions.StartSession(ctx, &pb.StartSessionRequest{Id: "calm-heron", Project: "cladefs", Agent: "reviewer"}); err != nil {
@@ -616,6 +625,16 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 		Summary:   "Found one confirmed eviction race during flush and one minor naming nit.",
 	}); err != nil {
 		return fmt.Errorf("finish review: %w", err)
+	}
+
+	// Seed a board task brave-otter has claimed.
+	if _, err := board.CreateBoardTask(ctx, &pb.CreateBoardTaskRequest{
+		Project:   "cladefs",
+		Text:      "cladefsd: serve the extent device over vhost-user\n\nA stock front-end with memfd guest RAM.",
+		Claim:     true,
+		SessionId: "brave-otter",
+	}); err != nil {
+		return fmt.Errorf("create board task: %w", err)
 	}
 
 	// Seed one scheduled command.

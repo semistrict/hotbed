@@ -8,7 +8,8 @@ import { nodeName } from "../lib/data";
 import { ago, cmpBig, duration } from "../lib/format";
 import { isLive } from "../lib/live";
 import { useProject, useScopedSnapshot } from "../lib/project";
-import { idleLeftMs, SESSION_IDLE_MS, sessionState, type SessionState } from "../lib/sessions";
+import { idleLeftMs, SESSION_IDLE_MS, sessionState } from "../lib/sessions";
+import { SessionStateLabel } from "../components/SessionLink";
 import { PageTitle } from "../components/PageTitle";
 import { T3ThreadTag } from "../components/T3ThreadTag";
 
@@ -16,17 +17,6 @@ export function SessionsPage() {
   const { data: s } = useScopedSnapshot();
   if (!s) return null;
   return <Sessions s={s} />;
-}
-
-const STATE_LABEL: Record<SessionState, { text: string; className: string }> = {
-  working: { text: "● working", className: "text-primary" },
-  idle: { text: "○ idle", className: "text-sprout" },
-  ended: { text: "ended", className: "text-faint" },
-};
-
-export function SessionStateLabel({ s, session }: { s: Snapshot; session: Session }) {
-  const st = STATE_LABEL[sessionState(s, session)];
-  return <span className={`font-mono text-[11px] whitespace-nowrap ${st.className}`}>{st.text}</span>;
 }
 
 function Sessions({ s }: { s: Snapshot }) {

@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { clients, type Node, type Snapshot } from "../api";
+import { clients, type Node, type Session, type Snapshot } from "../api";
 import { cmpBig } from "./format";
 
 const SLOTS = 8;
@@ -13,6 +13,27 @@ export function useSnapshot() {
     refetchInterval: 1000,
     placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * A session by id, live or ended at any age: the snapshot lists those live or
+ * ended in the last day, and GetSession, which keeps every session, answers
+ * for an older one. `pending` while either is still loading; then `session`
+ * is undefined only for an id no session has.
+ */
+export function useSession(id: string): { s: Snapshot | undefined; session: Session | undefined; pending: boolean } {
+  const { data: s } = useSnapshot();
+  const listed = s?.sessions.find((x) => x.id === id);
+  const older = useQuery({
+    queryKey: ["session", id],
+    queryFn: () => clients.sessions.getSession({ id }),
+    enabled: s !== undefined && listed === undefined && id !== "",
+    // Only an ended session falls out of the snapshot, and an ended session no longer changes.
+    staleTime: Infinity,
+    retry: false,
+  });
+  const session = listed ?? older.data?.session;
+  return { s, session, pending: s === undefined || (listed === undefined && id !== "" && older.isPending) };
 }
 
 /** Retire an offline node so it leaves the cluster and cockpit while keeping its history. */

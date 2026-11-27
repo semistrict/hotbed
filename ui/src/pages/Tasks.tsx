@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { BoardTaskState, clients, projectScope, type BoardThreadSummary } from "../api";
 import { Card, Empty } from "../components/Panel";
 import { ProjectTag } from "../components/ProjectTag";
+import { SessionLink } from "../components/SessionLink";
 import { useSnapshot } from "../lib/data";
 import { ago } from "../lib/format";
 import { useProject } from "../lib/project";
@@ -240,8 +241,9 @@ function TaskRow({
             <ProjectTag name={m.project} />
             {task.forActor && <span className="font-mono text-[11px] text-muted-foreground">for={task.forActor}</span>}
             {task.claim && (
-              <span className="font-mono text-[11px] text-sky-400">
+              <span className="inline-flex flex-wrap items-baseline gap-1.5 font-mono text-[11px] text-sky-400">
                 claimed by {task.claim.actor}
+                <SessionLink id={task.claim.sessionId} empty={null} />
               </span>
             )}
             <span className="ml-auto font-mono text-[11px] text-faint">{ago(m.createdAt, now)}</span>

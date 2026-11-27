@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { clients, CommandState, type Command, type CommandEvent, type CommandLimits, type FinishedCommand, type Snapshot } from "../api";
+import { SessionLink } from "../components/SessionLink";
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { actsFor, ByHandButtons, ByHandForm, InterventionsCard, type ByHandAction } from "../components/ByHand";
@@ -238,11 +239,7 @@ function CommandView({
         <p className="mt-2 text-[13px] text-muted-foreground">
           {sessionId && (
             <>
-              session{" "}
-              <Link to="/sessions/$id" params={{ id: sessionId }} className="font-mono text-foreground hover:text-primary">
-                {sessionId}
-              </Link>
-              ,{" "}
+              session <SessionLink id={sessionId} />,{" "}
             </>
           )}
           in{" "}
@@ -311,7 +308,7 @@ function CommandView({
       <div hidden={view !== "overview"} className="space-y-6">
       <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${statGridCols}`}>{stats}</div>
 
-      <InterventionsCard s={s} id={id} interventions={live ? live.interventions : null} />
+      <InterventionsCard id={id} interventions={live ? live.interventions : null} />
 
       {placement && (
         <Card title="Placement" sub={placement.at > 0n ? `decided ${ago(placement.at, now)} (${hhmmss(placement.at)})` : "what this run asked for and why it went here"}>

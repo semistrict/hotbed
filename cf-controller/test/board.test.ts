@@ -708,4 +708,69 @@ describe("BoardService", () => {
 		expect(again.status).toBe(409);
 		expect(again.data.message).toBe(`claim_lost: ${holder} does not hold #14433: it is completed`);
 	});
+
+	it("names the session at work on a claim: the claimant's, then the last renewer's", async () => {
+		const doName = "board-claim-session-test";
+		await seedProject(doName, "cladefs");
+		const ramon = ownerCaller("ramon@echophase.com");
+		const startSession = async () => {
+			const res = await rpc<{ id: string }>(
+				doName,
+				"/hotbed.v1.SessionService/StartSession",
+				{ project: "cladefs" },
+				ramon,
+			);
+			expect(res.status).toBe(200);
+			return res.data.id;
+		};
+		const first = await startSession();
+		const second = await startSession();
+		type Claimed = { task: { id: string; task: { claim: { sessionId?: string } } } };
+		const readClaim = async (id: string) => {
+			const res = await rpc<{
+				message: { task: { claim: { actor: string; sessionId?: string } } };
+			}>(doName, "/hotbed.v1.BoardService/GetBoardThread", { id }, ramon);
+			expect(res.status).toBe(200);
+			return res.data.message.task.claim;
+		};
+
+		// Both sessions act as one profile, so either may hold and renew the claim.
+		const created = await rpc<Claimed>(
+			doName,
+			"/hotbed.v1.BoardService/CreateBoardTask",
+			{
+				project: "cladefs",
+				text: "Serve the extent device",
+				claim: true,
+				sessionId: first,
+				asProfile: "phoenix",
+			},
+			ramon,
+		);
+		expect(created.status).toBe(200);
+		const id = created.data.task.id;
+		expect(created.data.task.task.claim.sessionId).toBe(first);
+
+		const renewedElsewhere = await rpc(
+			doName,
+			"/hotbed.v1.BoardService/RenewBoardTask",
+			{ id, sessionId: second, asProfile: "phoenix" },
+			ramon,
+		);
+		expect(renewedElsewhere.status).toBe(200);
+		expect(await readClaim(id)).toMatchObject({
+			actor: "user:ramon@echophase.com+phoenix",
+			sessionId: second,
+		});
+
+		// A renewal from outside any session keeps the last session named.
+		const renewedBare = await rpc(
+			doName,
+			"/hotbed.v1.BoardService/RenewBoardTask",
+			{ id, asProfile: "phoenix" },
+			ramon,
+		);
+		expect(renewedBare.status).toBe(200);
+		expect(await readClaim(id)).toMatchObject({ sessionId: second });
+	});
 });

@@ -1,9 +1,9 @@
-import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { Admission, AdmissionSignal, CostPart, PlacementDecision, Sample } from "../api";
+import { SessionLink } from "./SessionLink";
 import { ago, bytes, duration, hhmmss } from "../lib/format";
 import { SegmentedBar } from "./charts/Bars";
 import { Empty } from "./Panel";
@@ -276,13 +276,7 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
                   <span className="min-w-0 truncate text-muted-foreground">{d.reason}</span>
                   {role && <span className={`shrink-0 sm:ml-auto ${role.className}`}>{role.text}</span>}
                 </CollapsibleTrigger>
-                {d.sessionId ? (
-                  <Link to="/sessions/$id" params={{ id: d.sessionId }} className="shrink-0 text-foreground hover:text-primary">
-                    {d.sessionId}
-                  </Link>
-                ) : (
-                  <span className="shrink-0 text-faint">—</span>
-                )}
+                <SessionLink id={d.sessionId} className="shrink-0" />
               </div>
               <CollapsibleContent>
                 <div className="mb-3 sm:ml-6">

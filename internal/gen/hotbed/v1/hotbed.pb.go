@@ -31933,7 +31933,10 @@ type BoardTaskClaimView struct {
 	Actor string                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
 	Until int64                  `protobuf:"varint,2,opt,name=until,proto3" json:"until,omitempty"`
 	// The lease length renewals keep by default; 0 for claims imported without one.
-	LeaseSeconds  int32 `protobuf:"varint,3,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
+	LeaseSeconds int32 `protobuf:"varint,3,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
+	// The hotbed session that last took or renewed the claim, so a reader can
+	// open the agent at work on it; empty when made outside a session.
+	SessionId     string `protobuf:"bytes,4,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -31987,6 +31990,13 @@ func (x *BoardTaskClaimView) GetLeaseSeconds() int32 {
 		return x.LeaseSeconds
 	}
 	return 0
+}
+
+func (x *BoardTaskClaimView) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
 }
 
 type BoardTaskBlocked struct {
@@ -40925,11 +40935,13 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05actor\x18\x02 \x01(\v2\x15.hotbed.v1.BoardActorR\x05actor\x125\n" +
 	"\n" +
 	"candidates\x18\x03 \x03(\v2\x15.hotbed.v1.BoardActorR\n" +
-	"candidates\"e\n" +
+	"candidates\"\x84\x01\n" +
 	"\x12BoardTaskClaimView\x12\x14\n" +
 	"\x05actor\x18\x01 \x01(\tR\x05actor\x12\x14\n" +
 	"\x05until\x18\x02 \x01(\x03R\x05until\x12#\n" +
-	"\rlease_seconds\x18\x03 \x01(\x05R\fleaseSeconds\">\n" +
+	"\rlease_seconds\x18\x03 \x01(\x05R\fleaseSeconds\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x04 \x01(\tR\tsessionId\">\n" +
 	"\x10BoardTaskBlocked\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xc7\x02\n" +

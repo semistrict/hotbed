@@ -1,4 +1,4 @@
-import type { AskedFrom, Snapshot, Stamp } from "../api";
+import type { AskedFrom, Stamp } from "../api";
 import { ago, shortSha } from "../lib/format";
 import { isUserActor } from "../lib/stamps";
 import { SessionLink } from "./SessionLink";
@@ -9,26 +9,23 @@ import { SessionLink } from "./SessionLink";
  * `verb` leads it ("asked by …"; "" gives a bare "by …"; leaving it out
  * starts at the name, for callers that word it themselves). `actor` tags
  * the doer as a user or an agent and names the agent's model and subagent.
- * Given the snapshot `s`, a session links only while the cockpit still lists it.
+ * The session acted in, a user's too, is a SessionLink.
  */
 export function StampLine({
   st,
   now,
   verb,
-  s,
   actor = false,
   hideModel = false,
 }: {
   st: Stamp;
   now: number;
   verb?: string;
-  s?: Pick<Snapshot, "sessions">;
   actor?: boolean;
   /** Leave out the model, when the caller already shows it. */
   hideModel?: boolean;
 }) {
   const user = isUserActor(st);
-  const linked = !s || s.sessions.some((x) => x.id === st.session);
   const title = [new Date(Number(st.at)).toLocaleString()];
   if (st.t3codeThreadId) title.push(`T3 thread: ${st.t3codeThreadId}`);
   if (st.subagent) title.push(`subagent: ${st.subagent}`);
@@ -43,13 +40,9 @@ export function StampLine({
           <span className="rounded border border-border px-1 py-px font-mono text-[10px] text-muted-foreground">agent</span>
         ))}
       {actor && " "}
-      {user ? (
-        <span className="text-foreground">{st.user || "you"}</span>
-      ) : linked ? (
-        <SessionLink id={st.session} />
-      ) : (
-        <span className="font-mono text-[11px]">{st.session}</span>
-      )}
+      {user && <span className="text-foreground">{st.user || "you"}</span>}
+      {user && st.session && " in "}
+      <SessionLink id={st.session} empty={user ? null : undefined} />
       {actor && !user && !hideModel && st.model && (
         <> <span className="rounded bg-muted px-1 py-px font-mono text-[10.5px] text-foreground">{st.model}</span></>
       )}

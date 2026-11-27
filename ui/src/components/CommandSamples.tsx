@@ -7,6 +7,7 @@ import { hhmmss } from "../lib/format";
 import type { Taking } from "../lib/sampling";
 import { Card } from "./Panel";
 import { SampleReport } from "./SampleReport";
+import { SessionLink } from "./SessionLink";
 
 export const sampleKeys = {
   list: (id: string) => ["command-samples", id] as const,
@@ -85,16 +86,22 @@ export function seedKeptSample(qc: QueryClient, id: string, kept: CommandSample,
 }
 
 /** What a kept sample was: when, how long, which PID, and who took it. */
-export function sampleSummary(s: CommandSample): string {
-  const who = s.by?.session ? `session ${s.by.session}` : s.by?.host;
-  return [
-    s.by?.at ? hhmmss(s.by.at) : null,
-    `${s.durationSeconds}s window`,
-    s.pid ? `PID ${s.pid}` : "all processes",
-    who ? `by ${who}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+function SampleSummary({ s }: { s: CommandSample }) {
+  const what = [s.by?.at ? hhmmss(s.by.at) : null, `${s.durationSeconds}s window`, s.pid ? `PID ${s.pid}` : "all processes"].filter(Boolean).join(" · ");
+  return (
+    <>
+      {what}
+      {s.by?.session ? (
+        <>
+          {" · by "}
+          <SessionLink id={s.by.session} />
+          {s.by.host && ` on ${s.by.host}`}
+        </>
+      ) : (
+        s.by?.host && ` · by ${s.by.host}`
+      )}
+    </>
+  );
 }
 
 /** One kept sample of command id, in full. onSamplePid, while it runs, samples one of its processes. */
@@ -102,7 +109,7 @@ export function KeptSampleView({ id, seq, onSamplePid }: { id: string; seq: numb
   const q = useQuery({ queryKey: sampleKeys.one(id, seq), queryFn: () => clients.cluster.getCommandSample({ id, seq }), staleTime: Infinity });
   const s = q.data;
   return (
-    <Card title={`Sample #${seq}`} sub={s ? sampleSummary(s) : q.isError ? "Unavailable" : "Loading"}>
+    <Card title={`Sample #${seq}`} sub={s ? <SampleSummary s={s} /> : q.isError ? "Unavailable" : "Loading"}>
       {q.isError ? (
         <Notice tone="critical">Cannot load sample #{seq}: {String(q.error)}</Notice>
       ) : !s ? (

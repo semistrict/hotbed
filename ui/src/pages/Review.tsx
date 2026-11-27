@@ -112,7 +112,7 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
                     <ModelPill model={implModel} />
                   </div>
                 ) : null}
-                <StampLine actor s={s} st={implStamp} now={now} hideModel={implModel !== ""} />
+                <StampLine actor st={implStamp} now={now} hideModel={implModel !== ""} />
               </div>
             ) : (
               <span className="text-faint">—</span>
@@ -120,11 +120,11 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
           </Fact>
           {separateRequester && r.requested && (
             <Fact label="asked by">
-              <StampLine actor s={s} st={r.requested} now={now} />
+              <StampLine actor st={r.requested} now={now} />
             </Fact>
           )}
           <Fact label={r.state === ReviewState.DONE ? "finished" : r.state === ReviewState.FAILED ? "failed" : r.state === ReviewState.CANCELLED ? "cancelled" : "ended"}>
-            {r.ended ? <StampLine actor s={s} st={r.ended} now={now} /> : <span className="text-faint">not yet</span>}
+            {r.ended ? <StampLine actor st={r.ended} now={now} /> : <span className="text-faint">not yet</span>}
           </Fact>
         </dl>
 
@@ -135,7 +135,7 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
           ) : (
             <div className="mt-2 space-y-2.5">
               {r.reviewers.map((rv) => (
-                <ReviewerRow key={rv.id} s={s} rv={rv} now={now} />
+                <ReviewerRow key={rv.id} rv={rv} now={now} />
               ))}
             </div>
           )}
@@ -173,7 +173,7 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
                 </span>
               </h2>
               {g.findings.map((f, i) => (
-                <FindingCard key={f.id} s={s} r={r} f={f} now={now} delay={40 * Math.min(i, 6)} />
+                <FindingCard key={f.id} r={r} f={f} now={now} delay={40 * Math.min(i, 6)} />
               ))}
             </section>
           );
@@ -181,17 +181,16 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
       )}
 
       <Card title="On the review as a whole" sub="Comments for the implementer">
-        <Thread s={s} events={thread(r.events, null)} now={now} />
+        <Thread events={thread(r.events, null)} now={now} />
         <Respond reviewId={r.id} findingId={null} />
       </Card>
-      <Timeline s={s} r={r} now={now} />
+      <Timeline r={r} now={now} />
     </div>
   );
 }
 
-function ReviewerRow({ s, rv, now }: { s: Snapshot; rv: Reviewer; now: number }) {
+function ReviewerRow({ rv, now }: { rv: Reviewer; now: number }) {
   const st = REVIEWER_STATE[rv.state] ?? REVIEWER_STATE[ReviewerState.IN_PROGRESS];
-  const listed = rv.session !== "" && s.sessions.some((x) => x.id === rv.session);
   return (
     <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-[12px]">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -207,10 +206,8 @@ function ReviewerRow({ s, rv, now }: { s: Snapshot; rv: Reviewer; now: number })
           {rv.findingsCount} finding{rv.findingsCount === 1 ? "" : "s"}
         </span>
         <span className="font-mono text-[10.5px] text-muted-foreground sm:ml-auto">
-          {rv.session ? listed ? <SessionLink id={rv.session} /> : rv.session : ""}
-          {rv.t3codeThreadId && (
-            <T3ThreadTag id={rv.t3codeThreadId} className="ml-1.5 text-faint" />
-          )}
+          <SessionLink id={rv.session} empty={null} />
+          {!rv.session && rv.t3codeThreadId && <T3ThreadTag id={rv.t3codeThreadId} className="ml-1.5 text-faint" />}
           {rv.started && <span className="ml-1.5 text-faint">started {ago(rv.started.at, now)}</span>}
           {rv.ended && <span className="ml-1.5 text-faint">· ended {ago(rv.ended.at, now)}</span>}
         </span>
@@ -275,7 +272,7 @@ const DECISION: Record<FindingDecision, { text: string; className: string }> = {
   [FindingDecision.INVALID]: { text: "✗ invalid", className: "text-faint border-border" },
 };
 
-function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Finding; now: number; delay: number }) {
+function FindingCard({ r, f, now, delay }: { r: Review; f: Finding; now: number; delay: number }) {
   const decision = DECISION[f.decision] ?? DECISION[FindingDecision.OPEN];
   const reviewer = findingReviewer(r, f);
   const foundModel = f.found?.model || reviewer?.model || "";
@@ -327,17 +324,17 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
         {f.locations.map((l, i) => (
           <Excerpt key={i} l={l} />
         ))}
-        {f.fix && <FixNote s={s} r={r} f={f} now={now} />}
-        {f.evidence && <Evidence s={s} f={f} now={now} />}
+        {f.fix && <FixNote r={r} f={f} now={now} />}
+        {f.evidence && <Evidence f={f} now={now} />}
         {f.quick !== QuickResponse.UNSPECIFIED && (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5 py-1.5 text-[11.5px]">
             <span className="rounded-md bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] text-primary">{quickLabel(f.quick)}</span>
             <span className="text-muted-foreground">
-              selected by {f.quickBy ? <StampLine actor s={s} st={f.quickBy} now={now} /> : <span className="font-mono text-faint">unknown</span>}
+              selected by {f.quickBy ? <StampLine actor st={f.quickBy} now={now} /> : <span className="font-mono text-faint">unknown</span>}
             </span>
           </div>
         )}
-        <Thread s={s} events={thread(r.events, f.id)} now={now} />
+        <Thread events={thread(r.events, f.id)} now={now} />
         {handled(f) ? null : <Respond reviewId={r.id} findingId={f.id} latest={f.quick} />}
       </div>
     </Card>
@@ -345,7 +342,7 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
 }
 
 /** How a finding was fixed: the commit, where, and the fixing agent's notes. It is handled: nothing more to say to it. */
-function FixNote({ s, r, f, now }: { s: Snapshot; r: Review; f: Finding; now: number }) {
+function FixNote({ r, f, now }: { r: Review; f: Finding; now: number }) {
   if (!f.fix) return null;
   const url = commitUrl(r.repo, f.fix.commit);
   return (
@@ -363,7 +360,7 @@ function FixNote({ s, r, f, now }: { s: Snapshot; r: Review; f: Finding; now: nu
         )}
         {f.decided && (
           <span className="text-muted-foreground">
-            by <StampLine actor s={s} st={f.decided} now={now} />
+            by <StampLine actor st={f.decided} now={now} />
           </span>
         )}
       </div>
@@ -382,14 +379,14 @@ function FixNote({ s, r, f, now }: { s: Snapshot; r: Review; f: Finding; now: nu
 }
 
 /** Why a finding is not a real defect. The user can still respond below to dispute it. */
-function Evidence({ s, f, now }: { s: Snapshot; f: Finding; now: number }) {
+function Evidence({ f, now }: { f: Finding; now: number }) {
   return (
     <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[12.5px]">
       <div className="flex flex-wrap items-baseline gap-x-2">
         <span className="eyebrow">invalid — evidence</span>
         {f.decided && (
           <span className="text-muted-foreground">
-            by <StampLine actor s={s} st={f.decided} now={now} />
+            by <StampLine actor st={f.decided} now={now} />
           </span>
         )}
       </div>
@@ -417,7 +414,7 @@ function Excerpt({ l }: { l: Location }) {
   );
 }
 
-function Thread({ s, events, now }: { s: Snapshot; events: ReviewEvent[]; now: number }) {
+function Thread({ events, now }: { events: ReviewEvent[]; now: number }) {
   if (events.length === 0) return null;
   return (
     <ol className="space-y-2 border-l-2 border-border pl-3">
@@ -425,7 +422,7 @@ function Thread({ s, events, now }: { s: Snapshot; events: ReviewEvent[]; now: n
         <li key={String(e.seq)} className="space-y-1 text-[12.5px]">
           {e.by && (
             <div className="text-[11px] text-muted-foreground">
-              <StampLine actor s={s} st={e.by} now={now} />
+              <StampLine actor st={e.by} now={now} />
             </div>
           )}
           {e.quick !== QuickResponse.UNSPECIFIED && (
@@ -500,7 +497,7 @@ function Respond({ reviewId, findingId, latest = QuickResponse.UNSPECIFIED }: { 
 }
 
 /** Every event, oldest first. */
-function Timeline({ s, r, now }: { s: Snapshot; r: Review; now: number }) {
+function Timeline({ r, now }: { r: Review; now: number }) {
   return (
     <Collapsible>
       <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] text-faint hover:text-foreground">
@@ -516,7 +513,7 @@ function Timeline({ s, r, now }: { s: Snapshot; r: Review; now: number }) {
               {e.findingId !== 0 && <span className="font-mono text-faint"> #{e.findingId}</span>}{" "}
               {e.by && (
                 <>
-                  by <StampLine actor s={s} st={e.by} now={now} />
+                  by <StampLine actor st={e.by} now={now} />
                 </>
               )}
               {e.quick !== QuickResponse.UNSPECIFIED && <span>: {quickLabel(e.quick)}</span>}

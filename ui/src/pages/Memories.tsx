@@ -29,6 +29,7 @@ import { ProjectTag } from "../components/ProjectTag";
 import { Card, Empty } from "../components/Panel";
 import { SortableList } from "../components/SortableList";
 import { FromLine, StampLine } from "../components/StampLine";
+import { T3ThreadTag } from "../components/T3ThreadTag";
 import { MEMORY_TAB_STATES, memoryModeLabel, type MemoryTab } from "../lib/memories";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
@@ -513,7 +514,7 @@ function MemoryCard({
             )}
             {m.proposed && (
               <span className="text-[11px] text-muted-foreground sm:ml-auto">
-                <StampLine s={s} st={m.proposed} now={now} verb="saved" />
+                <StampLine st={m.proposed} now={now} verb="saved" />
               </span>
             )}
           </header>
@@ -696,7 +697,7 @@ function MemoryCard({
             </div>
           )}
 
-          <MemoryHistory s={s} m={full} now={now} />
+          <MemoryHistory m={full} now={now} />
         </div>
       </div>
     </Card>
@@ -924,12 +925,12 @@ function ProvenanceLine({ m }: { m: Memory }) {
         </span>
       )}
       {p.model && <span>model {p.model}</span>}
-      {p.t3codeThreadId && <span className="break-all text-faint">thread {p.t3codeThreadId}</span>}
+      {p.t3codeThreadId && <T3ThreadTag id={p.t3codeThreadId} className="text-faint" />}
     </div>
   );
 }
 
-function MemoryHistory({ s, m, now }: { s: Snapshot; m: Memory; now: number }) {
+function MemoryHistory({ m, now }: { m: Memory; now: number }) {
   const [open, setOpen] = useState(false);
   const hist = useQuery({
     queryKey: ["memory-history", m.id, String(m.revision)],
@@ -953,7 +954,7 @@ function MemoryHistory({ s, m, now }: { s: Snapshot; m: Memory; now: number }) {
           <ol className="mt-2 space-y-1.5 border-l border-border pl-3">
             {items.map((c) => (
               <li key={String(c.seq)} className="text-[11.5px] text-muted-foreground">
-                <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine s={s} st={c.by} now={now} verb="" />}
+                <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine st={c.by} now={now} verb="" />}
                 {c.by?.reason && <span>: {c.by.reason}</span>}
               </li>
             ))}

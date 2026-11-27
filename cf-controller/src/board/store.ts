@@ -2135,6 +2135,7 @@ export class BoardStore {
 			actor: identity.actor.id,
 			until: BigInt(untilMs),
 			leaseSeconds: leaseS,
+			sessionId: identity.author.sessionId,
 		});
 		this.syncTaskLabel(msg);
 
@@ -2213,10 +2214,13 @@ export class BoardStore {
 		const leaseS = normalizeLeaseSeconds(leaseSeconds > 0 ? leaseSeconds : held.leaseSeconds);
 		const untilMs = nowMs + leaseS * 1000;
 		const before = clone(BoardMessageSchema, msg);
+		// The actor is shared (one profile on several hosts), so the session renewing is
+		// the one now at work on it; a renewal from outside a session keeps the last.
 		task.claim = create(BoardTaskClaimViewSchema, {
 			actor: held.actor,
 			until: BigInt(untilMs),
 			leaseSeconds: leaseS,
+			sessionId: identity.author.sessionId || held.sessionId,
 		});
 		const seq = this.appendEvent({
 			at: nowMs,

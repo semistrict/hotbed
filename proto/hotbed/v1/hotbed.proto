@@ -6698,6 +6698,9 @@ message BoardTaskClaimView {
   int64 until = 2;
   // The lease length renewals keep by default; 0 for claims imported without one.
   int32 lease_seconds = 3;
+  // The hotbed session that last took or renewed the claim, so a reader can
+  // open the agent at work on it; empty when made outside a session.
+  string session_id = 4;
 }
 
 message BoardTaskBlocked {

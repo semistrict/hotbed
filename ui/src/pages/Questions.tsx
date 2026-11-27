@@ -161,7 +161,7 @@ function Questions({ s }: { s: Snapshot }) {
           movable={movable}
           onMove={(id, before) => move.mutate({ id, before })}
           render={(q, i, { mover, onEditingChange }) => (
-            <QuestionCard s={s} q={q} now={now} delay={Math.min(i, 8) * 40} mover={mover} onEditingChange={onEditingChange} />
+            <QuestionCard q={q} now={now} delay={Math.min(i, 8) * 40} mover={mover} onEditingChange={onEditingChange} />
           )}
         />
       )}
@@ -194,7 +194,7 @@ export function QuestionDetailPage() {
         </Alert>
       )}
       {q.isPending && <div className="py-16 text-center font-mono text-[12px] text-muted-foreground">loading question #{id}…</div>}
-      {q.data && <QuestionCard s={s} q={q.data} now={Number(s.now)} delay={0} mover={null} />}
+      {q.data && <QuestionCard q={q.data} now={Number(s.now)} delay={0} mover={null} />}
     </div>
   );
 }
@@ -217,14 +217,12 @@ function useSettle() {
 const LINK = "font-mono text-[11px] text-muted-foreground underline decoration-border-strong underline-offset-2 hover:text-foreground disabled:opacity-40";
 
 function QuestionCard({
-  s,
   q,
   now,
   delay,
   mover,
   onEditingChange,
 }: {
-  s: Snapshot;
   q: Question;
   now: number;
   delay: number;
@@ -264,7 +262,7 @@ function QuestionCard({
             )}
             {q.asked && (
               <span className="text-[11px] text-muted-foreground sm:ml-auto">
-                <StampLine s={s} st={q.asked} now={now} verb="asked" />
+                <StampLine st={q.asked} now={now} verb="asked" />
               </span>
             )}
           </header>
@@ -281,13 +279,13 @@ function QuestionCard({
           <AskedFromLine q={q} />
           {answerable ? (
             <>
-              {q.state !== QuestionState.OPEN && <OutboxLine s={s} q={q} now={now} />}
+              {q.state !== QuestionState.OPEN && <OutboxLine q={q} now={now} />}
               <AnswerForm q={q} />
             </>
           ) : (
-            <Response s={s} q={q} now={now} />
+            <Response q={q} now={now} />
           )}
-          <History s={s} q={q} now={now} />
+          <History q={q} now={now} />
         </div>
       </div>
     </Card>
@@ -601,11 +599,11 @@ function ReopenButton({ q }: { q: Question }) {
 }
 
 /** A response in the outbox: who gave it, that no agent has read it yet, and the way back to the inbox. */
-function OutboxLine({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
+function OutboxLine({ q, now }: { q: Question; now: number }) {
   const responded = q.answered ?? q.dismissed;
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-      {responded && <StampLine s={s} st={responded} now={now} verb={q.dismissed ? "dismissed" : "answered"} />}
+      {responded && <StampLine st={responded} now={now} verb={q.dismissed ? "dismissed" : "answered"} />}
       {q.dismissed?.reason && <span className="text-foreground">{q.dismissed.reason}</span>}
       <span className="font-mono text-frost">waiting for an agent to read it; change it until then</span>
       <ReopenButton q={q} />
@@ -614,14 +612,14 @@ function OutboxLine({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
 }
 
 /** What became of a handled or deleted question: the user's response, and who acted on it or deleted it. */
-function Response({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
+function Response({ q, now }: { q: Question; now: number }) {
   const responded = q.answered ?? q.dismissed;
   return (
     <div className="space-y-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-[12.5px]">
       {responded && (
         <div className="space-y-1.5">
           <div className="text-[11px] text-muted-foreground">
-            <StampLine s={s} st={responded} now={now} verb={q.dismissed ? "dismissed" : "answered"} />
+            <StampLine st={responded} now={now} verb={q.dismissed ? "dismissed" : "answered"} />
           </div>
           {q.answer && (
             <div className="flex flex-wrap items-center gap-1.5">
@@ -643,13 +641,13 @@ function Response({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
       )}
       {q.handled && (
         <div className="flex flex-wrap items-baseline gap-x-3 text-[11px] text-good-ink">
-          <StampLine s={s} st={q.handled} now={now} verb="handled" />
+          <StampLine st={q.handled} now={now} verb="handled" />
           <ReopenButton q={q} />
         </div>
       )}
       {q.deleted && (
         <div className="text-[11px] text-muted-foreground">
-          <StampLine s={s} st={q.deleted} now={now} verb="deleted" />
+          <StampLine st={q.deleted} now={now} verb="deleted" />
           {q.deleted.reason && <span className="text-foreground">: {q.deleted.reason}</span>}
         </div>
       )}
@@ -658,7 +656,7 @@ function Response({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
 }
 
 /** Every change to the question, loaded when opened. */
-function History({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
+function History({ q, now }: { q: Question; now: number }) {
   const [open, setOpen] = useState(false);
   const history = useQuery({ queryKey: ["question-history", q.id, String(q.updatedAt), String(q.rank)], queryFn: async () => (await clients.questions.getQuestion({ id: q.id })).history, enabled: open });
   return (
@@ -676,7 +674,7 @@ function History({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
           <ol className="mt-2 space-y-1.5 border-l border-border pl-3">
             {history.data.map((c) => (
               <li key={String(c.seq)} className="text-[11.5px] text-muted-foreground">
-                <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine s={s} st={c.by} now={now} verb="" />}
+                <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine st={c.by} now={now} verb="" />}
                 {c.by?.reason && <span>: {c.by.reason}</span>}
                 {c.what === "edited" && c.question?.prompt && (
                   <div className="text-foreground">
