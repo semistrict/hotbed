@@ -121,6 +121,7 @@ export interface PipeEnd {
 interface PendingUnary {
 	kind: "unary";
 	nodeId: string;
+	ws: WebSocket;
 	resolve: (bytes: Uint8Array) => void;
 	reject: (err: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
@@ -130,6 +131,7 @@ interface PendingUnary {
 interface PendingStream {
 	kind: "stream";
 	nodeId: string;
+	ws: WebSocket;
 	queue: Uint8Array[];
 	queuedBytes: number;
 	done: boolean;
@@ -170,7 +172,7 @@ function decodeBase64(b64: string): Uint8Array {
 export class WorkerTunnelHub {
 	private readonly ctx: DurableObjectState;
 	private readonly pending = new Map<string, PendingCall>();
-	private readonly pipes = new Map<string, PipeHandlers & { nodeId: string }>();
+	private readonly pipes = new Map<string, PipeHandlers & { nodeId: string; ws: WebSocket }>();
 	private readonly connectWaiters = new Map<string, Set<() => void>>();
 	private readonly reconnectWaitMs: number;
 
@@ -185,18 +187,22 @@ export class WorkerTunnelHub {
 	accept(server: WebSocket, attachment: WorkerSocketAttachment): void {
 		// Close any superseded sockets for this nodeId so at most one active tunnel exists per node.
 		for (const existing of this.ctx.getWebSockets(attachment.nodeId)) {
+			if (existing === server) continue;
 			try {
 				existing.close(1012, "superseded by newer connection");
 			} catch {
 				// ignore already-closed socket
 			}
-			this.failPendingForNode(
-				attachment.nodeId,
-				hotbedError(ErrorCode.WorkerUnreachable, `${attachment.hostname} reconnected`, {
-					retryable: true,
-				}),
-			);
 		}
+		// Always fail pending calls/pipes from any previous socket for this nodeId,
+		// even if the closed socket already left getWebSockets() before webSocketClose fired.
+		this.failPendingForNodeExcept(
+			attachment.nodeId,
+			server,
+			hotbedError(ErrorCode.WorkerUnreachable, `${attachment.hostname} reconnected`, {
+				retryable: true,
+			}),
+		);
 		this.ctx.acceptWebSocket(server, [attachment.nodeId, `host:${attachment.hostname}`]);
 		server.serializeAttachment(attachment);
 		this.notifyConnected(attachment.nodeId);
@@ -310,8 +316,7 @@ export class WorkerTunnelHub {
 		}
 		if (msg.type === "pipe_opened" || msg.type === "pipe_data" || msg.type === "pipe_close") {
 			const pipe = this.pipes.get(msg.id);
-			const from = ws.deserializeAttachment() as WorkerSocketAttachment | null;
-			if (!pipe || !from || from.nodeId !== pipe.nodeId) return;
+			if (!pipe || pipe.ws !== ws) return;
 			if (msg.type === "pipe_opened") pipe.onOpened();
 			else if (msg.type === "pipe_data") pipe.onData(decodeBase64(msg.body));
 			else {
@@ -321,9 +326,7 @@ export class WorkerTunnelHub {
 			return;
 		}
 		const call = this.pending.get(msg.id);
-		if (!call) return;
-		const sender = ws.deserializeAttachment() as WorkerSocketAttachment | null;
-		if (!sender || sender.nodeId !== call.nodeId) return;
+		if (!call || call.ws !== ws) return;
 
 		if (msg.type === "rpc_msg") {
 			let bytes: Uint8Array;
@@ -422,29 +425,38 @@ export class WorkerTunnelHub {
 
 	handleClose(ws: WebSocket, _code: number, reason: string): void {
 		const meta = ws.deserializeAttachment() as WorkerSocketAttachment | null;
-		if (!meta) return;
-		// Only fail pending calls if no newer open replacement socket is connected.
-		const remaining = this.openSocketsFor(meta.nodeId).filter((s) => s.ws !== ws);
-		if (remaining.length === 0) {
-			this.failPendingForNode(
-				meta.nodeId,
-				hotbedError(
-					ErrorCode.WorkerUnreachable,
-					`${meta.hostname} disconnected${reason ? `: ${reason}` : ""}`,
-					{ retryable: true },
-				),
-			);
-		}
+		const host = meta?.hostname || meta?.nodeId || "worker";
+		// Every pending call and pipe dispatched on ws can only ever be answered
+		// on ws; fail them unconditionally even if a newer socket has already connected.
+		this.failPendingForSocket(
+			ws,
+			hotbedError(
+				ErrorCode.WorkerUnreachable,
+				`${host} disconnected${reason ? `: ${reason}` : ""}`,
+				{ retryable: true },
+			),
+		);
 	}
 
-	private failPendingForNode(nodeId: string, err: HotbedError): void {
+	private failPendingForSocket(ws: WebSocket, err: HotbedError): void {
+		this.failPendingWhere((entry) => entry.ws === ws, err);
+	}
+
+	private failPendingForNodeExcept(nodeId: string, keep: WebSocket, err: HotbedError): void {
+		this.failPendingWhere((entry) => entry.nodeId === nodeId && entry.ws !== keep, err);
+	}
+
+	private failPendingWhere(
+		match: (entry: { nodeId: string; ws: WebSocket }) => boolean,
+		err: HotbedError,
+	): void {
 		for (const [id, pipe] of this.pipes) {
-			if (pipe.nodeId !== nodeId) continue;
+			if (!match(pipe)) continue;
 			this.pipes.delete(id);
 			pipe.onClose(err.message);
 		}
 		for (const [id, call] of this.pending) {
-			if (call.nodeId !== nodeId) continue;
+			if (!match(call)) continue;
 			this.pending.delete(id);
 			if (call.kind === "unary") {
 				clearTimeout(call.timer);
@@ -537,7 +549,15 @@ export class WorkerTunnelHub {
 						);
 					}, timeoutMs);
 					signal?.addEventListener("abort", onAbort, { once: true });
-					this.pending.set(id, { kind: "unary", nodeId, resolve, reject, timer, cleanup });
+					this.pending.set(id, {
+						kind: "unary",
+						nodeId,
+						ws: curSock.ws,
+						resolve,
+						reject,
+						timer,
+						cleanup,
+					});
 					try {
 						curSock.ws.send(frameJSON);
 					} catch (err) {
@@ -614,6 +634,7 @@ export class WorkerTunnelHub {
 		const state: PendingStream = {
 			kind: "stream",
 			nodeId,
+			ws: sock.ws,
 			queue: [],
 			queuedBytes: 0,
 			done: false,
@@ -627,7 +648,7 @@ export class WorkerTunnelHub {
 			state.done = true;
 			this.pending.delete(id);
 			try {
-				sock?.ws.send(JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage));
+				state.ws.send(JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage));
 			} catch {
 				// ignore
 			}
@@ -641,6 +662,7 @@ export class WorkerTunnelHub {
 		let lastSendErr: unknown = null;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			try {
+				state.ws = sock.ws;
 				sock.ws.send(frameJSON);
 				sent = true;
 				break;
@@ -757,7 +779,15 @@ export class WorkerTunnelHub {
 				);
 			}, timeoutMs);
 			signal?.addEventListener("abort", onAbort, { once: true });
-			this.pending.set(id, { kind: "unary", nodeId, resolve, reject, timer, cleanup });
+			this.pending.set(id, {
+				kind: "unary",
+				nodeId,
+				ws: sock.ws,
+				resolve,
+				reject,
+				timer,
+				cleanup,
+			});
 		});
 		// The answer may come (an error) before every message is sent.
 		result.catch(() => {});
@@ -826,7 +856,7 @@ export class WorkerTunnelHub {
 			);
 		}
 		const id = randomHex(8);
-		this.pipes.set(id, { nodeId, ...handlers });
+		this.pipes.set(id, { nodeId, ws: sock.ws, ...handlers });
 		const sendFrame = (frame: TunnelDownMessage) => sock.ws.send(JSON.stringify(frame));
 		try {
 			sendFrame({ type: "pipe_open", id, kind, workspace, port });

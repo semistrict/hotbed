@@ -138,11 +138,7 @@ func (s *mcpServer) run(ctx context.Context, cmd *apicmd.Command, arguments json
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.runner(s.d, mcpSessions{s})
-	if err != nil {
-		return nil, err
-	}
-	return r.Run(ctx, cmd, args)
+	return s.runAPI(ctx, s.d, mcpSessions{s}, cmd, args)
 }
 
 // mcpSessions is the server's session, whatever a tool was given.

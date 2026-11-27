@@ -32,6 +32,19 @@ type ResilientTransport struct {
 // NewResilientTransport clones base (or http.DefaultTransport when nil) and
 // applies conservative timeouts and HTTP/2 PING health checks.
 func NewResilientTransport(base *http.Transport) *ResilientTransport {
+	return newResilientTransport(base, 20*time.Second)
+}
+
+// NewResilientStreamTransport clones base (or http.DefaultTransport when nil)
+// with HTTP/2 PING health checks and TCP keepalives, but without a short
+// ResponseHeaderTimeout so streaming and long-waiting RPCs (e.g. QueryOutput
+// --wait, Poll, FollowLog) do not time out waiting for headers while still
+// detecting half-open connections quickly.
+func NewResilientStreamTransport(base *http.Transport) *ResilientTransport {
+	return newResilientTransport(base, 0)
+}
+
+func newResilientTransport(base *http.Transport, defaultHeaderTimeout time.Duration) *ResilientTransport {
 	var tr *http.Transport
 	if base != nil {
 		tr = base.Clone()
@@ -49,8 +62,8 @@ func NewResilientTransport(base *http.Transport) *ResilientTransport {
 	if tr.TLSHandshakeTimeout == 0 {
 		tr.TLSHandshakeTimeout = 10 * time.Second
 	}
-	if tr.ResponseHeaderTimeout == 0 {
-		tr.ResponseHeaderTimeout = 20 * time.Second
+	if tr.ResponseHeaderTimeout == 0 && defaultHeaderTimeout > 0 {
+		tr.ResponseHeaderTimeout = defaultHeaderTimeout
 	}
 	if tr.IdleConnTimeout == 0 || tr.IdleConnTimeout > 60*time.Second {
 		tr.IdleConnTimeout = 60 * time.Second
@@ -122,13 +135,26 @@ func NewResilientHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// NewResilientStreamClient returns a no-deadline *http.Client backed by
+// NewResilientStreamTransport (HTTP/2 PINGs and TCP keepalives, no short
+// ResponseHeaderTimeout).
+func NewResilientStreamClient() *http.Client {
+	return &http.Client{
+		Transport: NewResilientStreamTransport(nil),
+	}
+}
+
 type transportResetter interface {
 	Reset() bool
 }
 
+type roundTripperUnwrapper interface {
+	Unwrap() http.RoundTripper
+}
+
 // ResetClientTransport recycles hc's underlying connection pool when hc uses a
-// ResilientTransport (including through AuthRoundTripper), or falls back to
-// hc.CloseIdleConnections.
+// ResilientTransport (including through AuthRoundTripper or Unwrap() wrappers),
+// or falls back to hc.CloseIdleConnections.
 func ResetClientTransport(hc *http.Client) bool {
 	if hc == nil {
 		return false
@@ -137,6 +163,10 @@ func ResetClientTransport(hc *http.Client) bool {
 	for tr != nil {
 		if r, ok := tr.(transportResetter); ok {
 			return r.Reset()
+		}
+		if u, ok := tr.(roundTripperUnwrapper); ok {
+			tr = u.Unwrap()
+			continue
 		}
 		if a, ok := tr.(authRoundTripper); ok {
 			tr = a.base

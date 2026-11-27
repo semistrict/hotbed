@@ -24,6 +24,40 @@ func TestNewResilientTransportConfiguresHTTP2HealthChecks(t *testing.T) {
 	}
 }
 
+type unwrapRoundTripper struct{ base http.RoundTripper }
+
+func (u unwrapRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return u.base.RoundTrip(r)
+}
+
+func (u unwrapRoundTripper) Unwrap() http.RoundTripper { return u.base }
+
+func TestNewResilientStreamClientConfiguresHTTP2PingsWithoutHeaderTimeout(t *testing.T) {
+	hc := NewResilientStreamClient()
+	if hc.Timeout != 0 {
+		t.Fatalf("stream client Timeout = %v, want 0", hc.Timeout)
+	}
+	rt, ok := hc.Transport.(*ResilientTransport)
+	if !ok {
+		t.Fatalf("stream client Transport = %T, want *ResilientTransport", hc.Transport)
+	}
+	rt.cooldown = 0
+	tr := rt.cur.Load()
+	if tr.ResponseHeaderTimeout != 0 {
+		t.Fatalf("stream transport ResponseHeaderTimeout = %v, want 0", tr.ResponseHeaderTimeout)
+	}
+	if tr.HTTP2 == nil || tr.HTTP2.SendPingTimeout <= 0 || tr.HTTP2.PingTimeout <= 0 || tr.HTTP2.WriteByteTimeout <= 0 {
+		t.Fatalf("expected positive HTTP2 SendPingTimeout/PingTimeout/WriteByteTimeout, got %+v", tr.HTTP2)
+	}
+	wrapped := &http.Client{Transport: unwrapRoundTripper{base: rt}}
+	if !ResetClientTransport(wrapped) {
+		t.Fatal("expected ResetClientTransport to unwrap and reset ResilientTransport")
+	}
+	if got := rt.Resets(); got != 1 {
+		t.Fatalf("Resets() = %d, want 1", got)
+	}
+}
+
 func TestResilientTransportResetEscapesWedgedHTTP2Connection(t *testing.T) {
 	var attempts atomic.Int32
 	unblock := make(chan struct{})

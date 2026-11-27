@@ -1,7 +1,7 @@
 import { authenticateRequest, NOOP_TOKEN_LOOKUP, stripInternalAuthHeaders } from "./auth.ts";
 import { CommandDO } from "./command-do.ts";
 import { ControllerDO, type ControllerEnv } from "./controller-do.ts";
-import { fromUnknownError } from "./errors.ts";
+import { ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
 import { handleGcRoute } from "./gc.ts";
 import { TenantRegistryDO } from "./tenant-registry-do.ts";
 import { clearWorkOSSessionCookie } from "./workos.ts";
@@ -84,6 +84,13 @@ function stripRequestSignal(req: Request): Request {
 	});
 }
 
+function isRetryableDOError(err: unknown): boolean {
+	if (!err || typeof err !== "object") return false;
+	if ((err as { retryable?: unknown }).retryable === true) return true;
+	const msg = err instanceof Error ? err.message : "";
+	return /durable object.*(reset|code has been updated|overloaded|restarted)/i.test(msg);
+}
+
 export default {
 	async fetch(rawRequest: Request, env: ControllerEnv): Promise<Response> {
 		// Strip any untrusted client-supplied X-Hotbed-Internal-* headers before routing.
@@ -145,12 +152,28 @@ export default {
 			const fwd = attachInternalAuth(request, routing);
 			// WebSocket upgrades (status 101 with webSocket pair) must use stub.fetch()
 			// per Cloudflare Workers runtime; all other routes use typed Workers RPC.
-			const res =
-				url.pathname === "/ws/worker" ||
-				url.pathname === "/ws/questions" ||
-				url.pathname === "/ws/pipe"
-					? await stub.fetch(fwd)
-					: await stub.handleHttpRequest(stripRequestSignal(fwd));
+			let res: Response;
+			try {
+				res =
+					url.pathname === "/ws/worker" ||
+					url.pathname === "/ws/questions" ||
+					url.pathname === "/ws/pipe"
+						? await stub.fetch(fwd)
+						: await stub.handleHttpRequest(stripRequestSignal(fwd));
+			} catch (err) {
+				if (url.pathname.startsWith("/hotbed.v1.") && isRetryableDOError(err)) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return withSetCookie(
+						edgeConnectErrorResponse(
+							hotbedError(ErrorCode.ControllerUnreachable, `controller restarted: ${msg}`, {
+								retryable: true,
+							}),
+						),
+						routing.setCookie,
+					);
+				}
+				throw err;
+			}
 			return withSetCookie(res, routing.setCookie);
 		}
 

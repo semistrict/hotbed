@@ -117,6 +117,26 @@ func TestQueryOutputWaits(t *testing.T) {
 	}
 }
 
+func TestQueryOutputWaitDrainsOnShutdown(t *testing.T) {
+	e := jobEngine(t, "c-drain", "running\n")
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := e.QueryOutput(t.Context(), &pb.QueryOutputRequest{Id: "c-drain", Wait: true, TimeoutSeconds: 60})
+		errCh <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	e.DrainStreams()
+	select {
+	case err := <-errCh:
+		ae := api.FromConnect(err)
+		if ae == nil || ae.Code != api.CodeWorkerUnreachable || !ae.Retryable {
+			t.Fatalf("DrainStreams during QueryOutput --wait = %v, want retryable WORKER_UNREACHABLE", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("QueryOutput --wait did not unblock when DrainStreams was called")
+	}
+}
+
 func TestQueryOutputSinceSync(t *testing.T) {
 	e := jobEngine(t, "c-s", "booted\nGET /old\n")
 	e.mu.Lock()

@@ -166,14 +166,18 @@ func (e *Engine) waitOutput(ctx context.Context, id, path string, until *regexp.
 		}
 	}()
 	var w *outq.Watcher
+	var buf []byte
 	if until != nil {
 		w = outq.NewWatcher(until, after, raw)
+		buf = make([]byte, 256<<10)
 	}
-	buf := make([]byte, 256<<10)
 	var off int64
 	// readAll feeds the watcher what the output gained, and says whether a
 	// line matched.
 	readAll := func() (bool, error) {
+		if w == nil {
+			return false, nil
+		}
 		if f == nil {
 			var err error
 			if f, err = os.Open(path); errors.Is(err, fs.ErrNotExist) {
@@ -188,11 +192,9 @@ func (e *Engine) waitOutput(ctx context.Context, id, path string, until *regexp.
 				return false, err
 			}
 			if len(data) == 0 {
-				return w != nil && w.Match() > 0, nil
+				return w.Match() > 0, nil
 			}
-			if w != nil {
-				w.Write(data)
-			}
+			w.Write(data)
 			off = next
 		}
 	}
@@ -218,6 +220,8 @@ func (e *Engine) waitOutput(ctx context.Context, id, path string, until *regexp.
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
+		case <-e.streamsDone:
+			return "", &api.Error{Code: api.CodeWorkerUnreachable, Message: "worker is shutting down", Retryable: true}
 		case <-deadline.C:
 			return waitedTimeout, nil
 		case <-changed:

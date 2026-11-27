@@ -1,5 +1,5 @@
 import type { ServiceImpl } from "@connectrpc/connect";
-import { clone, create } from "@bufbuild/protobuf";
+import { clone, create, type MessageShape } from "@bufbuild/protobuf";
 import {
 	BaseState,
 	CommandInterventionSchema,
@@ -85,6 +85,12 @@ const DIAGNOSE_RPC_TIMEOUT_MS = 90_000;
 // A sync's bundles pass through the controller to the worker, which applies
 // them: big checkouts over slow links take minutes.
 const SYNC_RPC_TIMEOUT_MS = 15 * 60_000;
+// Waiting QueryOutput calls (--wait, --until) are sliced into bounded worker
+// tunnel RPCs so a worker restart or silent tunnel drop never strands a call
+// for the full 10-minute wait budget.
+const QUERY_OUTPUT_SLICE_SEC = 30;
+const QUERY_OUTPUT_RECONNECT_GRACE_MS = 30_000;
+const QUERY_OUTPUT_RETRY_POLL_MS = 250;
 const WORKER_PROBE_TIMEOUT_MS = 5_000;
 const DAEMON_LOG_WORKER_TIMEOUT_MS = 5_000;
 const DEFAULT_DAEMON_LOG_LIMIT = 200;
@@ -1683,21 +1689,12 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 		},
 
-		async queryOutput(req) {
-			const { host, nodeId } = commandOf(req.id);
-			// A query that waits (--until, --wait) holds the call that long.
-			const waitsMs =
-				req.until || req.wait ? Math.min(Math.max(req.timeoutSeconds || 60, 0), 600) * 1000 : 0;
-			try {
-				const out = await ctrl.tunnel.callUnary(
-					nodeId,
-					host,
-					"/hotbed.v1.WorkspaceService/QueryOutput",
-					QueryOutputRequestSchema,
-					req,
-					OutputQuerySchema,
-					WORKER_RPC_TIMEOUT_MS + waitsMs,
-				);
+		async queryOutput(req, ctx) {
+			const route = ctrl.store.lookupCommand(req.id);
+			if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+			const { host } = ensureOnlineWorker(route.node);
+			const nodeId = route.node;
+			const backfillFinished = (out: MessageShape<typeof OutputQuerySchema>) => {
 				if (out.state === CommandState.UNSPECIFIED) {
 					// Its worker has forgotten it, ended: history has how.
 					const f = ctrl.store.finishedCommand(req.id);
@@ -1707,8 +1704,77 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					}
 				}
 				return out;
-			} catch (err) {
-				throw fromWorkerError(host, err);
+			};
+
+			if ((!req.wait && !req.until) || req.timeoutSeconds < 0) {
+				try {
+					const out = await ctrl.tunnel.callUnary(
+						nodeId,
+						host,
+						"/hotbed.v1.WorkspaceService/QueryOutput",
+						QueryOutputRequestSchema,
+						req,
+						OutputQuerySchema,
+						WORKER_RPC_TIMEOUT_MS,
+						ctx.signal,
+					);
+					return backfillFinished(out);
+				} catch (err) {
+					throw fromWorkerError(host, err);
+				}
+			}
+
+			// Slice waiting queries (--wait, --until) into bounded worker tunnel
+			// calls and ride out brief worker reconnects (e.g. auto-upgrade) within
+			// the caller's timeout budget so a dead socket never strands a wait.
+			const totalWaitMs = Math.min(Math.max(req.timeoutSeconds || 60, 0), 600) * 1000;
+			const deadline = Date.now() + totalWaitMs;
+			let unreachableSince = 0;
+
+			while (true) {
+				const remainingMs = Math.max(0, deadline - Date.now());
+				const sliceSec = Math.max(
+					1,
+					Math.min(QUERY_OUTPUT_SLICE_SEC, Math.ceil(remainingMs / 1000)),
+				);
+				const sliceReq = clone(QueryOutputRequestSchema, req);
+				sliceReq.timeoutSeconds = sliceSec;
+				try {
+					const out = await ctrl.tunnel.callUnary(
+						nodeId,
+						host,
+						"/hotbed.v1.WorkspaceService/QueryOutput",
+						QueryOutputRequestSchema,
+						sliceReq,
+						OutputQuerySchema,
+						WORKER_RPC_TIMEOUT_MS + sliceSec * 1000,
+						ctx.signal,
+					);
+					unreachableSince = 0;
+					backfillFinished(out);
+					if (out.waited !== "timeout" || Date.now() >= deadline || ctx.signal.aborted) {
+						return out;
+					}
+					if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+				} catch (err) {
+					const werr = fromWorkerError(host, err);
+					if (werr.code === ErrorCode.WorkerUnreachable && werr.retryable && !ctx.signal.aborted) {
+						const now = Date.now();
+						if (unreachableSince === 0) unreachableSince = now;
+						const retryDeadline = Math.min(
+							deadline,
+							unreachableSince + QUERY_OUTPUT_RECONNECT_GRACE_MS,
+						);
+						const left = retryDeadline - now;
+						if (left > 0) {
+							await sleepAbortable(Math.min(QUERY_OUTPUT_RETRY_POLL_MS, left), ctx.signal);
+							if (!ctx.signal.aborted) {
+								continue;
+							}
+						}
+					}
+					throw werr;
+				}
 			}
 		},
 
@@ -2101,5 +2167,18 @@ function waitPromise(p: Promise<void>, timeoutMs: number, signal?: AbortSignal):
 		const timer = setTimeout(done, timeoutMs);
 		signal?.addEventListener("abort", done, { once: true });
 		void p.then(done);
+	});
+}
+
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+	if (ms <= 0 || signal?.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const done = () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener("abort", done, { once: true });
 	});
 }

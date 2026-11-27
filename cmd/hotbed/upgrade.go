@@ -109,6 +109,8 @@ type buildSeen struct {
 	n    *atomic.Int64
 }
 
+func (b buildSeen) Unwrap() http.RoundTripper { return b.base }
+
 func (b buildSeen) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := b.base.RoundTrip(r)
 	if err == nil {

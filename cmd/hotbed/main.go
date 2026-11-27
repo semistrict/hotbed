@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -33,7 +32,7 @@ func main() {
 	code := run(ctx, os.Args[1:], deps{
 		tailnet:      &tailnet.Local{},
 		http:         api.NewResilientHTTPClient(60 * time.Second),
-		stream:       &http.Client{},
+		stream:       api.NewResilientStreamClient(),
 		rideOut:      peerRideOut,
 		check:        worker.CheckMachine,
 		stdin:        os.Stdin,

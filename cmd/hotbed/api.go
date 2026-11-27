@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
@@ -55,11 +56,33 @@ func (c *apiCommand) Exec(ctx context.Context, d deps) (any, error) {
 		}
 		c.Args.Input = b
 	}
-	r, err := c.runner(d, cliSessions{d})
+	return c.runAPI(ctx, d, cliSessions{d}, c.Command, c.Args)
+}
+
+// runAPI executes a proto-declared API command, routing waiting QueryOutput
+// calls through queryOutputBounded so CLI and MCP callers both get bounded
+// per-slice HTTP deadlines and transport recovery.
+func (f controllerClient) runAPI(ctx context.Context, d deps, sessions apicmd.Sessions, cmd *apicmd.Command, args apicmd.Args) (proto.Message, error) {
+	r, err := f.runner(d, sessions)
 	if err != nil {
 		return nil, err
 	}
-	return r.Run(ctx, c.Command, c.Args)
+	if cmd.Method.FullName() == "hotbed.v1.WorkspaceService.QueryOutput" {
+		req, _, err := r.Build(ctx, cmd, args)
+		if err != nil {
+			return nil, err
+		}
+		b, err := proto.Marshal(apicmd.Wire(cmd, req))
+		if err != nil {
+			return nil, err
+		}
+		var qreq pb.QueryOutputRequest
+		if err := proto.Unmarshal(b, &qreq); err != nil {
+			return nil, err
+		}
+		return queryOutputBounded(ctx, hotbedv1connect.NewWorkspaceServiceClient(r.Waits), d.stream, d.rideOut, &qreq)
+	}
+	return r.Run(ctx, cmd, args)
 }
 
 // runner runs hotbed.proto's commands against the controller.

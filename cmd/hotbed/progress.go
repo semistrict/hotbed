@@ -22,6 +22,8 @@ type progressSeen struct {
 	seen    map[string]bool
 }
 
+func (p progressSeen) Unwrap() http.RoundTripper { return p.base }
+
 func (p progressSeen) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := p.base.RoundTrip(r)
 	if err == nil && resp != nil {

@@ -2,8 +2,10 @@ package main
 
 import (
 	"net"
+	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -196,5 +198,64 @@ func TestServesSeesThroughAPortProxy(t *testing.T) {
 	}
 	if !serving(holds) || !serving(answers) {
 		t.Error("a server holding or answering a connection does not count as serving")
+	}
+}
+
+// A wedged QueryOutput --wait HTTP stream (e.g. silent edge/proxy drop after
+// the command already finished) must not hang past its slice deadline: the
+// client recycles the transport, re-issues the bounded slice, and returns the
+// completed output promptly.
+func TestOutputWaitRecoversFromWedgedHTTPStream(t *testing.T) {
+	origSlice, origGrace, origRetry := queryOutputSlice, queryOutputSliceGrace, queryOutputRetryDelay
+	queryOutputSlice = time.Second
+	queryOutputSliceGrace = 250 * time.Millisecond
+	queryOutputRetryDelay = 50 * time.Millisecond
+	t.Cleanup(func() {
+		queryOutputSlice, queryOutputSliceGrace, queryOutputRetryDelay = origSlice, origGrace, origRetry
+	})
+
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "keen-owl")
+	c.workspace("keen-owl", nil)
+
+	var cmd pb.Command
+	c.ok(&cmd, "run", "-s", "keen-owl", "-r", "app", "--detach", "--mem", "256M", "--", "sh", "-c", "echo line1; echo line2")
+	c.eventually("command finishes", func() bool {
+		got, ok := c.engine().Command(cmd.Id)
+		return ok && got.State == pb.CommandState_COMMAND_STATE_SUCCEEDED
+	})
+
+	// Blackhole the first QueryOutput HTTP request (never send headers until
+	// the client cancels it) to simulate a wedged/silently dropped HTTP stream
+	// after the command already finished.
+	var calls atomic.Int32
+	unblock := make(chan struct{})
+	t.Cleanup(func() { close(unblock) })
+	origHandler := *c.handler.Load()
+	var wrapped http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hotbed.v1.WorkspaceService/QueryOutput" && calls.Add(1) == 1 {
+			select {
+			case <-r.Context().Done():
+			case <-unblock:
+			}
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+	c.handler.Store(&wrapped)
+
+	start := time.Now()
+	var q pb.OutputQuery
+	c.ok(&q, "output", cmd.Id, "--wait", "--timeout", "10", "--tail", "2")
+	elapsed := time.Since(start)
+	if calls.Load() < 2 {
+		t.Fatalf("expected retry after wedged first slice, got %d calls", calls.Load())
+	}
+	if q.State != pb.CommandState_COMMAND_STATE_SUCCEEDED || q.Waited != "ended" || q.TotalLines != 2 {
+		t.Fatalf("output --wait = %+v, want SUCCEEDED, waited=ended, 2 lines", &q)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("output --wait took %v after wedged slice, want fast recovery", elapsed)
 	}
 }

@@ -3,15 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/shell"
 )
 
@@ -236,20 +241,105 @@ func detachedHelp(id string, wait time.Duration) string {
 		id, wait, id, id, id, id)
 }
 
+var (
+	// queryOutputSlice is the longest a single waiting QueryOutput HTTP call
+	// waits on the server before the client re-issues it for the remaining
+	// timeout. Slicing keeps any silent HTTP/2 stream drop or proxy wedge
+	// bounded instead of hanging indefinitely past --timeout.
+	queryOutputSlice = 45 * time.Second
+	// queryOutputSliceGrace is headroom beyond a slice's server-side wait for
+	// network RTT and worker log scanning before the client treats the HTTP
+	// call as wedged, recycles its transport, and retries.
+	queryOutputSliceGrace = 30 * time.Second
+	queryOutputRetryDelay = time.Second
+)
+
+// queryOutputBounded runs QueryOutput, slicing waiting calls (--wait, --until)
+// into bounded per-slice HTTP requests so a wedged stream, controller deploy,
+// or worker reconnect cannot strand the caller past --timeout.
+func queryOutputBounded(
+	ctx context.Context,
+	client hotbedv1connect.WorkspaceServiceClient,
+	hc *http.Client,
+	rideOut time.Duration,
+	req *pb.QueryOutputRequest,
+) (*pb.OutputQuery, error) {
+	if (!req.Wait && req.Until == "") || req.TimeoutSeconds < 0 {
+		return client.QueryOutput(ctx, req)
+	}
+	totalWait := 60 * time.Second
+	if req.TimeoutSeconds > 0 {
+		totalWait = min(time.Duration(req.TimeoutSeconds)*time.Second, 10*time.Minute)
+	}
+	deadline := time.Now().Add(totalWait)
+	var unreachableSince time.Time
+
+	for {
+		remaining := time.Until(deadline)
+		if remaining < time.Second {
+			remaining = time.Second
+		}
+		slice := min(queryOutputSlice, remaining)
+		sliceSec := max(int32(1), int32((slice+time.Second-1)/time.Second))
+		sliceReq := proto.Clone(req).(*pb.QueryOutputRequest)
+		sliceReq.TimeoutSeconds = sliceSec
+
+		sliceCtx, cancel := context.WithTimeout(ctx, time.Duration(sliceSec)*time.Second+queryOutputSliceGrace)
+		q, err := client.QueryOutput(sliceCtx, sliceReq)
+		sliceTimedOut := errors.Is(sliceCtx.Err(), context.DeadlineExceeded)
+		cancel()
+
+		if err == nil {
+			unreachableSince = time.Time{}
+			if q.Waited != "timeout" || !time.Now().Before(deadline) || ctx.Err() != nil {
+				return q, nil
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if sliceTimedOut {
+			api.ResetClientTransport(hc)
+			if time.Now().Before(deadline) {
+				continue
+			}
+			return nil, err
+		}
+		ae := api.FromConnect(err)
+		if rideOut > 0 && ae.Retryable && (ae.Code == api.CodeWorkerUnreachable || ae.Code == api.CodeControllerUnreachable) {
+			if unreachableSince.IsZero() {
+				unreachableSince = time.Now()
+			}
+			if time.Since(unreachableSince) < rideOut && time.Now().Before(deadline) {
+				api.ResetClientTransport(hc)
+				delay := min(queryOutputRetryDelay, time.Until(deadline))
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+		}
+		return nil, err
+	}
+}
+
 // waitServing waits, at most timeout, for detached command cmd to be ready:
 // a line of its output matching pattern, and/or its port taking
 // connections; it fails if the command ends first.
-func waitServing(ctx context.Context, wk workerClients, cmd *pb.Command, pattern string, port bool, timeout time.Duration, stderr io.Writer, serving func(ctx context.Context, workspace string, port int) bool) error {
+func waitServing(ctx context.Context, wk workerClients, d deps, cmd *pb.Command, pattern string, port bool, timeout time.Duration, serving func(ctx context.Context, workspace string, port int) bool) error {
 	deadline := time.Now().Add(timeout)
 	if pattern != "" {
 		left := time.Until(deadline)
-		q, err := wk.calls.QueryOutput(ctx, &pb.QueryOutputRequest{Id: cmd.Id, Until: pattern, TimeoutSeconds: int32(max(1, left/time.Second)), Tail: endTailLines})
+		q, err := queryOutputBounded(ctx, wk.stream, d.stream, d.rideOut, &pb.QueryOutputRequest{Id: cmd.Id, Until: pattern, TimeoutSeconds: int32(max(1, left/time.Second)), Tail: endTailLines})
 		if err != nil {
 			return err
 		}
 		switch q.Waited {
 		case "matched":
-			fmt.Fprintf(stderr, "hotbed: %s is ready: its output says so\n", cmd.Id)
+			fmt.Fprintf(d.stderr, "hotbed: %s is ready: its output says so\n", cmd.Id)
 		case "timeout":
 			return api.Errorf(api.CodeNotReady, "%s wrote no line matching %q in %s: it runs on", cmd.Id, pattern, timeout).
 				WithSuggestion(fmt.Sprintf("read what it wrote: hotbed output %s", cmd.Id))
@@ -271,7 +361,7 @@ func waitServing(ctx context.Context, wk workerClients, cmd *pb.Command, pattern
 	}
 	for {
 		if serving(ctx, cmd.WorkspaceId, portNum) {
-			fmt.Fprintf(stderr, "hotbed: %s is ready: %s takes connections\n", cmd.Id, cmd.Url)
+			fmt.Fprintf(d.stderr, "hotbed: %s is ready: %s takes connections\n", cmd.Id, cmd.Url)
 			return nil
 		}
 		if c, cerr := wk.command(ctx, cmd.Id); cerr == nil && !api.Live(c.State) {

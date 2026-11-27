@@ -278,6 +278,9 @@ func serveTunnelOnceWithTimeouts(
 		}
 		if err := sendText(b); err != nil && connCtx.Err() == nil {
 			slog.Warn("write controller tunnel message", "id", msg.ID, "type", msg.Type, "err", err)
+			// Tear down the broken tunnel immediately rather than dropping an
+			// RPC reply and leaving the controller waiting for it.
+			connCancel()
 		}
 	}
 

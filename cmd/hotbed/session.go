@@ -967,7 +967,7 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			serving := func(ctx context.Context, workspace string, port int) bool {
 				return c.portServing(ctx, d, workspace, port)
 			}
-			if err := waitServing(ctx, w, cmd, c.Ready, c.ReadyPort, readyTimeout, d.stderr, serving); err != nil {
+			if err := waitServing(ctx, w, d, cmd, c.Ready, c.ReadyPort, readyTimeout, serving); err != nil {
 				return 0, false, err
 			}
 		}

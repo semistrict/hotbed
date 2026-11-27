@@ -106,9 +106,17 @@ export function edgeConnectErrorResponse(err: HotbedError): Response {
 			? "permission_denied"
 			: err.code === ErrorCode.InvalidArgs
 				? "invalid_argument"
-				: "internal";
+				: err.code === ErrorCode.ControllerUnreachable || err.code === ErrorCode.WorkerUnreachable
+					? "unavailable"
+					: "internal";
 	const httpStatus =
-		err.code === ErrorCode.NotAuthorized ? 403 : err.code === ErrorCode.InvalidArgs ? 400 : 500;
+		err.code === ErrorCode.NotAuthorized
+			? 403
+			: err.code === ErrorCode.InvalidArgs
+				? 400
+				: err.code === ErrorCode.ControllerUnreachable || err.code === ErrorCode.WorkerUnreachable
+					? 503
+					: 500;
 	return new Response(
 		JSON.stringify({
 			code: connectCode,
