@@ -1,0 +1,1332 @@
+{
+  "description": "Golden cases for querying a persisted continuous profile, shared by internal/profiler (Go: QueryProfile, which summarizes with internal/flame's frame table; conformance_test.go) and cf-controller/src/profile-query.ts (queryProfile; cf-controller/test/conformance.test.ts): a finished command's profile, queried on the controller, must read as the worker's live one does. `profile` is a CommandProfile and each query's `request` a GetProfileRequest, both as protobuf JSON. `want` is the summary both sides make of the reply: its sample counts, its frames table (listed once each, keyed by name and frame type, so frames that differ only in module, source file or line are one, the first seen's), its stacks as flamegraph.pl folded lines (`labels samples leafType comm`, a kernel frame's label ending _[k]), its top functions by frame label, and its timeline buckets, whose top frame is a label (null when none) and whose stack indexes name the reply's stacks.",
+  "profile": {
+    "commandId": "cmd-conformance",
+    "profiler": "ebpf",
+    "sampleHz": 99,
+    "startedAt": 1000,
+    "updatedAt": 21000,
+    "totalSamples": 38,
+    "comms": ["alt", "app", "bash", "go", "node"],
+    "frameTypes": ["go", "kernel", "native", "unknown"],
+    "frames": [
+      { "name": "do_sys_open", "module": "vmlinux", "frameType": "kernel" },
+      { "name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10 },
+      { "name": "main", "module": "libapp.so", "frameType": "native", "sourceFile": "other.c", "sourceLine": 20 },
+      { "name": "", "module": "libc.so.6", "frameType": "native" },
+      { "name": "runtime.mallocgc", "module": "app", "frameType": "go" },
+      { "name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42 },
+      { "name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel" },
+      { "name": "a;b", "module": "libsemi.so", "frameType": "native" },
+      { "name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5 },
+      { "name": "mystery", "module": "?", "frameType": "unknown" },
+      { "name": "do_sys_open", "module": "libc.so.6", "frameType": "native" },
+      { "name": "ksys_write", "module": "vmlinux", "frameType": "kernel" }
+    ],
+    "stacks": [
+      { "frames": [1, 0], "samples": 5, "leafType": "kernel", "comm": "app" },
+      { "frames": [2, 3], "samples": 3, "leafType": "native", "comm": "app" },
+      { "frames": [5, 4], "samples": 7, "leafType": "go", "comm": "go" },
+      { "frames": [5, 6, 11], "samples": 2, "leafType": "kernel", "comm": "go" },
+      { "frames": [7, 9], "samples": 2, "leafType": "unknown", "comm": "node" },
+      { "frames": [8, 1, 8], "samples": 4, "leafType": "go", "comm": "go" },
+      { "frames": [1, 2, 1], "samples": 2, "leafType": "native", "comm": "app" },
+      { "frames": [10], "samples": 6, "leafType": "native", "comm": "bash" },
+      { "frames": [5, 4], "samples": 7, "leafType": "go", "comm": "alt" }
+    ],
+    "buckets": [
+      { "t": 1000, "samples": 12, "kernelSamples": 5, "userSamples": 7, "topFrame": 0, "durationMs": 5000, "stackIndexes": [0, 1, 2], "stackSamples": [5, 3, 4] },
+      { "t": 6000, "samples": 9, "kernelSamples": 2, "userSamples": 7, "topFrame": 4, "durationMs": 5000, "stackIndexes": [2, 3, 5], "stackSamples": [3, 2, 4] },
+      { "t": 11000, "samples": 4, "userSamples": 4, "topFrame": 9, "durationMs": 5000, "stackIndexes": [4, 6], "stackSamples": [2, 2] },
+      { "t": 16000, "samples": 13, "userSamples": 13, "topFrame": 4, "durationMs": 5000, "stackIndexes": [7, 8], "stackSamples": [6, 7] },
+      { "t": 21000, "durationMs": 5000, "topFrame": 4294967295 }
+    ]
+  },
+  "queries": [
+    {
+      "name": "no filter",
+      "request": {},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 38,
+        "kernelSamples": 7,
+        "userSamples": 31,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go",
+          "do_sys_open 6 native bash",
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;main;main 4 go go",
+          "main;[unknown] 3 native app",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go",
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 36.8421052631579, "totalPct": 36.8421052631579},
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 15.789473684210526, "totalPct": 15.789473684210526},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 13.157894736842104, "totalPct": 13.157894736842104},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 10.526315789473685, "totalPct": 10.526315789473685},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 7.894736842105263, "totalPct": 7.894736842105263},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 11, "selfPct": 5.2631578947368425, "totalPct": 28.94736842105263},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 5.2631578947368425, "totalPct": 5.2631578947368425},
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 5.2631578947368425, "totalPct": 5.2631578947368425},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 16, "selfPct": 0, "totalPct": 42.10526315789474},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 13.157894736842104},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 5.2631578947368425},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 5.2631578947368425}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1, 3, 5], "stackSamples": [4, 5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 4, 7], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [6, 8], "stackSamples": [2, 2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 2], "stackSamples": [7, 6]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query finds kernel frames by their _[k] label",
+      "request": {"query": "_[k]"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 7,
+        "kernelSamples": 7,
+        "userSamples": 0,
+        "frames": [
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main;do_sys_open_[k] 5 kernel app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 71.42857142857143, "totalPct": 71.42857142857143},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 28.571428571428573, "totalPct": 28.571428571428573},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 71.42857142857143},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 28.571428571428573},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 28.571428571428573}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0], "stackSamples": [5]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1], "stackSamples": [2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query is a substring of a frame name",
+      "request": {"query": "main"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 30,
+        "kernelSamples": 7,
+        "userSamples": 23,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go",
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;main;main 4 go go",
+          "main;[unknown] 3 native app",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 46.666666666666664, "totalPct": 46.666666666666664},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 16.666666666666668, "totalPct": 16.666666666666668},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 13.333333333333334, "totalPct": 13.333333333333334},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 10, "totalPct": 10},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 11, "selfPct": 6.666666666666667, "totalPct": 36.666666666666664},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 6.666666666666667, "totalPct": 6.666666666666667},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 16, "selfPct": 0, "totalPct": 53.333333333333336},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 16.666666666666668},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 6.666666666666667}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1, 2, 4], "stackSamples": [4, 5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 3, 6], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [5], "stackSamples": [2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query is case-insensitive and also matches modules and comms",
+      "request": {"query": "APP"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 30,
+        "kernelSamples": 7,
+        "userSamples": 23,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go",
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;main;main 4 go go",
+          "main;[unknown] 3 native app",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 46.666666666666664, "totalPct": 46.666666666666664},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 16.666666666666668, "totalPct": 16.666666666666668},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 13.333333333333334, "totalPct": 13.333333333333334},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 10, "totalPct": 10},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 11, "selfPct": 6.666666666666667, "totalPct": 36.666666666666664},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 6.666666666666667, "totalPct": 6.666666666666667},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 16, "selfPct": 0, "totalPct": 53.333333333333336},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 16.666666666666668},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 6.666666666666667}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1, 2, 4], "stackSamples": [4, 5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 3, 6], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [5], "stackSamples": [2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query is trimmed",
+      "request": {"query": "  mallocgc  "},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 14,
+        "kernelSamples": 0,
+        "userSamples": 14,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 100, "totalPct": 100},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 14, "selfPct": 0, "totalPct": 100}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1], "stackSamples": [4]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1], "stackSamples": [3]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query finds a nameless frame by [unknown]",
+      "request": {"query": "[unknown]"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 3,
+        "kernelSamples": 0,
+        "userSamples": 3,
+        "frames": [
+          {"name": "main", "module": "libapp.so", "frameType": "native", "sourceFile": "other.c", "sourceLine": 20},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main;[unknown] 3 native app"
+        ],
+        "topFunctions": [
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 100, "totalPct": 100},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 3, "selfPct": 0, "totalPct": 100}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0], "stackSamples": [3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query does not find a nameless frame by <unknown>",
+      "request": {"query": "<unknown>"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 0,
+        "kernelSamples": 0,
+        "userSamples": 0,
+        "frames": [
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [],
+        "topFunctions": [],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query finds a frame whose name has a semicolon by its colon label",
+      "request": {"query": "a:b"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 2,
+        "kernelSamples": 0,
+        "userSamples": 2,
+        "frames": [
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 100, "totalPct": 100},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 100}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [0], "stackSamples": [2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query does not find it by its semicolon",
+      "request": {"query": "a;b"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 0,
+        "kernelSamples": 0,
+        "userSamples": 0,
+        "frames": [
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [],
+        "topFunctions": [],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query matches a stack's comm",
+      "request": {"query": "node"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 2,
+        "kernelSamples": 0,
+        "userSamples": 2,
+        "frames": [
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 100, "totalPct": 100},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 100}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [0], "stackSamples": [2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query matches a module",
+      "request": {"query": "libc"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 9,
+        "kernelSamples": 0,
+        "userSamples": 9,
+        "frames": [
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "libapp.so", "frameType": "native", "sourceFile": "other.c", "sourceLine": 20},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "do_sys_open 6 native bash",
+          "main;[unknown] 3 native app"
+        ],
+        "topFunctions": [
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 66.66666666666667, "totalPct": 66.66666666666667},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 33.333333333333336, "totalPct": 33.333333333333336},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 3, "selfPct": 0, "totalPct": 33.333333333333336}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1], "stackSamples": [3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [6]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query that matches nothing",
+      "request": {"query": "no-such-frame"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 0,
+        "kernelSamples": 0,
+        "userSamples": 0,
+        "frames": [
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [],
+        "topFunctions": [],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "frame type kernel",
+      "request": {"frameType": "kernel"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 7,
+        "kernelSamples": 7,
+        "userSamples": 0,
+        "frames": [
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main;do_sys_open_[k] 5 kernel app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 71.42857142857143, "totalPct": 71.42857142857143},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 28.571428571428573, "totalPct": 28.571428571428573},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 71.42857142857143},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 28.571428571428573},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 28.571428571428573}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0], "stackSamples": [5]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1], "stackSamples": [2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "frame type go",
+      "request": {"frameType": "go"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 20,
+        "kernelSamples": 2,
+        "userSamples": 18,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go",
+          "main;main;main 4 go go",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 70, "totalPct": 70},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 20, "totalPct": 20},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 10, "totalPct": 10},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 16, "selfPct": 0, "totalPct": 80},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 4, "selfPct": 0, "totalPct": 20},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 10}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1], "stackSamples": [4]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 2, 3], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "frame type is case-insensitive and trimmed",
+      "request": {"frameType": " NATIVE "},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 22,
+        "kernelSamples": 5,
+        "userSamples": 17,
+        "frames": [
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "do_sys_open 6 native bash",
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;main;main 4 go go",
+          "main;[unknown] 3 native app",
+          "main;main;main 2 native app",
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 27.272727272727273, "totalPct": 27.272727272727273},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 22.727272727272727, "totalPct": 22.727272727272727},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 18.181818181818183, "totalPct": 18.181818181818183},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 13.636363636363637, "totalPct": 13.636363636363637},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 11, "selfPct": 9.090909090909092, "totalPct": 50},
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 9.090909090909092, "totalPct": 9.090909090909092},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 22.727272727272727},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 9.090909090909092}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1, 3], "stackSamples": [5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [2], "stackSamples": [4]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [4, 5], "stackSamples": [2, 2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [6]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "frame type matches a stack's leaf type",
+      "request": {"frameType": "unknown"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 2,
+        "kernelSamples": 0,
+        "userSamples": 2,
+        "frames": [
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 100, "totalPct": 100},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 100}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [0], "stackSamples": [2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "comm",
+      "request": {"comm": "go"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 13,
+        "kernelSamples": 2,
+        "userSamples": 11,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go go",
+          "main;main;main 4 go go",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 7, "totalSamples": 7, "selfPct": 53.84615384615385, "totalPct": 53.84615384615385},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 30.76923076923077, "totalPct": 30.76923076923077},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 15.384615384615385, "totalPct": 15.384615384615385},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 9, "selfPct": 0, "totalPct": 69.23076923076923},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 4, "selfPct": 0, "totalPct": 30.76923076923077},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 15.384615384615385}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0], "stackSamples": [4]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 1, 2], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "comm is trimmed",
+      "request": {"comm": " app "},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 10,
+        "kernelSamples": 5,
+        "userSamples": 5,
+        "frames": [
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;[unknown] 3 native app",
+          "main;main;main 2 native app"
+        ],
+        "topFunctions": [
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 50, "totalPct": 50},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 30, "totalPct": 30},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 7, "selfPct": 20, "totalPct": 70},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 50}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0, 1], "stackSamples": [5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [2], "stackSamples": [2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "comm is case-sensitive",
+      "request": {"comm": "GO"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 0,
+        "kernelSamples": 0,
+        "userSamples": 0,
+        "frames": [
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [],
+        "topFunctions": [],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "frame type with comm",
+      "request": {"frameType": "kernel", "comm": "go"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 2,
+        "kernelSamples": 2,
+        "userSamples": 0,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 100, "totalPct": 100},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 100},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 100}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "query with frame type",
+      "request": {"query": "main", "frameType": "go"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 20,
+        "kernelSamples": 2,
+        "userSamples": 18,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go",
+          "main;main;main 4 go go",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 70, "totalPct": 70},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 20, "totalPct": 20},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 10, "totalPct": 10},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 16, "selfPct": 0, "totalPct": 80},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 4, "selfPct": 0, "totalPct": 20},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 10}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1], "stackSamples": [4]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 2, 3], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "from excludes a bucket that ends at it",
+      "request": {"fromMs": 6000},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 26,
+        "kernelSamples": 2,
+        "userSamples": 24,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "do_sys_open 6 native bash",
+          "main;main;main 4 go go",
+          "main.handler;runtime.mallocgc 3 go go",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go",
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 10, "totalSamples": 10, "selfPct": 38.46153846153846, "totalPct": 38.46153846153846},
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 23.076923076923077, "totalPct": 23.076923076923077},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 15.384615384615385, "totalPct": 15.384615384615385},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 6, "selfPct": 7.6923076923076925, "totalPct": 23.076923076923077},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 7.6923076923076925, "totalPct": 7.6923076923076925},
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 7.6923076923076925, "totalPct": 7.6923076923076925},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 12, "selfPct": 0, "totalPct": 46.15384615384615},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 7.6923076923076925},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 7.6923076923076925},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 7.6923076923076925}
+        ],
+        "buckets": [
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [2, 3, 5], "stackSamples": [4, 3, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [4, 6], "stackSamples": [2, 2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 1], "stackSamples": [7, 6]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "from inside a bucket keeps it",
+      "request": {"fromMs": 5999},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 38,
+        "kernelSamples": 7,
+        "userSamples": 31,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go",
+          "do_sys_open 6 native bash",
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;main;main 4 go go",
+          "main;[unknown] 3 native app",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go",
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 36.8421052631579, "totalPct": 36.8421052631579},
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 15.789473684210526, "totalPct": 15.789473684210526},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 13.157894736842104, "totalPct": 13.157894736842104},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 10.526315789473685, "totalPct": 10.526315789473685},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 7.894736842105263, "totalPct": 7.894736842105263},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 11, "selfPct": 5.2631578947368425, "totalPct": 28.94736842105263},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 5.2631578947368425, "totalPct": 5.2631578947368425},
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 5.2631578947368425, "totalPct": 5.2631578947368425},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 16, "selfPct": 0, "totalPct": 42.10526315789474},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 13.157894736842104},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 5.2631578947368425},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 5.2631578947368425}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1, 3, 5], "stackSamples": [4, 5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 4, 7], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [6, 8], "stackSamples": [2, 2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 2], "stackSamples": [7, 6]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "to before a bucket's start drops it",
+      "request": {"toMs": 5999},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 12,
+        "kernelSamples": 5,
+        "userSamples": 7,
+        "frames": [
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main;do_sys_open_[k] 5 kernel app",
+          "main.handler;runtime.mallocgc 4 go go",
+          "main;[unknown] 3 native app"
+        ],
+        "topFunctions": [
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 41.666666666666664, "totalPct": 41.666666666666664},
+          {"frame": "runtime.mallocgc", "selfSamples": 4, "totalSamples": 4, "selfPct": 33.333333333333336, "totalPct": 33.333333333333336},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 25, "totalPct": 25},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 41.666666666666664},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 4, "selfPct": 0, "totalPct": 33.333333333333336},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 3, "selfPct": 0, "totalPct": 25}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0, 1, 2], "stackSamples": [5, 4, 3]}
+        ]
+      }
+    },
+    {
+      "name": "to at a bucket's start keeps it",
+      "request": {"toMs": 6000},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 21,
+        "kernelSamples": 7,
+        "userSamples": 14,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go go",
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;main;main 4 go go",
+          "main;[unknown] 3 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 7, "totalSamples": 7, "selfPct": 33.333333333333336, "totalPct": 33.333333333333336},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 23.80952380952381, "totalPct": 23.80952380952381},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 19.047619047619047, "totalPct": 19.047619047619047},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 14.285714285714286, "totalPct": 14.285714285714286},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 9.523809523809524, "totalPct": 9.523809523809524},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 9, "selfPct": 0, "totalPct": 42.857142857142854},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 9, "selfPct": 0, "totalPct": 42.857142857142854},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 3, "selfPct": 0, "totalPct": 14.285714285714286},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 9.523809523809524}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0, 1, 3], "stackSamples": [4, 5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 2, 4], "stackSamples": [3, 4, 2]}
+        ]
+      }
+    },
+    {
+      "name": "from and to",
+      "request": {"fromMs": 6000, "toMs": 12000},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 13,
+        "kernelSamples": 2,
+        "userSamples": 11,
+        "frames": [
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main;main;main 4 go go",
+          "main.handler;runtime.mallocgc 3 go go",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go",
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 30.76923076923077, "totalPct": 30.76923076923077},
+          {"frame": "runtime.mallocgc", "selfSamples": 3, "totalSamples": 3, "selfPct": 23.076923076923077, "totalPct": 23.076923076923077},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 6, "selfPct": 15.384615384615385, "totalPct": 46.15384615384615},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 15.384615384615385, "totalPct": 15.384615384615385},
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 15.384615384615385, "totalPct": 15.384615384615385},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 38.46153846153846},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 15.384615384615385},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 15.384615384615385},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 15.384615384615385}
+        ],
+        "buckets": [
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 1, 3], "stackSamples": [4, 3, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [2, 4], "stackSamples": [2, 2]}
+        ]
+      }
+    },
+    {
+      "name": "a window past every bucket selects nothing",
+      "request": {"fromMs": 100000},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 0,
+        "kernelSamples": 0,
+        "userSamples": 0,
+        "frames": [],
+        "folded": [],
+        "topFunctions": [],
+        "buckets": []
+      }
+    },
+    {
+      "name": "a window before every bucket selects nothing",
+      "request": {"toMs": 500},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 0,
+        "kernelSamples": 0,
+        "userSamples": 0,
+        "frames": [],
+        "folded": [],
+        "topFunctions": [],
+        "buckets": []
+      }
+    },
+    {
+      "name": "a window with a query counts matched stacks, not bucket totals",
+      "request": {"fromMs": 6000, "query": "main"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 18,
+        "kernelSamples": 2,
+        "userSamples": 16,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main;main;main 4 go go",
+          "main.handler;runtime.mallocgc 3 go go",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 10, "totalSamples": 10, "selfPct": 55.55555555555556, "totalPct": 55.55555555555556},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 22.22222222222222, "totalPct": 22.22222222222222},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 6, "selfPct": 11.11111111111111, "totalPct": 33.333333333333336},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 11.11111111111111, "totalPct": 11.11111111111111},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 12, "selfPct": 0, "totalPct": 66.66666666666667},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 11.11111111111111},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 11.11111111111111}
+        ],
+        "buckets": [
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 2, 4], "stackSamples": [4, 3, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [3], "stackSamples": [2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "a window with a frame type",
+      "request": {"toMs": 6000, "frameType": "go"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 13,
+        "kernelSamples": 2,
+        "userSamples": 11,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go go",
+          "main;main;main 4 go go",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 7, "totalSamples": 7, "selfPct": 53.84615384615385, "totalPct": 53.84615384615385},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 30.76923076923077, "totalPct": 30.76923076923077},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 15.384615384615385, "totalPct": 15.384615384615385},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 9, "selfPct": 0, "totalPct": 69.23076923076923},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 4, "selfPct": 0, "totalPct": 30.76923076923077},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 15.384615384615385}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [0], "stackSamples": [4]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 1, 2], "stackSamples": [3, 4, 2]}
+        ]
+      }
+    },
+    {
+      "name": "a window with a comm",
+      "request": {"fromMs": 6000, "toMs": 17000, "comm": "go"},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 9,
+        "kernelSamples": 2,
+        "userSamples": 7,
+        "frames": [
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main;main;main 4 go go",
+          "main.handler;runtime.mallocgc 3 go go",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go"
+        ],
+        "topFunctions": [
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 44.44444444444444, "totalPct": 44.44444444444444},
+          {"frame": "runtime.mallocgc", "selfSamples": 3, "totalSamples": 3, "selfPct": 33.333333333333336, "totalPct": 33.333333333333336},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 22.22222222222222, "totalPct": 22.22222222222222},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 55.55555555555556},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 4, "selfPct": 0, "totalPct": 44.44444444444444},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 22.22222222222222}
+        ],
+        "buckets": [
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 1, 2], "stackSamples": [4, 3, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "limit 1",
+      "request": {"limit": 1},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 38,
+        "kernelSamples": 7,
+        "userSamples": 31,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 36.8421052631579, "totalPct": 36.8421052631579}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [], "stackSamples": []},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [], "stackSamples": []},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "limit 2",
+      "request": {"limit": 2},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 38,
+        "kernelSamples": 7,
+        "userSamples": 31,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 36.8421052631579, "totalPct": 36.8421052631579},
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 15.789473684210526, "totalPct": 15.789473684210526}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1], "stackSamples": [4]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1], "stackSamples": [3]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "limit with a query",
+      "request": {"query": "main", "limit": 2},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 30,
+        "kernelSamples": 7,
+        "userSamples": 23,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 46.666666666666664, "totalPct": 46.666666666666664},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 16.666666666666668, "totalPct": 16.666666666666668}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1], "stackSamples": [4]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1], "stackSamples": [3]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0], "stackSamples": [7]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "a negative limit is the default",
+      "request": {"limit": -3},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 38,
+        "kernelSamples": 7,
+        "userSamples": 31,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "do_sys_open", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "tcp_sendmsg_[k]", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "ksys_write", "module": "vmlinux", "frameType": "kernel", "sourceFile": "", "sourceLine": 0},
+          {"name": "a;b", "module": "libsemi.so", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "main.handler;runtime.mallocgc 7 go go",
+          "do_sys_open 6 native bash",
+          "main;do_sys_open_[k] 5 kernel app",
+          "main;main;main 4 go go",
+          "main;[unknown] 3 native app",
+          "main;main;main 2 native app",
+          "main.handler;tcp_sendmsg_[k];ksys_write_[k] 2 kernel go",
+          "a:b;mystery 2 unknown node"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 14, "totalSamples": 14, "selfPct": 36.8421052631579, "totalPct": 36.8421052631579},
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 15.789473684210526, "totalPct": 15.789473684210526},
+          {"frame": "do_sys_open_[k]", "selfSamples": 5, "totalSamples": 5, "selfPct": 13.157894736842104, "totalPct": 13.157894736842104},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 10.526315789473685, "totalPct": 10.526315789473685},
+          {"frame": "[unknown]", "selfSamples": 3, "totalSamples": 3, "selfPct": 7.894736842105263, "totalPct": 7.894736842105263},
+          {"frame": "main", "selfSamples": 2, "totalSamples": 11, "selfPct": 5.2631578947368425, "totalPct": 28.94736842105263},
+          {"frame": "ksys_write_[k]", "selfSamples": 2, "totalSamples": 2, "selfPct": 5.2631578947368425, "totalPct": 5.2631578947368425},
+          {"frame": "mystery", "selfSamples": 2, "totalSamples": 2, "selfPct": 5.2631578947368425, "totalPct": 5.2631578947368425},
+          {"frame": "main.handler", "selfSamples": 0, "totalSamples": 16, "selfPct": 0, "totalPct": 42.10526315789474},
+          {"frame": "main", "selfSamples": 0, "totalSamples": 5, "selfPct": 0, "totalPct": 13.157894736842104},
+          {"frame": "a:b", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 5.2631578947368425},
+          {"frame": "tcp_sendmsg_[k]", "selfSamples": 0, "totalSamples": 2, "selfPct": 0, "totalPct": 5.2631578947368425}
+        ],
+        "buckets": [
+          {"t": 1000, "samples": 12, "topFrame": "do_sys_open_[k]", "stackIndexes": [1, 3, 5], "stackSamples": [4, 5, 3]},
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [1, 4, 7], "stackSamples": [3, 4, 2]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [6, 8], "stackSamples": [2, 2]},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 2], "stackSamples": [7, 6]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    },
+    {
+      "name": "limit with a window",
+      "request": {"fromMs": 6000, "limit": 3},
+      "want": {
+        "totalSamples": 38,
+        "matchedSamples": 26,
+        "kernelSamples": 2,
+        "userSamples": 24,
+        "frames": [
+          {"name": "main.handler", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 42},
+          {"name": "runtime.mallocgc", "module": "app", "frameType": "go", "sourceFile": "", "sourceLine": 0},
+          {"name": "do_sys_open", "module": "libc.so.6", "frameType": "native", "sourceFile": "", "sourceLine": 0},
+          {"name": "main", "module": "app", "frameType": "go", "sourceFile": "main.go", "sourceLine": 5},
+          {"name": "main", "module": "app", "frameType": "native", "sourceFile": "main.c", "sourceLine": 10},
+          {"name": "mystery", "module": "?", "frameType": "unknown", "sourceFile": "", "sourceLine": 0}
+        ],
+        "folded": [
+          "main.handler;runtime.mallocgc 7 go alt",
+          "do_sys_open 6 native bash",
+          "main;main;main 4 go go"
+        ],
+        "topFunctions": [
+          {"frame": "runtime.mallocgc", "selfSamples": 10, "totalSamples": 10, "selfPct": 38.46153846153846, "totalPct": 38.46153846153846},
+          {"frame": "do_sys_open", "selfSamples": 6, "totalSamples": 6, "selfPct": 23.076923076923077, "totalPct": 23.076923076923077},
+          {"frame": "main", "selfSamples": 4, "totalSamples": 4, "selfPct": 15.384615384615385, "totalPct": 15.384615384615385}
+        ],
+        "buckets": [
+          {"t": 6000, "samples": 9, "topFrame": "runtime.mallocgc", "stackIndexes": [2], "stackSamples": [4]},
+          {"t": 11000, "samples": 4, "topFrame": "mystery", "stackIndexes": [], "stackSamples": []},
+          {"t": 16000, "samples": 13, "topFrame": "runtime.mallocgc", "stackIndexes": [0, 1], "stackSamples": [7, 6]},
+          {"t": 21000, "samples": 0, "topFrame": null, "stackIndexes": [], "stackSamples": []}
+        ]
+      }
+    }
+  ]
+}

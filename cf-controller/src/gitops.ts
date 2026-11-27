@@ -1,49 +1,157 @@
 import { ErrorCode, hotbedError } from "./errors.ts";
 
 /**
+ * A `scheme://authority/path` URL as Go's url.Parse reads it, for the parts
+ * of it that repo URLs are judged and named by. The standard URL parser
+ * (WHATWG's) normalizes what it is given: it punycodes and percent-decodes a
+ * host, turns a backslash into a slash, resolves `.` and `..` in a path, and
+ * rewrites numeric hosts as IPv4 addresses. Go's does none of that, and the
+ * worker judges the URL the user wrote, so the controller must too.
+ */
+interface ParsedURL {
+	/** The user of the userinfo, as written (a percent-escape undecoded), "" if none. */
+	username: string;
+	/** The authority after its userinfo: its host (in brackets for IPv6) and port. */
+	hostPort: string;
+	/** The host, without brackets or port. */
+	host: string;
+	/** The port's digits, "" if none. */
+	port: string;
+	/** The path, percent-decoded, as Go's URL.Path. */
+	path: string;
+}
+
+/** What Go's url.Parse accepts in a userinfo. */
+const USERINFO = /^[A-Za-z0-9\-._:~!$&'()*+,;=%@]*$/;
+/** What Go's url.Parse accepts in a host that is not an IPv6 literal: no ASCII but these. */
+const URL_HOST = /^(?:[A-Za-z0-9\-._~!$&'()*+,;=:[\]<>"%]|\P{ASCII})*$/u;
+/** A percent sign that is not the start of an escape, which Go refuses. */
+const BAD_ESCAPE = /%(?![0-9A-Fa-f]{2})/;
+
+function validOptionalPort(colonPort: string): boolean {
+	return colonPort === "" || /^:\d*$/.test(colonPort);
+}
+
+/** The percent-escapes of s decoded, those that are not UTF-8 left as written. */
+function unescapePath(s: string): string {
+	return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
+		try {
+			return decodeURIComponent(m);
+		} catch {
+			return m;
+		}
+	});
+}
+
+/** Whether s has a byte Go's url.Parse refuses outright: a C0 control or DEL. */
+function hasControlByte(s: string): boolean {
+	for (let i = 0; i < s.length; i++) {
+		const code = s.charCodeAt(i);
+		if (code < 0x20 || code === 0x7f) return true;
+	}
+	return false;
+}
+
+/** The URL s is, or null where Go's url.Parse refuses it. */
+function parseURL(s: string): ParsedURL | null {
+	const schemeEnd = s.indexOf("://");
+	if (schemeEnd < 0 || !/^[A-Za-z][A-Za-z0-9+.-]*$/.test(s.slice(0, schemeEnd))) return null;
+	if (hasControlByte(s)) return null;
+	let rest = s.slice(schemeEnd + 3);
+	const hash = rest.indexOf("#");
+	const fragment = hash < 0 ? "" : rest.slice(hash + 1);
+	if (hash >= 0) rest = rest.slice(0, hash);
+	const query = rest.indexOf("?");
+	if (query >= 0) rest = rest.slice(0, query);
+	const slash = rest.indexOf("/");
+	const authority = slash < 0 ? rest : rest.slice(0, slash);
+	const rawPath = slash < 0 ? "" : rest.slice(slash);
+
+	const at = authority.lastIndexOf("@");
+	const userinfo = at < 0 ? "" : authority.slice(0, at);
+	if (!USERINFO.test(userinfo)) return null;
+	const hostPort = authority.slice(at + 1);
+	if (BAD_ESCAPE.test(userinfo + rawPath + fragment)) return null;
+
+	let host = hostPort;
+	let colonPort = "";
+	if (hostPort.startsWith("[")) {
+		const close = hostPort.lastIndexOf("]");
+		if (close < 0) return null;
+		host = hostPort.slice(1, close);
+		colonPort = hostPort.slice(close + 1);
+		if (!host.includes(":")) return null; // brackets hold an IPv6 address
+	} else {
+		const colon = hostPort.lastIndexOf(":");
+		if (colon >= 0) {
+			host = hostPort.slice(0, colon);
+			colonPort = hostPort.slice(colon);
+		}
+		if (host.includes(":") || !URL_HOST.test(host)) return null; // a bare host has no colon
+	}
+	if (!validOptionalPort(colonPort)) return null;
+	return {
+		username: userinfo.split(":", 1)[0],
+		hostPort,
+		host,
+		port: colonPort.slice(1),
+		path: unescapePath(rawPath),
+	};
+}
+
+/** An absolute path as Go's filepath.Clean writes it. */
+function cleanAbsolute(p: string): string {
+	const out: string[] = [];
+	for (const seg of p.split("/")) {
+		if (seg === "" || seg === ".") continue;
+		if (seg === "..") out.pop();
+		else out.push(seg);
+	}
+	return `/${out.join("/")}`;
+}
+
+/**
+ * The name of a local repo: its path cleaned and without ".git". A relative
+ * path the worker makes absolute against its working directory, which the
+ * controller has none of, so it is left as written.
+ */
+function localRemote(p: string): string {
+	if (!p.startsWith("/")) return stripDotGit(p.replace(/\/+$/, ""));
+	return cleanAbsolute(stripDotGit(cleanAbsolute(p)));
+}
+
+const trimSlashes = (s: string) => s.replace(/^\/+|\/+$/g, "");
+
+/**
  * Canonicalizes HTTPS, SSH, SCP-style, and local git URLs so
  * "git@github.com:semistrict/hotbed.git" and "https://github.com/semistrict/hotbed"
  * compare equal. Matches Go's internal/gitops.CanonicalRemote.
  */
 export function canonicalRemote(raw: string): string {
-	const s = raw.trim();
+	const s = raw.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 	if (!s) return "";
-	if (s.startsWith("/") || s.startsWith(".")) {
-		return stripDotGit(s.replace(/\/+$/, ""));
-	}
+	if (s.startsWith("/") || s.startsWith(".")) return localRemote(s);
 	if (s.startsWith("file://")) {
-		try {
-			const u = new URL(s);
-			return stripDotGit(u.pathname.replace(/\/+$/, ""));
-		} catch {
-			return stripDotGit(s.replace(/\/+$/, ""));
-		}
+		const u = parseURL(s);
+		if (u) return localRemote(u.path);
 	}
 	if (!s.includes("://")) {
 		const colonIdx = s.indexOf(":");
-		if (colonIdx > 0) {
+		if (colonIdx >= 0) {
 			let hostPart = s.slice(0, colonIdx);
-			let pathPart = s.slice(colonIdx + 1);
+			const pathPart = s.slice(colonIdx + 1);
 			if (!hostPart.includes("/")) {
 				const atIdx = hostPart.indexOf("@");
 				if (atIdx >= 0) {
 					hostPart = hostPart.slice(atIdx + 1);
 				}
-				pathPart = stripDotGit(pathPart.replace(/^\/+|\/+$/g, ""));
-				return `${hostPart.toLowerCase()}/${pathPart}`;
+				return `${hostPart.toLowerCase()}/${stripDotGit(trimSlashes(pathPart))}`;
 			}
 		}
 	}
-	try {
-		const u = new URL(s);
-		if (!u.hostname) {
-			return stripDotGit(s.replace(/\/+$/, ""));
-		}
-		const p = stripDotGit(u.pathname.replace(/^\/+|\/+$/g, ""));
-		return `${u.hostname.toLowerCase()}/${p}`;
-	} catch {
-		return stripDotGit(s.replace(/\/+$/, ""));
-	}
+	const u = parseURL(s);
+	if (!u || !u.host) return stripDotGit(s.replace(/\/+$/, ""));
+	return `${u.host.toLowerCase()}/${stripDotGit(trimSlashes(u.path))}`;
 }
 
 function stripDotGit(s: string): string {
@@ -94,6 +202,50 @@ function validHost(host: string): boolean {
 	return isIPLiteral(host) || /^[a-zA-Z0-9.-]+$/.test(host);
 }
 
+function validateStandardRepoURL(raw: string): void {
+	const u = parseURL(raw);
+	if (!u) {
+		throw hotbedError(ErrorCode.InvalidArgs, `invalid repo URL "${raw}"`);
+	}
+	if (/^(?:-|%2d)/i.test(u.username)) {
+		throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" username must not start with '-'`);
+	}
+	if (!u.host) {
+		throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" is missing a host`);
+	}
+	if (u.host.startsWith("-")) {
+		throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" host must not start with '-'`);
+	}
+	if (!validHost(u.host)) {
+		throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" has invalid host "${u.host}"`);
+	}
+	if (u.port) {
+		const port = Number(u.port);
+		if (!(port >= 1 && port <= 65535)) {
+			throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" has invalid port "${u.port}"`);
+		}
+	}
+	if (!trimSlashes(u.path)) {
+		throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" is missing a repository path`);
+	}
+}
+
+function validateFileRepoURL(raw: string): void {
+	const u = parseURL(raw);
+	if (!u) {
+		throw hotbedError(ErrorCode.InvalidArgs, `invalid file repo URL "${raw}"`);
+	}
+	if (u.hostPort && u.hostPort.toLowerCase() !== "localhost") {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			`file repo URL "${raw}" must not specify remote host "${u.hostPort}"`,
+		);
+	}
+	if (!u.path.startsWith("/") || u.path.length <= 1) {
+		throw hotbedError(ErrorCode.InvalidArgs, `file repo URL "${raw}" must have an absolute path`);
+	}
+}
+
 /**
  * Validates a remote repository URL (matching Go's gitops.ValidateRepoURL).
  */
@@ -101,14 +253,16 @@ export function validateRepoURL(raw: string, allowLocal = false): void {
 	if (!raw) {
 		throw hotbedError(ErrorCode.InvalidArgs, "repo URL must not be empty");
 	}
-	for (let i = 0; i < raw.length; i++) {
-		const code = raw.charCodeAt(i);
-		if (code === 0 || code < 0x20 || code === 0x7f || /\s/.test(raw[i])) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				"repo URL must not contain whitespace or control characters",
-			);
-		}
+	if (!raw.isWellFormed()) {
+		throw hotbedError(ErrorCode.InvalidArgs, "repo URL contains invalid UTF-8");
+	}
+	// Go's unicode.IsControl and unicode.IsSpace: the C0 and C1 controls, and
+	// every space, which the URL parser would strip, drop or encode.
+	if (/[\p{Cc}\p{White_Space}]/u.test(raw)) {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			"repo URL must not contain whitespace or control characters",
+		);
 	}
 	if (raw.startsWith("-")) {
 		throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" must not start with '-'`);
@@ -126,40 +280,7 @@ export function validateRepoURL(raw: string, allowLocal = false): void {
 	if (schemeIdx >= 0) {
 		const scheme = raw.slice(0, schemeIdx).toLowerCase();
 		if (scheme === "https" || scheme === "http" || scheme === "ssh") {
-			// The URL parser reads "https:///org/repo" as host "org" and a
-			// backslash as a slash; Go's url.Parse, the worker's, does neither.
-			const authority = raw.slice(schemeIdx + 3).split(/[/?#]/)[0];
-			if (!authority || authority.includes("\\")) {
-				throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" is missing a host`);
-			}
-			let u: URL;
-			try {
-				u = new URL(raw);
-			} catch {
-				throw hotbedError(ErrorCode.InvalidArgs, `invalid repo URL "${raw}"`);
-			}
-			if (u.username.startsWith("-")) {
-				throw hotbedError(
-					ErrorCode.InvalidArgs,
-					`repo URL "${raw}" username must not start with '-'`,
-				);
-			}
-			const host = u.hostname.replace(/^\[|\]$/g, "");
-			if (!u.host || !host || host.startsWith("-") || !validHost(host)) {
-				throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" has invalid host "${host}"`);
-			}
-			if (u.port) {
-				const port = Number(u.port);
-				if (!Number.isInteger(port) || port < 1 || port > 65535) {
-					throw hotbedError(
-						ErrorCode.InvalidArgs,
-						`repo URL "${raw}" has invalid port "${u.port}"`,
-					);
-				}
-			}
-			if (!u.pathname.replace(/^\/+|\/+$/g, "")) {
-				throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" is missing a repository path`);
-			}
+			validateStandardRepoURL(raw);
 			return;
 		}
 		if (scheme === "file") {
@@ -169,24 +290,7 @@ export function validateRepoURL(raw: string, allowLocal = false): void {
 					`repo URL "${raw}" uses disallowed file:// scheme`,
 				);
 			}
-			let u: URL;
-			try {
-				u = new URL(raw);
-			} catch {
-				throw hotbedError(ErrorCode.InvalidArgs, `invalid file repo URL "${raw}"`);
-			}
-			if (u.host && u.host.toLowerCase() !== "localhost") {
-				throw hotbedError(
-					ErrorCode.InvalidArgs,
-					`file repo URL "${raw}" must not specify remote host "${u.host}"`,
-				);
-			}
-			if (!u.pathname.startsWith("/") || u.pathname.length <= 1) {
-				throw hotbedError(
-					ErrorCode.InvalidArgs,
-					`file repo URL "${raw}" must have an absolute path`,
-				);
-			}
+			validateFileRepoURL(raw);
 			return;
 		}
 		throw hotbedError(

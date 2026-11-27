@@ -21,7 +21,7 @@ const MAX_PROFILE_BYTES = 1 << 20;
  * A frame as flamegraphs name it, as Go's flame.Label: a `;` would split the
  * folded stack, and a kernel frame ends in `_[k]` (what `--query _[k]` finds).
  */
-function frameLabel(f: ProfileFrame): string {
+export function frameLabel(f: ProfileFrame): string {
 	let name = f.name.replaceAll(";", ":");
 	if (name === "") name = "[unknown]";
 	if (f.frameType === "kernel" && !name.endsWith("_[k]")) name += "_[k]";
