@@ -30,6 +30,9 @@ describe("ByHand controls", () => {
     expect(actsFor({ state: CommandState.PARKED, bench: false })).toEqual(["pause", "stop"]);
     expect(actsFor({ state: CommandState.QUEUED, bench: false })).toEqual(["start", "stop"]);
     expect(actsFor({ state: CommandState.QUEUED, bench: true })).toEqual(["stop"]);
+    expect(
+      actsFor({ state: CommandState.QUEUED, bench: false, interventions: [create(CommandInterventionSchema, { seq: 1, kind: InterventionKind.START })] }),
+    ).toEqual(["stop"]);
     expect(actsFor({ state: CommandState.RUNNING, bench: true })).toEqual(["stop"]);
     expect(actsFor({ state: CommandState.PAUSED, bench: false })).toEqual(["resume", "stop"]);
     expect(actsFor({ state: CommandState.SUCCEEDED, bench: false })).toEqual([]);

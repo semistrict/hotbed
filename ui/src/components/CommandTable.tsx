@@ -17,6 +17,7 @@ import { ago, bytes, duration, limit, speedup } from "../lib/format";
 import { useProject } from "../lib/project";
 import { commandProject } from "../lib/projects";
 import { placementRequirements } from "./Admission";
+import { canStartNow, StartNowButton } from "./ByHand";
 import { Meter } from "./charts/Bars";
 import { CommandInline } from "./CommandBlock";
 import { Empty } from "./Panel";
@@ -207,6 +208,7 @@ export function LiveCommandTable({
                     <KindTag kind={c.kind} />
                     {runtime && <RuntimeBadge runtime={runtime} />}
                     {c.bench && <BenchTag />}
+                    {canStartNow(c) && <StartNowButton command={c} />}
                     {c.state !== CommandState.QUEUED && (
                       <Link
                         to="/commands/$id"
@@ -303,6 +305,7 @@ export function LiveCommandTable({
                         <div className="mt-0.5 flex flex-wrap items-center gap-2">
                           <KindTag kind={c.kind} />
                           {c.bench && <BenchTag />}
+                          {canStartNow(c) && <StartNowButton command={c} />}
                           {c.state !== CommandState.QUEUED && (
                             <Link
                               to="/commands/$id"

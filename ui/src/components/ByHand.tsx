@@ -54,13 +54,50 @@ const ACTS: Record<ByHandAction, { label: string; glyph: string; doing: string; 
   },
 };
 
+/**
+ * Whether c can be started by hand now: queued, not a measurement (its
+ * numbers need the node to itself), and not started by hand already.
+ */
+export function canStartNow(c: Pick<Command, "state" | "bench"> & { interventions?: CommandIntervention[] }): boolean {
+  return (
+    c.state === CommandState.QUEUED && !c.bench && !(c.interventions ?? []).some((iv) => iv.kind === InterventionKind.START)
+  );
+}
+
 /** What can be done by hand to a command as it is now. */
-export function actsFor(c: Pick<Command, "state" | "bench">): ByHandAction[] {
+export function actsFor(c: Pick<Command, "state" | "bench"> & { interventions?: CommandIntervention[] }): ByHandAction[] {
   if (!isLive(c)) return [];
   if (c.state === CommandState.PAUSED) return ["resume", "stop"];
-  if (c.state === CommandState.QUEUED) return c.bench ? ["stop"] : ["start", "stop"];
-  if (c.bench) return ["stop"];
+  if (canStartNow(c)) return ["start", "stop"];
+  if (c.state === CommandState.QUEUED || c.bench) return ["stop"];
   return ["pause", "stop"];
+}
+
+/**
+ * One click to start a queued command now, for a row in a table of commands;
+ * its page's Start now takes a comment as well.
+ */
+export function StartNowButton({ command }: { command: Pick<Command, "id"> }) {
+  const qc = useQueryClient();
+  const start = useMutation({
+    mutationFn: () => clients.workspaces.startCommand({ id: command.id }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["snapshot"] }),
+  });
+  const failed = start.error ? (start.error instanceof Error ? start.error.message : String(start.error)) : "";
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      disabled={start.isPending || start.isSuccess}
+      onClick={() => start.mutate()}
+      title={failed || ACTS.start.hint}
+      className={`font-mono text-[9.5px] font-semibold ${failed ? "border-critical/50 text-critical" : "border-primary/35 text-primary"}`}
+    >
+      <span aria-hidden>{ACTS.start.glyph}</span>
+      {start.isPending ? ACTS.start.doing : failed ? "Start failed" : start.isSuccess ? "Starting" : ACTS.start.label}
+    </Button>
+  );
 }
 
 /**

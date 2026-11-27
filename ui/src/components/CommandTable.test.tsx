@@ -1,4 +1,5 @@
 import { create } from "@bufbuild/protobuf";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import {
   CommandSchema,
   CommandState,
   FinishedCommandSchema,
+  InterventionKind,
   NodeSchema,
   SnapshotSchema,
   WorkspaceSchema,
@@ -29,6 +31,12 @@ import {
   LiveCommandTable,
 } from "./CommandTable";
 import { filterTableRows } from "./ui/table";
+
+/** A live table renders inside the cockpit's query client: its rows' Start now buttons use it. */
+function renderLive(node: ReactNode) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderToStaticMarkup(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
+}
 
 describe("CommandTable runtime column", () => {
   it("resolves command runtime directly, falling back to workspace runtime", () => {
@@ -88,7 +96,7 @@ describe("CommandTable runtime column", () => {
       }),
     ];
 
-    const html = renderToStaticMarkup(<LiveCommandTable s={s} commands={commands} />);
+    const html = renderLive(<LiveCommandTable s={s} commands={commands} />);
     expect(html).toContain(">runtime<");
     expect(html).toContain("Firecracker microVM runtime");
     expect(html).toContain("cladefs host-FUSE runtime");
@@ -162,7 +170,7 @@ describe("CommandTable runtime column", () => {
         startedAt: 191_000n,
       }),
     ];
-    const liveHtml = renderToStaticMarkup(
+    const liveHtml = renderLive(
       <LiveCommandTable s={s} commands={liveCmds} hideColumns={["workspace", "node", "project"]} />,
     );
     expect(liveHtml).toContain("lg:hidden");
@@ -244,7 +252,7 @@ describe("CommandTable runtime column", () => {
         startedAt: 192_000n,
       }),
     ];
-    const liveHtml = renderToStaticMarkup(<LiveCommandTable s={s} commands={live} />);
+    const liveHtml = renderLive(<LiveCommandTable s={s} commands={live} />);
     expect(liveHtml).toContain(">id<");
     expect(liveHtml).toContain("cmd-live-1");
     expect(liveHtml).toContain("cmd-live-2");
@@ -304,5 +312,25 @@ describe("CommandTable runtime column", () => {
     expect(filterHist("OOM killed")).toEqual(["cmd-hist-2"]);
     expect(filterHist("ws-beta")).toEqual(["cmd-hist-2"]);
     expect(filterHist("ubu1")).toEqual(["cmd-hist-1"]);
+  });
+
+  it("offers Start now on a queued command, not on a measurement, one started by hand already, or one running", () => {
+    const s = create(SnapshotSchema, {
+      now: 100_000n,
+      nodes: [create(NodeSchema, { id: "n1", hostname: "ubu1", online: true })],
+    });
+    const row = (
+      id: string,
+      more: { bench?: boolean; state?: CommandState; startedAt?: bigint; interventions?: { seq: number; kind: InterventionKind }[] },
+    ) =>
+      create(CommandSchema, { id, nodeId: "n1", argv: `run ${id}`, state: CommandState.QUEUED, queuedAt: 90_000n, ...more });
+    const startsIn = (c: ReturnType<typeof row>) => {
+      const html = renderLive(<LiveCommandTable s={s} commands={[c]} />);
+      return html.split("Start now").length - 1;
+    };
+    expect(startsIn(row("c-q", {}))).toBe(2); // the phone card and the table row
+    expect(startsIn(row("c-bench", { bench: true }))).toBe(0);
+    expect(startsIn(row("c-started", { interventions: [{ seq: 1, kind: InterventionKind.START }] }))).toBe(0);
+    expect(startsIn(row("c-run", { state: CommandState.RUNNING, startedAt: 95_000n }))).toBe(0);
   });
 });
