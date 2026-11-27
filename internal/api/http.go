@@ -30,9 +30,12 @@ type ResilientTransport struct {
 }
 
 // NewResilientTransport clones base (or http.DefaultTransport when nil) and
-// applies conservative timeouts and HTTP/2 PING health checks.
+// applies conservative timeouts and HTTP/2 PING health checks. The default
+// ResponseHeaderTimeout (35s) exceeds the controller's 30s WORKER_RPC_TIMEOUT_MS
+// so slow proxied worker RPCs return their real error rather than failing at
+// the HTTP/2 header timeout, while wedged connections still fail promptly.
 func NewResilientTransport(base *http.Transport) *ResilientTransport {
-	return newResilientTransport(base, 20*time.Second)
+	return newResilientTransport(base, 35*time.Second)
 }
 
 // NewResilientStreamTransport clones base (or http.DefaultTransport when nil)

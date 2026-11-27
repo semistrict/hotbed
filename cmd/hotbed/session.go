@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"io"
@@ -1020,7 +1022,70 @@ func (c *runCmd) start(ctx context.Context, d deps, w workerClients, ws *pb.Work
 		}
 	}
 	req.WorkspaceId, req.Attached, req.Port, req.Repo = ws.Id, !c.Detach, int32(c.Port), repo
-	return w.calls.RunCommand(ctx, req)
+	return runCommandWithRetry(ctx, d, w, req)
+}
+
+// newClientCommandID generates a command ID matching the worker's format
+// (10 lowercase base32 characters) so RunCommand can safely retry across a
+// wedged HTTP/2 connection without starting a duplicate command.
+func newClientCommandID() string {
+	b := make([]byte, 10)
+	_, _ = rand.Read(b)
+	return strings.ToLower(base32.StdEncoding.EncodeToString(b))[:10]
+}
+
+// runCommandWithRetry calls RunCommand with a client-generated ID and recovers
+// from transient transport failures (such as http2: timeout awaiting response
+// headers on an idle connection after waitReady/syncTo) by recycling the HTTP
+// pool and checking whether the first attempt already landed via GetCommand
+// before retrying RunCommand with the same ID.
+func runCommandWithRetry(ctx context.Context, d deps, w workerClients, req *pb.RunCommandRequest) (*pb.Command, error) {
+	if req.Id == "" {
+		req.Id = newClientCommandID()
+	}
+	var since time.Time
+	var noticed bool
+	for {
+		cmd, err := w.calls.RunCommand(ctx, req)
+		if err == nil {
+			return cmd, nil
+		}
+		if ctx.Err() != nil || d.rideOut <= 0 {
+			return nil, err
+		}
+		ae := api.FromConnect(err)
+		if ae.Code == api.CodeConflict {
+			// A prior attempt with req.Id landed on the worker before its
+			// response was lost; fetch that command instead of failing.
+			if got, gerr := w.command(ctx, req.Id); gerr == nil {
+				return got, nil
+			}
+			return nil, err
+		}
+		if !ae.Retryable || (ae.Code != api.CodeControllerUnreachable && ae.Code != api.CodeWorkerUnreachable) {
+			return nil, err
+		}
+		if since.IsZero() {
+			since = time.Now()
+		}
+		if time.Since(since) > d.rideOut {
+			return nil, err
+		}
+		if !noticed {
+			fmt.Fprintf(d.stderr, "hotbed: starting command %s hit %s; retrying\n", req.Id, ae.Message)
+			noticed = true
+		}
+		api.ResetClientTransport(d.http)
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(time.Second):
+		}
+		// Check whether the previous attempt actually landed before resending.
+		if got, gerr := w.command(ctx, req.Id); gerr == nil {
+			return got, nil
+		}
+	}
 }
 
 // discard releases a throwaway workspace no command got to run in, which

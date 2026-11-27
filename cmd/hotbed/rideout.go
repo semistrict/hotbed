@@ -23,9 +23,13 @@ func rideOut(d deps, who string) []connect.ClientInterceptor {
 		return nil
 	}
 	var once sync.Once
-	return []connect.ClientInterceptor{api.RideOut(d.rideOut, func(err error) {
+	reset := func() {
+		api.ResetClientTransport(d.http)
+		api.ResetClientTransport(d.stream)
+	}
+	return []connect.ClientInterceptor{api.RideOutWithReset(d.rideOut, func(err error) {
 		once.Do(func() {
 			fmt.Fprintf(d.stderr, "hotbed: %s is out of reach (%s); waiting up to %s for it to come back\n", who, api.FromConnect(err).Message, d.rideOut)
 		})
-	})}
+	}, reset)}
 }

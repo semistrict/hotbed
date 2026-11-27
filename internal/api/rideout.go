@@ -23,6 +23,13 @@ import (
 // its first message is the caller's to pick up, as is every call made with
 // a context from WithoutRideOut.
 func RideOut(window time.Duration, waiting func(err error)) connect.ClientInterceptor {
+	return RideOutWithReset(window, waiting, nil)
+}
+
+// RideOutWithReset is RideOut with an optional onRetry callback invoked before
+// reopening a failed stream (e.g. api.ResetClientTransport) so retries escape
+// wedged or half-open HTTP/2 connections instead of multiplexing onto them.
+func RideOutWithReset(window time.Duration, waiting func(err error), onRetry func()) connect.ClientInterceptor {
 	return func(next connect.ClientFunc) connect.ClientFunc {
 		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
 			if window <= 0 || ctx.Value(noRideOut{}) != nil ||
@@ -33,7 +40,7 @@ func RideOut(window time.Duration, waiting func(err error)) connect.ClientInterc
 			if err != nil {
 				return nil, err
 			}
-			return &replaying{ctx: ctx, spec: spec, next: next, cur: s, window: window, waiting: waiting}, nil
+			return &replaying{ctx: ctx, spec: spec, next: next, cur: s, window: window, waiting: waiting, onRetry: onRetry}, nil
 		}
 	}
 }
@@ -54,6 +61,7 @@ type replaying struct {
 	next    connect.ClientFunc
 	window  time.Duration
 	waiting func(err error)
+	onRetry func()
 
 	// mu guards cur and done, for Close, which may come at any time.
 	mu   sync.Mutex
@@ -115,6 +123,9 @@ func (r *replaying) Receive(msg any) error {
 			return err
 		}
 		r.stream().Close()
+		if r.onRetry != nil {
+			r.onRetry()
+		}
 		select {
 		case <-r.ctx.Done():
 			return err

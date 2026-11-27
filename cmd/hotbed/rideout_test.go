@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 )
 
 // flakyPeer breaks the first `broken` HTTP calls mid-request (as a restarting
@@ -140,4 +142,112 @@ func TestRideOutDoesNotRetryNonIdempotentGeneratedCommand(t *testing.T) {
 	if strings.Contains(stderr, "out of reach") {
 		t.Errorf("stderr = %q, want no ride-out wait for non-idempotent call", stderr)
 	}
+}
+
+// runCommandWithRetry recovers from a transient transport drop (e.g.
+// http2: timeout awaiting response headers) without double-executing when the
+// first attempt already landed on the worker.
+func TestRunCommandWithRetry(t *testing.T) {
+	t.Parallel()
+	for _, landedFirst := range []bool{false, true} {
+		name := "dropped_before_landing"
+		if landedFirst {
+			name = "landed_before_drop"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var runCalls, getCalls atomic.Int64
+			var seenID string
+			srv := startHandlerPeer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/RunCommand"):
+					var req pb.RunCommandRequest
+					if b, err := io.ReadAll(r.Body); err == nil {
+						_ = proto.Unmarshal(b, &req)
+					}
+					if req.Id == "" {
+						t.Errorf("RunCommand sent empty client ID")
+					}
+					n := runCalls.Add(1)
+					if n == 1 {
+						seenID = req.Id
+						conn, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							panic(err)
+						}
+						conn.Close()
+						return
+					}
+					if req.Id != seenID {
+						t.Errorf("retry RunCommand ID = %q, want %q", req.Id, seenID)
+					}
+					writeProto(w, &pb.Command{Id: req.Id, State: pb.CommandState_COMMAND_STATE_RUNNING})
+				case strings.HasSuffix(r.URL.Path, "/GetCommand"):
+					getCalls.Add(1)
+					if !landedFirst {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"code":"not_found","message":"no such command"}`))
+						return
+					}
+					writeProto(w, &pb.Command{Id: seenID, State: pb.CommandState_COMMAND_STATE_RUNNING})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			rt := api.NewResilientTransport(nil)
+			hc := &http.Client{Transport: rt, Timeout: 10 * time.Second}
+			conn, err := api.Dial(srv, api.DefaultPort, hc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wsClient := hotbedv1connect.NewWorkspaceServiceClient(conn)
+			var stderr bytes.Buffer
+			d := deps{http: hc, stderr: &stderr, rideOut: 15 * time.Second}
+			w := workerClients{calls: wsClient, stream: wsClient, controller: wsClient}
+			cmd, err := runCommandWithRetry(t.Context(), d, w, &pb.RunCommandRequest{
+				WorkspaceId: "ws1",
+				Args:        []string{"echo", "hi"},
+			})
+			if err != nil {
+				t.Fatalf("runCommandWithRetry: %v (stderr=%q)", err, stderr.String())
+			}
+			if cmd.Id == "" || cmd.Id != seenID {
+				t.Fatalf("cmd.Id = %q, want %q", cmd.Id, seenID)
+			}
+			if landedFirst {
+				if runCalls.Load() != 1 || getCalls.Load() != 1 {
+					t.Errorf("landedFirst: runCalls=%d getCalls=%d, want 1 and 1", runCalls.Load(), getCalls.Load())
+				}
+			} else {
+				if runCalls.Load() != 2 || getCalls.Load() != 1 {
+					t.Errorf("droppedFirst: runCalls=%d getCalls=%d, want 2 and 1", runCalls.Load(), getCalls.Load())
+				}
+			}
+			if rt.Resets() < 1 {
+				t.Errorf("expected ResilientTransport reset on retry, got %d", rt.Resets())
+			}
+		})
+	}
+}
+
+func startHandlerPeer(t *testing.T, h http.Handler) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: h}
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	return l.Addr().String()
+}
+
+func writeProto(w http.ResponseWriter, msg proto.Message) {
+	b, err := proto.Marshal(msg)
+	if err != nil {
+		panic(err)
+	}
+	w.Header().Set("Content-Type", "application/proto")
+	_, _ = w.Write(b)
 }

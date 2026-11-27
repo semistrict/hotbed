@@ -246,3 +246,36 @@ func TestRideOutDoesNotRepeatACallThatTimedOut(t *testing.T) {
 		t.Errorf("%d calls and %d waits, want 1 call and none", calls.Load(), waits.Load())
 	}
 }
+
+func TestRideOutWithResetCallsOnRetryBeforeReopening(t *testing.T) {
+	addr := freeAddr(t)
+	var calls, resets atomic.Int64
+	serve(t, addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			// Drop the first connection mid-request (simulating a wedged/broken HTTP/2 peer).
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/proto")
+		_, _ = w.Write(nil)
+	}))
+	conn, err := api.Dial(addr, api.DefaultPort, &http.Client{},
+		api.RideOutWithReset(15*time.Second, func(error) {}, func() { resets.Add(1) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hotbedv1connect.NewClusterServiceClient(conn).GetBuild(t.Context(), &pb.GetBuildRequest{}); err != nil {
+		t.Fatalf("GetBuild after reset retry failed: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2", got)
+	}
+	if got := resets.Load(); got != 1 {
+		t.Errorf("resets = %d, want 1", got)
+	}
+}
