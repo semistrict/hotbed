@@ -11,6 +11,7 @@ const KIND: Record<ClusterEvent["kind"], { glyph: string; className: string }> =
   unhold: { glyph: "▶", className: "text-good-ink" },
   pause: { glyph: "⏸", className: "text-frost" },
   resume: { glyph: "↻", className: "text-primary" },
+  start: { glyph: "⏩", className: "text-primary" },
   finish: { glyph: "✓", className: "text-good-ink" },
   fail: { glyph: "✕", className: "text-critical" },
   park: { glyph: "❄", className: "text-frost" },

@@ -156,7 +156,7 @@ An attached `run` killed locally (a tool timeout, Ctrl-C) stops its command on t
   instead (0: from the start).
 - `hotbed logs -f CMD` still follows one command's output until it ends (redirect it to a file to
   keep its output out of your context); it exits with the command's status, or 124 when its soft
-  time limit or someone paused it (see Time limits and Stopped or paused by hand).
+  time limit or someone paused it (see Time limits and Stopped, paused or started by hand).
 - Calls ride out restarts, `poll` too.
 
 Never write shell loops around `poll`, `ps` and `jq` that retry on any failure: when hotbed's
@@ -293,7 +293,7 @@ A command that hangs (a deadlocked test) must not hold you, or the node, for hou
   `hotbed output CMD --wait --timeout 600` or `hotbed poll`; or wait on it attached with
   `--wait 30m`.
 
-## Stopped or paused by hand
+## Stopped, paused or started by hand
 
 The user (from the command's cockpit page) or an agent (from the CLI) can stop or pause a command
 with a comment and optional diagnostics (an activity sample and a full Linux inspection). Your
@@ -314,6 +314,12 @@ sample text report, and inspection summary; `--json` for the full structured pay
 or paginate through large diagnostic sets), live or long after the command ended. You can do the
 same from the CLI: `hotbed stop|pause -m COMMENT --diagnose CMD`, and `hotbed resume [-m COMMENT]
 CMD` (comments are capped at 2048 bytes).
+
+**Started by hand**: `hotbed start [-m COMMENT] CMD` (or **Start now** on its cockpit page) starts a
+queued command at once, past what holds work on its node: memory, CPU and memory pressure, a full
+disk. It still waits for its workspace and VM, and for a measurement keeping its volume quiet; a
+measurement cannot be started so. It overcommits the node, so start one only when you know it is
+small or urgent, never to jump the queue as a habit.
 
 ## poll
 

@@ -244,6 +244,18 @@ func (s *Service) ResumeCommand(ctx context.Context, req *pb.ResumeCommandReques
 	})
 }
 
+func (s *Service) StartCommand(ctx context.Context, req *pb.StartCommandRequest) (*pb.Command, error) {
+	if err := s.checkInterventionTarget(req.Id, req.SessionId); err != nil {
+		return nil, err
+	}
+	s.E.usedCommand(req.Id)
+	return s.E.Start(ctx, req.Id, Intervention{
+		Comment: req.Comment,
+		Session: req.SessionId,
+		Host:    s.callerHost(ctx, req.Host),
+	})
+}
+
 // callerHost is the host a call came from: the one the controller says
 // (host) when it forwards the call, else the caller's own.
 func (s *Service) callerHost(ctx context.Context, host string) string {

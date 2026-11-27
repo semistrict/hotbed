@@ -24,6 +24,7 @@
 | `hotbed stop CMD [-m COMMENT] [--diagnose]` | Stops a command of the session (another session's: `-s SESSION`); with `--diagnose`, takes its diagnostics first |
 | `hotbed pause CMD [-m COMMENT] [--diagnose]` | Pauses a command by hand: frozen until `hotbed resume`, waiting on it or not; with `--diagnose`, takes its diagnostics first |
 | `hotbed resume CMD [-m COMMENT]` | Resumes a paused command |
+| `hotbed start CMD [-m COMMENT]` | Starts a queued command now, past the node's memory, CPU and disk holds |
 | `hotbed diagnostics CMD [--seq N \| --after-seq N]` | The diagnostics taken of a command as someone stopped or paused it (activity sample and inspection), live or ended; supports `--seq` / `--after-seq` pagination and the `diagnostics` MCP tool |
 | `hotbed inspect [procs\|files\|cgroup\|kstack\|maps\|limits] CMD` | Opt-in Linux `/proc` & cgroup v2 inspection of a live command |
 | `hotbed sample CMD [-d SEC] [--pid PID] [--text]` | Activity Monitor-style Linux activity sample of a live command (CPU/IO deltas, user & kernel stacks, syscalls, open files/sockets/locks, cgroup/PSI deltas & perf counters); each is kept with the command, and stderr names its number |

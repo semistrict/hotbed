@@ -76,7 +76,9 @@ function interventionNote(c: Command, iv: CommandIntervention): string {
 				? "paused"
 				: iv.kind === InterventionKind.RESUME
 					? "resumed"
-					: "intervened on";
+					: iv.kind === InterventionKind.START
+						? "started"
+						: "intervened on";
 	let out = `${verb} by ${whoStamp(iv.by)}`;
 	if (iv.comment) out += `: ${JSON.stringify(iv.comment)}`;
 	out += ".";

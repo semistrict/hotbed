@@ -1395,17 +1395,23 @@ func (e *Engine) admissionBlockerFor(c, ahead, holder *command, mem sysinfo.Mem,
 			}
 		}
 	}
+	// Started by hand: past the node's holds, the room it has and work
+	// waiting ahead, not past a measurement's quiet volume.
+	byHand := api.StartedByHand(c.cmd())
 	switch {
 	case c.cmd().Bench:
 		if r := e.benchBlocker(ahead); r != "" {
 			return "measurement", r, false
 		}
-	case holder != nil:
+	case holder != nil && !byHand:
 		return "behind-measurement", fmt.Sprintf("waiting behind measurement %s, which waits for room", holder.cmd().Id), false
 	default:
 		if r := e.quietBlocker(c); r != "" {
 			return "quiet", r, false
 		}
+	}
+	if byHand {
+		return "", "", false
 	}
 	if k, r := e.roomFor(c, mem, hasMem); r != "" {
 		// A full disk, a node-wide hold, already blocks every command on its

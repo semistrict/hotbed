@@ -21,9 +21,16 @@ import { Card } from "./Panel";
 import { SampleReport } from "./SampleReport";
 import { SessionLink } from "./SessionLink";
 
-export type ByHandAction = "stop" | "pause" | "resume";
+export type ByHandAction = "start" | "stop" | "pause" | "resume";
 
 const ACTS: Record<ByHandAction, { label: string; glyph: string; doing: string; diagnosing: string; hint: string }> = {
+  start: {
+    label: "Start now",
+    glyph: "▶",
+    doing: "Starting…",
+    diagnosing: "Starting…",
+    hint: "Starts it now, past what holds work on its node: memory, CPU and disk. It still waits for its workspace and its VM to be free.",
+  },
   stop: {
     label: "Stop",
     glyph: "■",
@@ -51,12 +58,13 @@ const ACTS: Record<ByHandAction, { label: string; glyph: string; doing: string; 
 export function actsFor(c: Pick<Command, "state" | "bench">): ByHandAction[] {
   if (!isLive(c)) return [];
   if (c.state === CommandState.PAUSED) return ["resume", "stop"];
-  if (c.state === CommandState.QUEUED || c.bench) return ["stop"];
+  if (c.state === CommandState.QUEUED) return c.bench ? ["stop"] : ["start", "stop"];
+  if (c.bench) return ["stop"];
   return ["pause", "stop"];
 }
 
 /**
- * Stop, pause and resume buttons for a live command, each opening a form for
+ * Start, stop, pause and resume buttons for a live command, each opening a form for
  * the comment its waiting agent gets and whether to take its diagnostics first.
  */
 export function ByHandButtons({
@@ -93,17 +101,22 @@ export function ByHandButtons({
   );
 }
 
+/** Whether act can take a command's diagnostics first: a stop or pause of one that has started. */
+function takesDiagnosticsFor(act: ByHandAction, state: CommandState): boolean {
+  return (act === "stop" || act === "pause") && state !== CommandState.QUEUED;
+}
+
 /** Effective diagnostics toggle: follows command state until the user explicitly overrides it. */
 export function effectiveDiagnose(act: ByHandAction, state: CommandState, override: boolean | null): boolean {
-  const takesDiagnostics = act !== "resume" && state !== CommandState.QUEUED;
+  const takesDiagnostics = takesDiagnosticsFor(act, state);
   return takesDiagnostics && (override ?? true);
 }
 
-/** The form a stop, pause or resume button opens: a comment, and diagnostics first. */
+/** The form a start, stop, pause or resume button opens: a comment, and diagnostics first. */
 export function ByHandForm({ command, act, onDone }: { command: Command; act: ByHandAction; onDone: () => void }) {
   const qc = useQueryClient();
   const [comment, setComment] = useState("");
-  const takesDiagnostics = act !== "resume" && command.state !== CommandState.QUEUED;
+  const takesDiagnostics = takesDiagnosticsFor(act, command.state);
   const [diagnoseOverride, setDiagnoseOverride] = useState<boolean | null>(null);
   const diagnose = effectiveDiagnose(act, command.state, diagnoseOverride);
   const send = useMutation({
@@ -116,6 +129,8 @@ export function ByHandForm({ command, act, onDone }: { command: Command; act: By
           return clients.workspaces.pauseCommand({ id: command.id, comment: trimmed, diagnose: takesDiagnostics && diagnose });
         case "resume":
           return clients.workspaces.resumeCommand({ id: command.id, comment: trimmed });
+        case "start":
+          return clients.workspaces.startCommand({ id: command.id, comment: trimmed });
       }
     },
     onSuccess: onDone,
@@ -142,8 +157,8 @@ export function ByHandForm({ command, act, onDone }: { command: Command; act: By
         disabled={send.isPending}
         onChange={(e) => setComment(e.target.value)}
         placeholder={
-          act === "resume"
-            ? "Why resume? Recorded on the command (optional)"
+          act === "resume" || act === "start"
+            ? `Why ${act}? Recorded on the command (optional)`
             : "Why stop or pause? Shown to the agent waiting on this command"
         }
         aria-label={`Comment on the ${act}`}
@@ -194,10 +209,11 @@ const VERB: Record<InterventionKind, { label: string; glyph: string; tone: strin
   [InterventionKind.STOP]: { label: "Stopped", glyph: "■", tone: "text-critical" },
   [InterventionKind.PAUSE]: { label: "Paused", glyph: "⏸", tone: "text-frost" },
   [InterventionKind.RESUME]: { label: "Resumed", glyph: "▶", tone: "text-primary" },
+  [InterventionKind.START]: { label: "Started", glyph: "▶", tone: "text-primary" },
 };
 
 /**
- * A command's stops, pauses and resumes by hand, each with what it was doing
+ * A command's starts, stops, pauses and resumes by hand, each with what it was doing
  * then: its diagnostics, which the controller keeps after it ends.
  * `interventions` are the live command's; an ended one's come from its saved
  * diagnostics.
@@ -223,7 +239,7 @@ export function InterventionsCard({
   if (shown.length === 0 && !hasError && !loadingEmpty) return null;
   return (
     <Card
-      title="Stopped & paused by hand"
+      title="Started, stopped & paused by hand"
       sub="Each with what the command was doing then; the agent waiting on it was told who, why, and how to read this."
     >
       {shown.length > 0 && (

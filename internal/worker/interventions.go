@@ -14,7 +14,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
 
-// Intervention is someone's stop, pause or resume of a command by hand, as
+// Intervention is someone's stop, pause, resume or start of a command by hand, as
 // their call asks it, or the node's own (ByNode).
 type Intervention struct {
 	Comment string
@@ -227,6 +227,44 @@ func (e *Engine) Resume(ctx context.Context, id string, in Intervention) (*pb.Co
 	return e.current(id)
 }
 
+// Start is someone's start of queued command id now: admission lets it past
+// what holds work on the node (memory, CPU and memory pressure, a full disk,
+// cladefsd's memory, a measurement waiting ahead of it), though not past what
+// it cannot start without (admissionBlockerFor). It is admitted at the next
+// step; until then, and while what it still waits for lasts, it stays queued.
+func (e *Engine) Start(ctx context.Context, id string, in Intervention) (*pb.Command, error) {
+	ctx = context.WithoutCancel(ctx)
+	in.Diagnose = false
+	h, done, err := e.intervene(ctx, id, pb.InterventionKind_INTERVENTION_KIND_START, in)
+	if err != nil {
+		return nil, err
+	}
+	if h == nil {
+		return nil, api.Errorf(api.CodeConflict, "command %s has ended: there is nothing to start", id)
+	}
+	tlNote := conciseInterventionNote(h.cmd, h.iv)
+	e.mu.Lock()
+	cmd := h.c.cmd()
+	if h.c.stopping || cmd.State != queued {
+		st := cmd.State
+		e.mu.Unlock()
+		done()
+		return nil, api.Errorf(api.CodeConflict, "command %s became %s as it was started", id, stateName(st))
+	}
+	h.byHand.record(cmd)
+	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "started by hand", Detail: tlNote})
+	e.saveCommand(h.c, change{
+		what: "started by hand", detail: tlNote,
+		feed: feed(feedStart, fmt.Sprintf("start %s now · by %s", cmd.Argv, api.Who(h.iv.By)), ref("command", cmd.Id)),
+	})
+	out := clone(cmd)
+	e.mu.Unlock()
+	// Admission passes over a command being intervened on: done first.
+	done()
+	e.stepSoon()
+	return out, nil
+}
+
 // resumeHold says why paused command c must stay frozen as it is resumed,
 // and the measurement it is held beside: one whose volume a running
 // measurement keeps quiet. It returns "" for both when c may run now. Call
@@ -344,6 +382,16 @@ func canTake(cmd *pb.Command, kind pb.InterventionKind) error {
 	case pb.InterventionKind_INTERVENTION_KIND_RESUME:
 		if cmd.State != paused {
 			return api.Errorf(api.CodeConflict, "command %s is %s, not paused: there is nothing to resume", cmd.Id, stateName(cmd.State))
+		}
+	case pb.InterventionKind_INTERVENTION_KIND_START:
+		switch {
+		case cmd.State != queued:
+			return api.Errorf(api.CodeConflict, "command %s is %s, not queued: there is nothing to start", cmd.Id, stateName(cmd.State))
+		case cmd.Bench:
+			return api.Errorf(api.CodeConflict, "command %s is a measurement: starting it past the node's holds would spoil its numbers", cmd.Id).
+				WithSuggestion("let it wait for the node, or stop it (hotbed stop)")
+		case api.StartedByHand(cmd):
+			return api.Errorf(api.CodeConflict, "command %s was started by hand already; it waits only for what it cannot start without: %s", cmd.Id, cmd.Reason)
 		}
 	}
 	return nil

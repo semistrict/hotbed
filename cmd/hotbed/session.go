@@ -1822,6 +1822,24 @@ func (c *resumeCmd) Exec(ctx context.Context, d deps) (any, error) {
 	})
 }
 
+type startCmd struct {
+	ownCommand
+	Comment string `short:"m" help:"Why, for the command's record."`
+}
+
+// Exec starts a queued command now, past what holds work on its node.
+func (c *startCmd) Exec(ctx context.Context, d deps) (any, error) {
+	session, _, w, err := c.locate(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	return w.calls.StartCommand(ctx, &pb.StartCommandRequest{
+		Id:        c.Command,
+		Comment:   c.Comment,
+		SessionId: session,
+	})
+}
+
 // parseSize reads 512M, 2G, 1.5G or a plain byte count.
 func parseSize(s string) (int64, error) {
 	s = strings.TrimSuffix(strings.TrimSpace(strings.ToUpper(s)), "B")

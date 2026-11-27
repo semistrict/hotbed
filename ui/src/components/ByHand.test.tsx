@@ -28,7 +28,8 @@ describe("ByHand controls", () => {
   it("computes allowed actions per command state", () => {
     expect(actsFor({ state: CommandState.RUNNING, bench: false })).toEqual(["pause", "stop"]);
     expect(actsFor({ state: CommandState.PARKED, bench: false })).toEqual(["pause", "stop"]);
-    expect(actsFor({ state: CommandState.QUEUED, bench: false })).toEqual(["stop"]);
+    expect(actsFor({ state: CommandState.QUEUED, bench: false })).toEqual(["start", "stop"]);
+    expect(actsFor({ state: CommandState.QUEUED, bench: true })).toEqual(["stop"]);
     expect(actsFor({ state: CommandState.RUNNING, bench: true })).toEqual(["stop"]);
     expect(actsFor({ state: CommandState.PAUSED, bench: false })).toEqual(["resume", "stop"]);
     expect(actsFor({ state: CommandState.SUCCEEDED, bench: false })).toEqual([]);
@@ -51,6 +52,7 @@ describe("ByHand controls", () => {
 
     const queued = create(CommandSchema, { id: "cmd-q", state: CommandState.QUEUED });
     const queuedHtml = renderToStaticMarkup(<ByHandButtons command={queued} open={null} onOpen={() => {}} />);
+    expect(queuedHtml).toContain("Start now");
     expect(queuedHtml).toContain("Stop");
     expect(queuedHtml).not.toContain("Pause");
     expect(queuedHtml).not.toContain("Resume");
@@ -75,6 +77,11 @@ describe("ByHand controls", () => {
     const resumeHtml = renderWithQuery(<ByHandForm command={paused} act="resume" onDone={() => {}} />);
     expect(resumeHtml).not.toContain("Take diagnostics first");
     expect(resumeHtml).toContain("Resume");
+
+    const startHtml = renderWithQuery(<ByHandForm command={queued} act="start" onDone={() => {}} />);
+    expect(startHtml).toContain("Why start? Recorded on the command (optional)");
+    expect(startHtml).toContain("past what holds work on its node");
+    expect(startHtml).not.toContain("Take diagnostics first");
   });
 
   it("uses solid destructive styling for Stop confirmation and keeps active Stop trigger non-muted", () => {
@@ -254,7 +261,7 @@ describe("InterventionsCard & saved diagnostics", () => {
       [create(CommandDiagnosticsSchema, { commandId: "cmd-1", intervention: pauseIv, sample, inspect })],
     );
     const endedHtml = renderWithQuery(<InterventionsCard id="cmd-1" interventions={null} />, qc);
-    expect(endedHtml).toContain("Stopped &amp; paused by hand");
+    expect(endedHtml).toContain("Started, stopped &amp; paused by hand");
     expect(endedHtml).toContain("pausing while profiling another build");
     expect(endedHtml).toContain("Activity sample");
     expect(endedHtml).toContain("Inspection");
@@ -305,7 +312,7 @@ describe("InterventionsCard & saved diagnostics", () => {
       <InterventionsCard id="cmd-archived" interventions={null} />,
       failedQc,
     );
-    expect(failedArchivedHtml).toContain("Stopped &amp; paused by hand");
+    expect(failedArchivedHtml).toContain("Started, stopped &amp; paused by hand");
     expect(failedArchivedHtml).toContain('role="alert"');
     expect(failedArchivedHtml).toContain("controller unavailable");
     expect(failedArchivedHtml).toContain("Retry");

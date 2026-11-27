@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/worker"
 )
@@ -142,5 +143,43 @@ func TestAttachedRunReportsQueuedWaitReason(t *testing.T) {
 	}
 	if !strings.Contains(res.stderr, "queued: waiting: CPU pressure 75%") {
 		t.Errorf("attached run stderr missing queued wait notice: %q", res.stderr)
+	}
+}
+
+// hotbed start starts a command the node holds now, past its holds: here
+// CPU pressure. The start is recorded on it, by whom and why; a command not
+// queued cannot be started.
+func TestStartRunsAHeldCommandNow(t *testing.T) {
+	t.Parallel()
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "eager-elk")
+	c.workspace("eager-elk", nil)
+	n := c.nodes[0]
+	n.system.SetCPUPressure(75)
+	n.engine.Sample()
+
+	var cmd pb.Command
+	c.ok(&cmd, "run", "-s", "eager-elk", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo started")
+	c.eventually("the command to wait for the CPUs", func() bool {
+		return strings.HasPrefix(c.commandOf("eager-elk", cmd.Id).Reason, "waiting: CPU pressure 75%")
+	})
+
+	var started pb.Command
+	c.ok(&started, "start", "-s", "eager-elk", "-m", "it is quick", cmd.Id)
+	if len(started.Interventions) != 1 {
+		t.Fatalf("started: %v with interventions %v, want its start recorded", started.State, started.Interventions)
+	}
+	if iv := started.Interventions[0]; iv.Kind != pb.InterventionKind_INTERVENTION_KIND_START || iv.Comment != "it is quick" ||
+		iv.By.GetSession() != "eager-elk" || iv.By.GetHost() != "laptop" {
+		t.Errorf("its intervention: %v", iv)
+	}
+	code, stdout, stderr := c.hotbed("logs", "-f", "-s", "eager-elk", cmd.Id)
+	if code != 0 || stdout != "started\n" {
+		t.Fatalf("logs -f of it once started: exit %d, stdout %q, stderr %q; want exit 0, started", code, stdout, stderr)
+	}
+	if code, e := c.fails("start", "-s", "eager-elk", cmd.Id); code != exitError || e.Code != api.CodeConflict ||
+		e.Message != "command "+cmd.Id+" has ended: there is nothing to start" {
+		t.Errorf("starting it once ended: exit %d, %v", code, e)
 	}
 }

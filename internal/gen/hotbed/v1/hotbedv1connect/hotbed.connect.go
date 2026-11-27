@@ -197,6 +197,9 @@ const (
 	// WorkspaceServiceResumeCommandProcedure is the procedure name of the WorkspaceService's
 	// ResumeCommand RPC.
 	WorkspaceServiceResumeCommandProcedure = "/hotbed.v1.WorkspaceService/ResumeCommand"
+	// WorkspaceServiceStartCommandProcedure is the procedure name of the WorkspaceService's
+	// StartCommand RPC.
+	WorkspaceServiceStartCommandProcedure = "/hotbed.v1.WorkspaceService/StartCommand"
 	// WorkspaceServiceFollowLogProcedure is the procedure name of the WorkspaceService's FollowLog RPC.
 	WorkspaceServiceFollowLogProcedure = "/hotbed.v1.WorkspaceService/FollowLog"
 	// WorkspaceServiceGetLogLinesProcedure is the procedure name of the WorkspaceService's GetLogLines
@@ -2385,6 +2388,13 @@ var (
 			Procedure:  WorkspaceServiceResumeCommandProcedure,
 		}
 	})
+	workspaceServiceStartCommandSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("StartCommand"),
+			Procedure:  WorkspaceServiceStartCommandProcedure,
+		}
+	})
 	workspaceServiceFollowLogSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType:       connect.StreamTypeServer,
@@ -2507,6 +2517,13 @@ type WorkspaceServiceClient interface {
 	// ResumeCommand thaws a paused command, whatever paused it. It is left to
 	// its limits, as a detached one is: its soft limit counts from now.
 	ResumeCommand(context.Context, *v1.ResumeCommandRequest) (*v1.Command, error)
+	// StartCommand starts a queued command now, past what holds work on its
+	// node: memory reserved or in use, memory or CPU pressure, a full disk,
+	// cladefsd's memory, or a measurement waiting ahead of it. It still waits
+	// for what it cannot start without: its workspace ready and its VM free,
+	// a measurement keeping its volume quiet, a node upgrading. A measurement
+	// cannot be started so: its numbers need the node to itself.
+	StartCommand(context.Context, *v1.StartCommandRequest) (*v1.Command, error)
 	// FollowLog streams a command's output from an offset, as written; with
 	// follow, until the command ends or is paused, sending a chunk with no
 	// data or state as a keepalive when it has sent nothing for 5s. An
@@ -2716,6 +2733,13 @@ type WorkspaceServiceHandler interface {
 	// ResumeCommand thaws a paused command, whatever paused it. It is left to
 	// its limits, as a detached one is: its soft limit counts from now.
 	ResumeCommand(context.Context, *v1.ResumeCommandRequest) (*v1.Command, error)
+	// StartCommand starts a queued command now, past what holds work on its
+	// node: memory reserved or in use, memory or CPU pressure, a full disk,
+	// cladefsd's memory, or a measurement waiting ahead of it. It still waits
+	// for what it cannot start without: its workspace ready and its VM free,
+	// a measurement keeping its volume quiet, a node upgrading. A measurement
+	// cannot be started so: its numbers need the node to itself.
+	StartCommand(context.Context, *v1.StartCommandRequest) (*v1.Command, error)
 	// FollowLog streams a command's output from an offset, as written; with
 	// follow, until the command ends or is paused, sending a chunk with no
 	// data or state as a keepalive when it has sent nothing for 5s. An
@@ -2789,6 +2813,7 @@ func RegisterWorkspaceServiceHandler(server *connect.Server, svc WorkspaceServic
 		connect.Method{Spec: workspaceServiceStopCommandSpec(), Handler: adapter.stopCommand},
 		connect.Method{Spec: workspaceServicePauseCommandSpec(), Handler: adapter.pauseCommand},
 		connect.Method{Spec: workspaceServiceResumeCommandSpec(), Handler: adapter.resumeCommand},
+		connect.Method{Spec: workspaceServiceStartCommandSpec(), Handler: adapter.startCommand},
 		connect.Method{Spec: workspaceServiceFollowLogSpec(), Handler: adapter.followLog},
 		connect.Method{Spec: workspaceServiceGetLogLinesSpec(), Handler: adapter.getLogLines},
 		connect.Method{Spec: workspaceServiceQueryOutputSpec(), Handler: adapter.queryOutput},
@@ -2942,6 +2967,10 @@ func (UnimplementedWorkspaceServiceHandler) PauseCommand(context.Context, *v1.Pa
 
 func (UnimplementedWorkspaceServiceHandler) ResumeCommand(context.Context, *v1.ResumeCommandRequest) (*v1.Command, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.ResumeCommand is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) StartCommand(context.Context, *v1.StartCommandRequest) (*v1.Command, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.StartCommand is not implemented")
 }
 
 func (UnimplementedWorkspaceServiceHandler) FollowLog(context.Context, *v1.FollowLogRequest, WorkspaceServiceFollowLogServerStream) error {
@@ -3107,6 +3136,14 @@ func (c *workspaceServiceClient) PauseCommand(ctx context.Context, req *v1.Pause
 func (c *workspaceServiceClient) ResumeCommand(ctx context.Context, req *v1.ResumeCommandRequest) (*v1.Command, error) {
 	var res v1.Command
 	if err := c.client.CallUnary(ctx, workspaceServiceResumeCommandSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workspaceServiceClient) StartCommand(ctx context.Context, req *v1.StartCommandRequest) (*v1.Command, error) {
+	var res v1.Command
+	if err := c.client.CallUnary(ctx, workspaceServiceStartCommandSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -3368,6 +3405,18 @@ func (h workspaceServiceHandler) resumeCommand(ctx context.Context, _ connect.Sp
 		return err
 	}
 	res, err := h.svc.ResumeCommand(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) startCommand(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.StartCommandRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.StartCommand(ctx, &req)
 	if err != nil {
 		return err
 	}

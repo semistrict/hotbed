@@ -54,6 +54,13 @@ func PausedByHand(c *hotbedv1.Command) bool {
 	return iv != nil && iv.GetKind() == hotbedv1.InterventionKind_INTERVENTION_KIND_PAUSE
 }
 
+// StartedByHand reports whether c, still queued, was started by hand
+// (StartCommand): it goes past what holds work on its node.
+func StartedByHand(c *hotbedv1.Command) bool {
+	return c.GetState() == hotbedv1.CommandState_COMMAND_STATE_QUEUED &&
+		LastIntervention(c, hotbedv1.InterventionKind_INTERVENTION_KIND_START) != nil
+}
+
 // StoppedByHand reports whether c ended as cancelled because of a manual stop
 // intervention.
 func StoppedByHand(c *hotbedv1.Command) bool {
@@ -84,6 +91,7 @@ func InterventionSummary(commandID string, iv *hotbedv1.CommandIntervention) str
 		hotbedv1.InterventionKind_INTERVENTION_KIND_STOP:   "stopped",
 		hotbedv1.InterventionKind_INTERVENTION_KIND_PAUSE:  "paused",
 		hotbedv1.InterventionKind_INTERVENTION_KIND_RESUME: "resumed",
+		hotbedv1.InterventionKind_INTERVENTION_KIND_START:  "started",
 	}[iv.Kind]
 	if verb == "" {
 		verb = "intervened on"

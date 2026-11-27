@@ -118,6 +118,7 @@ type cli struct {
 	Stop      stopCmd      `cmd:"" help:"Stop a command; with --comment and --diagnose, the agent waiting on it is told why and how to read what it was doing."`
 	Pause     pauseCmd     `cmd:"" help:"Pause a command by hand (frozen, its memory to swap), as stop takes a comment and diagnostics; it stays paused until hotbed resume."`
 	Resume    resumeCmd    `cmd:"" help:"Resume a paused command."`
+	Start     startCmd     `cmd:"" help:"Start a queued command now, past what holds work on its node (memory, CPU, disk); it still waits for its workspace and VM."`
 	Inspect   inspectCmd   `cmd:"" help:"Opt-in Linux inspection of a running command (procs, files, cgroup, kstack, maps, limits)."`
 	Sample    sampleCmd    `cmd:"" help:"Activity Monitor-style Linux sample of a running command: user & kernel stacks, syscalls, open files/sockets/locks, cgroup/PSI deltas, and perf hardware counters."`
 	Trace     traceCmd     `cmd:"" help:"Opt-in active Linux tracing of a running command (strace, perf, stat, stacks, bpf)."`

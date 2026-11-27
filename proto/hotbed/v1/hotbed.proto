@@ -433,6 +433,13 @@ service WorkspaceService {
   // ResumeCommand thaws a paused command, whatever paused it. It is left to
   // its limits, as a detached one is: its soft limit counts from now.
   rpc ResumeCommand(ResumeCommandRequest) returns (Command);
+  // StartCommand starts a queued command now, past what holds work on its
+  // node: memory reserved or in use, memory or CPU pressure, a full disk,
+  // cladefsd's memory, or a measurement waiting ahead of it. It still waits
+  // for what it cannot start without: its workspace ready and its VM free,
+  // a measurement keeping its volume quiet, a node upgrading. A measurement
+  // cannot be started so: its numbers need the node to itself.
+  rpc StartCommand(StartCommandRequest) returns (Command);
   // FollowLog streams a command's output from an offset, as written; with
   // follow, until the command ends or is paused, sending a chunk with no
   // data or state as a keepalive when it has sent nothing for 5s. An
@@ -1706,9 +1713,11 @@ enum InterventionKind {
   INTERVENTION_KIND_STOP = 1;
   INTERVENTION_KIND_PAUSE = 2;
   INTERVENTION_KIND_RESUME = 3;
+  // Started now, past the node's holds (StartCommand).
+  INTERVENTION_KIND_START = 4;
 }
 
-// A stop, pause or resume someone made of a command: who, when, what they
+// A stop, pause, resume or start someone made of a command: who, when, what they
 // said, and what the command was doing then.
 message CommandIntervention {
   // 1 for the command's first, and so on.
@@ -2255,6 +2264,16 @@ message ResumeCommandRequest {
   string id = 1;
   string comment = 2;
   // The session resuming it, for an agent; empty for a person.
+  string session_id = 3;
+  // As StopCommandRequest's.
+  string host = 4;
+}
+
+message StartCommandRequest {
+  string id = 1;
+  // Why, for the command's record.
+  string comment = 2;
+  // The session starting it, for an agent; empty for a person.
   string session_id = 3;
   // As StopCommandRequest's.
   string host = 4;

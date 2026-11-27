@@ -40,13 +40,14 @@ const (
 	feedThaw    feedKind = "thaw"    // a held command went on
 	feedPause   feedKind = "pause"   // a command was frozen at its soft time limit
 	feedResume  feedKind = "resume"  // a paused command went on, waited on again
+	feedStart   feedKind = "start"   // a queued command was started by hand, past the node's holds
 	feedFork    feedKind = "fork"    // a workspace was forked from a base
 	feedRelease feedKind = "release" // a workspace was released
 	feedBase    feedKind = "base"    // a base began building, warmed, or was dropped
 )
 
 // feedKinds is every feedKind.
-var feedKinds = []feedKind{feedAdmit, feedWait, feedHold, feedUnhold, feedFinish, feedFail, feedPark, feedThaw, feedPause, feedResume, feedFork, feedRelease, feedBase}
+var feedKinds = []feedKind{feedAdmit, feedWait, feedHold, feedUnhold, feedFinish, feedFail, feedPark, feedThaw, feedPause, feedResume, feedStart, feedFork, feedRelease, feedBase}
 
 // feed makes a line for the cockpit's feed.
 func feed(kind feedKind, text string, ref *pb.EventRef) *pb.WorkerEvent {

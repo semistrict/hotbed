@@ -40,6 +40,7 @@ import {
 	ReleaseWorkspaceRequestSchema,
 	ReleaseWorkspaceResponseSchema,
 	ResumeCommandRequestSchema,
+	StartCommandRequestSchema,
 	RunCommandRequestSchema,
 	SampleCommandChunkSchema,
 	SampleCommandRequestSchema,
@@ -1607,6 +1608,27 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						host,
 						"/hotbed.v1.WorkspaceService/ResumeCommand",
 						ResumeCommandRequestSchema,
+						fwd,
+						CommandSchema,
+						t,
+					),
+			);
+		},
+
+		async startCommand(req, ctx) {
+			const fwd = clone(StartCommandRequestSchema, req);
+			fwd.host = getCaller(ctx.values).hostname;
+			return byHand(
+				fwd.id,
+				fwd.sessionId,
+				false,
+				"/hotbed.v1.WorkspaceService/StartCommand",
+				(nodeId, host, t) =>
+					ctrl.tunnel.callUnary(
+						nodeId,
+						host,
+						"/hotbed.v1.WorkspaceService/StartCommand",
+						StartCommandRequestSchema,
 						fwd,
 						CommandSchema,
 						t,

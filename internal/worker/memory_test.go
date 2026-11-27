@@ -5,11 +5,13 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/statedir"
 )
@@ -800,4 +802,80 @@ func runInVMs(t *testing.T, e *Engine) {
 	e.cfg.RuntimeFor = e.isVMWorkspace
 	e.guest = newGuestExecutor(t.Context(), e.cfg.Runtime, e.cfg.Units, 0, 0)
 	t.Cleanup(e.guest.Close)
+}
+
+// A queued command started by hand goes past the node's holds: here memory
+// reserved past the limit. It is recorded as an intervention, and still waits
+// for what it cannot start without, such as its workspace being ready. A
+// measurement, or one not queued, cannot be started so.
+func TestStartByHandGoesPastTheNodesHolds(t *testing.T) {
+	e, units, _, now := parkEngine(t)
+	e.start(t, units, now, "build-1", "a", "build")
+	units.SetAnon("hotbed-build-1", 17<<30) // past the 16 GiB limit
+	e.step(t.Context())
+	run := func(id, ws string, bench bool) *command {
+		t.Helper()
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: id, WorkspaceId: ws, Args: []string{"sleep", "60"}, Bench: bench}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-"+id) })
+		e.step(t.Context())
+		return e.commands[id]
+	}
+	next := run("next-1", "b", false)
+	if s := next.cmd().State; s != queued || !strings.HasPrefix(next.cmd().Reason, "waiting for memory") {
+		t.Fatalf("next-1 = (%v, %q), want queued for memory", s, next.cmd().Reason)
+	}
+
+	got, err := e.Start(t.Context(), "next-1", Intervention{Host: "laptop", Comment: "it is small"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != queued || len(got.Interventions) != 1 || got.Interventions[0].Kind != pb.InterventionKind_INTERVENTION_KIND_START ||
+		got.Interventions[0].Comment != "it is small" || got.Interventions[0].By.GetHost() != "laptop" {
+		t.Fatalf("Start = %v with interventions %v, want still queued with the start recorded", got.State, got.Interventions)
+	}
+	if _, err := e.Start(t.Context(), "next-1", Intervention{Host: "laptop"}); api.CodeOf(err) != api.CodeConflict {
+		t.Errorf("starting it twice: err = %v, want CodeConflict", err)
+	}
+	e.step(t.Context())
+	if s := next.cmd().State; s != running {
+		t.Fatalf("next-1 after Start = (%v, %q), want running past memory", s, next.cmd().Reason)
+	}
+	tl := next.cmd().Timeline
+	if i := slices.IndexFunc(tl, func(ev *pb.CommandEvent) bool { return ev.What == "started by hand" }); i < 0 ||
+		tl[i].Detail != `started by laptop: "it is small".` || tl[i+1].What != "admitted" {
+		t.Errorf("timeline = %v, want started by hand, then admitted", tl)
+	}
+	if _, err := e.Start(t.Context(), "next-1", Intervention{Host: "laptop"}); api.CodeOf(err) != api.CodeConflict ||
+		message(err) != "command next-1 is running, not queued: there is nothing to start" {
+		t.Errorf("starting it once running: err = %v", err)
+	}
+
+	// Its workspace not ready: it still waits for that.
+	e.workspaces["c"].ws().State = preparing
+	e.workspaces["c"].ws().Reason = "forking"
+	waits := run("next-2", "c", false)
+	if _, err := e.Start(t.Context(), "next-2", Intervention{Host: "laptop"}); err != nil {
+		t.Fatal(err)
+	}
+	e.step(t.Context())
+	if s := waits.cmd().State; s != queued || waits.cmd().Reason != "forking" {
+		t.Fatalf("next-2 in a preparing workspace = (%v, %q), want queued, forking", s, waits.cmd().Reason)
+	}
+	e.workspaces["c"].ws().State = idle
+	e.step(t.Context())
+	if s := waits.cmd().State; s != running {
+		t.Fatalf("next-2 once its workspace is ready = (%v, %q), want running", s, waits.cmd().Reason)
+	}
+
+	// A measurement cannot be started past the node's holds.
+	e.mu.Lock()
+	e.commands["bench-1"] = e.newCommand(&pb.CommandRecord{Command: &pb.Command{Id: "bench-1", WorkspaceId: "d", State: queued, Bench: true}})
+	e.mu.Unlock()
+	if _, err := e.Start(t.Context(), "bench-1", Intervention{Host: "laptop"}); api.CodeOf(err) != api.CodeConflict ||
+		!strings.Contains(err.Error(), "is a measurement") {
+		t.Errorf("starting a measurement: err = %v, want CodeConflict, a measurement", err)
+	}
 }
