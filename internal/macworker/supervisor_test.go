@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -118,5 +119,122 @@ func TestSupervisorRunsMachinedAndTheWorker(t *testing.T) {
 	}
 	if got := p.ReadState(); got.State != "stopped" {
 		t.Fatalf("ReadState after Run = %+v, want stopped", got)
+	}
+}
+
+// A daemon upgrade hands off machined and the worker so active VMs survive,
+// the next daemon adopts both PIDs, a newly pinned machined release waits
+// until machined has no active VMs before restarting, and a full shutdown
+// stops the adopted processes cleanly.
+func TestSupervisorHandoffPreservesMachinedAndWorker(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "hbmw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	p := NewPaths(base)
+	bin := filepath.Join(base, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	machined, hotbed := filepath.Join(bin, "machined"), filepath.Join(bin, "hotbed")
+	for path, script := range map[string]string{machined: fakeMachined, hotbed: fakeHotbed} {
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := statedir.Prepare(p.Worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := statedir.Commit(p.Worker, statedir.Config{Worker: &statedir.WorkerConfig{ClusterID: "c", VM: p.VMConfig()}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Daemon #1 exits for an upgrade handoff: machined and worker stay alive.
+	seen1 := make(states, 64)
+	sup1 := &Supervisor{
+		Paths: p, Release: Release{Tag: "cladefs-v1"}, Exe: hotbed, Machined: machined,
+		Poll: 20 * time.Millisecond, MachinedStop: 5 * time.Second, WorkerStop: 5 * time.Second,
+		PreserveOnExit: func() bool { return true },
+		OnState:        func(st State) { seen1 <- st },
+	}
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	done1 := make(chan struct{})
+	go func() { sup1.Run(ctx1); close(done1) }()
+
+	first := seen1.await(t, running, "running on daemon 1")
+	t.Cleanup(func() {
+		_ = syscall.Kill(first.WorkerPID, syscall.SIGKILL)
+		_ = syscall.Kill(first.MachinedPID, syscall.SIGKILL)
+	})
+	cancel1()
+	<-done1
+	if !alive(first.MachinedPID) || !alive(first.WorkerPID) {
+		t.Fatalf("handoff killed machined (%d alive=%v) or worker (%d alive=%v)",
+			first.MachinedPID, alive(first.MachinedPID), first.WorkerPID, alive(first.WorkerPID))
+	}
+	if got := p.ReadState(); got.State != "running" {
+		t.Fatalf("ReadState after handoff = %+v, want running", got)
+	}
+
+	// 2. Daemon #2 starts on the same release and adopts both PIDs untouched.
+	seen2 := make(states, 64)
+	sup2 := &Supervisor{
+		Paths: p, Release: Release{Tag: "cladefs-v1"}, Exe: hotbed, Machined: machined,
+		Poll: 20 * time.Millisecond, MachinedStop: 5 * time.Second, WorkerStop: 5 * time.Second,
+		PreserveOnExit: func() bool { return true },
+		OnState:        func(st State) { seen2 <- st },
+	}
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	done2 := make(chan struct{})
+	go func() { sup2.Run(ctx2); close(done2) }()
+
+	second := seen2.await(t, running, "adopted on daemon 2")
+	if second.MachinedPID != first.MachinedPID || second.WorkerPID != first.WorkerPID {
+		t.Fatalf("daemon 2 did not adopt running processes: got (%d, %d), want (%d, %d)",
+			second.MachinedPID, second.WorkerPID, first.MachinedPID, first.WorkerPID)
+	}
+	cancel2()
+	<-done2
+
+	// 3. Daemon #3 pins a newer machined release: defers while busy, upgrades once idle.
+	var idle atomic.Bool
+	seen3 := make(states, 64)
+	sup3 := &Supervisor{
+		Paths: p, Release: Release{Tag: "cladefs-v2"}, Exe: hotbed, Machined: machined,
+		Poll: 20 * time.Millisecond, MachinedStop: 5 * time.Second, WorkerStop: 5 * time.Second,
+		MachinedIdle: func(context.Context) (bool, error) { return idle.Load(), nil },
+		OnState:      func(st State) { seen3 <- st },
+	}
+	ctx3, cancel3 := context.WithCancel(t.Context())
+	done3 := make(chan struct{})
+	go func() { sup3.Run(ctx3); close(done3) }()
+
+	adopted := seen3.await(t, running, "adopted on daemon 3 before machined upgrade")
+	if adopted.MachinedPID != first.MachinedPID || adopted.Release != "cladefs-v1" {
+		t.Fatalf("daemon 3 initial state = %+v, want adopted pid %d release cladefs-v1", adopted, first.MachinedPID)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if !alive(first.MachinedPID) {
+		t.Fatalf("daemon 3 killed machined %d while VMs were active", first.MachinedPID)
+	}
+
+	idle.Store(true)
+	upgraded := seen3.await(t, func(st State) bool {
+		return running(st) && st.MachinedPID != first.MachinedPID && st.Release == "cladefs-v2"
+	}, "upgraded to cladefs-v2 once idle")
+	t.Cleanup(func() {
+		_ = syscall.Kill(upgraded.WorkerPID, syscall.SIGKILL)
+		_ = syscall.Kill(upgraded.MachinedPID, syscall.SIGKILL)
+	})
+	if alive(first.MachinedPID) || alive(first.WorkerPID) {
+		t.Fatalf("old machined (%d) or worker (%d) survived machined upgrade", first.MachinedPID, first.WorkerPID)
+	}
+
+	// 4. Full shutdown (PreserveOnExit nil) stops both processes cleanly.
+	cancel3()
+	<-done3
+	if alive(upgraded.MachinedPID) || alive(upgraded.WorkerPID) {
+		t.Fatalf("full shutdown left machined (%d) or worker (%d) running", upgraded.MachinedPID, upgraded.WorkerPID)
 	}
 }

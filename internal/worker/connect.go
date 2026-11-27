@@ -626,6 +626,11 @@ func (f *Follow) toWhenIdle(ctx context.Context, eng *Engine, b *pb.Build) error
 	if deferNow {
 		return nil
 	}
+	if update.Matches(f.Exe, b.Sha256) {
+		f.clearDeferred()
+		slog.Info("the controller's build is already on disk: restarting as it", "build", b.Number, "was", version.String())
+		return update.ErrRestart
+	}
 	tmp, source, err := f.downloadStaged(ctx, b)
 	if err != nil {
 		slog.Error("install the controller's build", "build", b.Number, "err", err)

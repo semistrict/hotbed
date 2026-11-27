@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/semistrict/hotbed/internal/update"
 )
 
 func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
@@ -63,8 +64,9 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 	}
 }
 
-// The daemon exits for a new build only when its binary was replaced, not
-// when it is told to stop (launchctl bootout).
+// The daemon exits for a new build only when its binary's content changed,
+// not when it is told to stop (launchctl bootout) or when another process
+// atomically rewrites the binary with the same build.
 func TestReplacedAtTellsReplacementFromStopping(t *testing.T) {
 	t.Parallel()
 	bin := filepath.Join(t.TempDir(), "hotbed")
@@ -75,16 +77,35 @@ func TestReplacedAtTellsReplacementFromStopping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wasSum, err := update.FileSHA256(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if replacedAt(ctx, bin, was, time.Millisecond) {
+	if replacedAt(ctx, bin, was, wasSum, time.Millisecond) {
 		t.Fatal("stopped, it says its binary was replaced")
 	}
 
 	ctx, cancel = context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan bool, 1)
-	go func() { done <- replacedAt(ctx, bin, was, 10*time.Millisecond) }()
+	go func() { done <- replacedAt(ctx, bin, was, wasSum, 10*time.Millisecond) }()
+
+	// Atomically rewriting the same bytes (new inode + mtime) must not trigger a restart.
+	same := bin + ".same"
+	if err := os.WriteFile(same, []byte("build 1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(same, bin); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case replaced := <-done:
+		t.Fatalf("same-content rewrite triggered replacedAt=%v", replaced)
+	case <-time.After(80 * time.Millisecond):
+	}
+
 	next := bin + ".new"
 	if err := os.WriteFile(next, []byte("build 2"), 0o755); err != nil {
 		t.Fatal(err)

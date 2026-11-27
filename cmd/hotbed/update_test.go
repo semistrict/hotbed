@@ -100,6 +100,28 @@ func TestNodesFollowTheControllersBuild(t *testing.T) {
 		t.Errorf("after the upgrade it ran %q, want the new build's skills install", reexec)
 	}
 
+	// Another stale process still running build 3 (e.g. a long-lived hotbed mcp
+	// or logs -f) sees build 7 is already on disk and leaves the binary's inode
+	// untouched instead of rewriting it and triggering daemon restarts.
+	beforeInfo, err := os.Stat(cliExe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = c.hotbed("nodes")
+	if code != 0 || stderr != "" {
+		t.Fatalf("stale build 3 client when build 7 already on disk: exit %d, stderr %q", code, stderr)
+	}
+	afterInfo, err := os.Stat(cliExe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(beforeInfo, afterInfo) {
+		t.Errorf("stale client replaced already-current binary's inode")
+	}
+	if len(reexec) != 1 {
+		t.Errorf("stale client re-ran skills install (%d calls, want 1)", len(reexec))
+	}
+
 	// On the controller's build, upgrade has nothing to do.
 	c.cli.build = 7
 	var res upgradeResult

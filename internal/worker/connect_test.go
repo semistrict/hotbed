@@ -1120,6 +1120,44 @@ func TestFollowDownloadsDirectlyFromGitHubAndNeverDowngrades(t *testing.T) {
 		}
 	})
 
+	t.Run("older worker restarts without redownloading when target build is already on disk", func(t *testing.T) {
+		exe := filepath.Join(t.TempDir(), "hotbed")
+		if err := os.WriteFile(exe, payload, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		beforeInfo, err := os.Stat(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeHits := githubHits.Load()
+		follow := &Follow{
+			URL:            ctrlSrv.URL,
+			Client:         authClient,
+			DownloadClient: githubSrv.Client(),
+			Exe:            exe,
+			Build:          171,
+		}
+		err = follow.To(t.Context(), &pb.Build{
+			Number:      172,
+			Sha256:      sum,
+			Path:        "/builds/172/hotbed-linux-amd64",
+			DownloadUrl: githubSrv.URL + "/semistrict/hotbed/releases/download/build-172/hotbed-linux-amd64",
+		})
+		if !errors.Is(err, update.ErrRestart) {
+			t.Fatalf("Follow.To = %v, want update.ErrRestart", err)
+		}
+		if githubHits.Load() != beforeHits {
+			t.Fatalf("Follow.To downloaded binary despite matching sha256 on disk (%d hits)", githubHits.Load()-beforeHits)
+		}
+		afterInfo, err := os.Stat(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(beforeInfo, afterInfo) {
+			t.Errorf("Follow.To replaced exe's inode despite matching sha256 on disk")
+		}
+	})
+
 	t.Run("newer worker never downgrades to older controller build", func(t *testing.T) {
 		exe := filepath.Join(t.TempDir(), "hotbed")
 		if err := os.WriteFile(exe, []byte("newer build 173"), 0o755); err != nil {

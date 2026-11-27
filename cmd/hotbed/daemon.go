@@ -14,6 +14,7 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/t3bridge"
+	"github.com/semistrict/hotbed/internal/update"
 )
 
 type daemonCmd struct {
@@ -108,10 +109,11 @@ func (c *daemonRunCmd) Exec(ctx context.Context, d deps) (any, error) {
 				exe = resolved
 			}
 			if was, serr := os.Stat(exe); serr == nil {
+				wasSum, _ := update.FileSHA256(exe)
 				go func() {
-					if replacedAt(runCtx, exe, was, time.Minute) {
+					if replacedAt(runCtx, exe, was, wasSum, time.Minute) {
 						slog.Info("daemon: a new build replaced this binary; exiting for restart", "binary", exe)
-						cancel()
+						dm.Restart()
 					}
 				}()
 			}
@@ -208,9 +210,12 @@ func (c *daemonStatusCmd) Exec(ctx context.Context, _ deps) (any, error) {
 	return daemon.GetServiceStatus(ctx, c.Dir)
 }
 
-// replacedAt says, once the file at path is another than was (checking
-// every interval), that it was replaced; false when ctx ends first.
-func replacedAt(ctx context.Context, path string, was os.FileInfo, interval time.Duration) bool {
+// replacedAt says, once the file at path has different content than wasSum
+// (checking every interval, using stat as a fast path), that a new build
+// replaced it; false when ctx ends first. Rewriting path with identical bytes
+// (new inode or mtime, same SHA-256) advances was and does not trigger a
+// restart.
+func replacedAt(ctx context.Context, path string, was os.FileInfo, wasSum string, interval time.Duration) bool {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -220,8 +225,19 @@ func replacedAt(ctx context.Context, path string, was os.FileInfo, interval time
 		case <-t.C:
 		}
 		now, err := os.Stat(path)
-		if err == nil && (!os.SameFile(was, now) || !now.ModTime().Equal(was.ModTime())) {
-			return true
+		if err != nil || (os.SameFile(was, now) && now.ModTime().Equal(was.ModTime())) {
+			continue
 		}
+		if wasSum != "" {
+			nowSum, err := update.FileSHA256(path)
+			if err != nil {
+				continue
+			}
+			if nowSum == wasSum {
+				was = now
+				continue
+			}
+		}
+		return true
 	}
 }

@@ -74,7 +74,11 @@ func TestDaemonSnapshotAndMenubarActions(t *testing.T) {
 		t.Fatalf("start_worker left %s: %v", stopped, err)
 	}
 
-	// Restart action cleanly cancels Run.
+	// Restart action cleanly cancels Run and marks handoff so a Mac's worker
+	// and machined survive daemon restarts.
+	if d.handoff.Load() {
+		t.Fatal("handoff set before restart")
+	}
 	d.handleMenubarAction(ctx, "restart")
 	select {
 	case err := <-done:
@@ -84,5 +88,8 @@ func TestDaemonSnapshotAndMenubarActions(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		cancel()
 		t.Fatal("timed out waiting for daemon Run to stop on restart action")
+	}
+	if !d.handoff.Load() {
+		t.Fatal("restart action did not mark handoff")
 	}
 }

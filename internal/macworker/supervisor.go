@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,13 +17,20 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	machinedv1 "github.com/semistrict/cladefs/go/machined/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Supervisor runs a Mac's worker for hotbed's daemon: machined, then the
 // worker (hotbed serve) once machined serves, each started again when it
 // ends (a machined that ends takes the worker's VMs with it, so the worker
 // is restarted beside the new one), and both stopped while the worker is to
-// stay stopped (Paths.Stop) or unconfigured, and when Run returns.
+// stay stopped (Paths.Stop) or unconfigured, and when Run returns — unless
+// PreserveOnExit reports a daemon restart handoff, in which case machined
+// and the worker stay running for the next daemon to adopt so active VMs
+// survive hotbed upgrades.
 type Supervisor struct {
 	Paths   Paths
 	Release Release
@@ -41,16 +49,25 @@ type Supervisor struct {
 	// SIGTERM before it is killed: 90 s and 30 s if 0. machined drains
 	// its cladefs daemon, its machines stopped, in up to a minute.
 	MachinedStop, WorkerStop time.Duration
+	// PreserveOnExit, when it returns true as Run exits, leaves machined
+	// and the worker running for the restarted daemon to adopt rather than
+	// tearing down active VMs.
+	PreserveOnExit func() bool
+	// MachinedIdle reports whether machined has no active VMs so it may be
+	// restarted to move to a newly pinned Release. Defaults to querying
+	// machined's ListMachines RPC on Paths.Socket.
+	MachinedIdle func(context.Context) (bool, error)
 }
 
-// child is a process the Supervisor started.
+// child is a process the Supervisor started or adopted from a prior daemon.
 type child struct {
-	name string
-	cmd  *exec.Cmd
-	pid  string // its pid file
-	done chan struct{}
-	err  error // how it ended, once done is closed
-	log  string
+	name    string
+	pidNum  int
+	cmd     *exec.Cmd // nil when adopted
+	pidFile string    // its pid file
+	done    chan struct{}
+	err     error // how it ended, once done is closed
+	log     string
 }
 
 // maxLogBytes is how large a log grows before a start begins it anew.
@@ -69,24 +86,32 @@ func (s *Supervisor) Run(ctx context.Context) {
 	defer tick.Stop()
 
 	var (
-		mach, work *child
-		backoff    time.Duration
-		retryAt    time.Time
-		last       State
-		detail     string // why the last start failed or a process ended
-		release    string
-		since      time.Time // when the worker last started
+		mach, work      *child
+		machAdopted     bool
+		deferredUpgrade bool
+		backoff         time.Duration
+		retryAt         time.Time
+		last            State
+		detail          string // why the last start failed or a process ended
+		release         string
+		since           time.Time // when the worker last started
 	)
+	// watchCtx bounds poll goroutines monitoring adopted processes; cancelled
+	// AFTER the shutdown/handoff defer runs (LIFO) so stopAll can still wait on
+	// adopted children's done channels during full shutdown.
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+
 	report := func(state string) {
 		st := State{
 			Configured: s.Paths.Configured(), Autostart: !s.Paths.stopped(), State: state,
 			Detail: detail, Release: release,
 		}
 		if mach != nil {
-			st.MachinedPID = mach.cmd.Process.Pid
+			st.MachinedPID = mach.pidNum
 		}
 		if work != nil {
-			st.WorkerPID = work.cmd.Process.Pid
+			st.WorkerPID = work.pidNum
 		}
 		if state == "running" {
 			st.Detail = ""
@@ -119,9 +144,22 @@ func (s *Supervisor) Run(ctx context.Context) {
 		if mach != nil {
 			s.stop(mach, cmpOr(s.MachinedStop, 90*time.Second))
 			mach = nil
+			machAdopted = false
+			deferredUpgrade = false
 		}
 	}
 	defer func() {
+		if s.PreserveOnExit != nil && s.PreserveOnExit() && s.Paths.Configured() && !s.Paths.stopped() && (mach != nil || work != nil) {
+			var mpid, wpid int
+			if mach != nil {
+				mpid = mach.pidNum
+			}
+			if work != nil {
+				wpid = work.pidNum
+			}
+			s.Log.Info("macworker: handing off running processes for daemon restart", "machinedPid", mpid, "workerPid", wpid)
+			return
+		}
 		if mach != nil || work != nil {
 			report("stopping")
 		}
@@ -145,19 +183,33 @@ func (s *Supervisor) Run(ctx context.Context) {
 		case time.Now().Before(retryAt):
 			report("error")
 		case mach == nil:
-			report("starting")
-			m, rel, err := s.startMachined(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
+			if m, rel := s.adoptMachined(watchCtx, poll); m != nil {
+				mach, release, machAdopted = m, rel, true
+				s.Log.Info("macworker: adopted running machined", "pid", m.pidNum, "release", rel)
+			} else {
+				report("starting")
+				m, rel, err := s.startMachined(ctx)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					failed("start machined", err)
+					report("error")
+					break
 				}
-				failed("start machined", err)
-				report("error")
-				break
+				mach, release, machAdopted = m, rel, false
 			}
-			mach, release = m, rel
 			fallthrough
 		case work == nil:
+			if machAdopted {
+				machAdopted = false
+				if w := s.adoptWorker(watchCtx, poll); w != nil {
+					work, since = w, time.Now()
+					s.Log.Info("macworker: adopted running worker", "pid", w.pidNum)
+					report("running")
+					break
+				}
+			}
 			if err := s.Paths.ensureConfig(); err != nil {
 				failed("configure the worker", err)
 				report("error")
@@ -178,6 +230,30 @@ func (s *Supervisor) Run(ctx context.Context) {
 				backoff = 0
 			}
 			report("running")
+			if want := s.wantRelease(); want != "" && release != want {
+				idle, err := s.isMachinedIdle(ctx)
+				if err != nil {
+					if !deferredUpgrade {
+						s.Log.Warn("macworker: check machined idle before upgrade", "was", release, "want", want, "err", err)
+						deferredUpgrade = true
+					}
+				} else if !idle {
+					if !deferredUpgrade {
+						s.Log.Info("macworker: deferring machined upgrade while VMs run", "was", release, "want", want)
+						deferredUpgrade = true
+					}
+				} else {
+					if s.Machined == "" {
+						if _, err := s.Release.Ensure(ctx, s.Paths, s.HTTP); err != nil {
+							s.Log.Warn("macworker: prefetch new machined release before upgrade", "want", want, "err", err)
+							break
+						}
+					}
+					s.Log.Info("macworker: upgrading machined while no VMs run", "was", release, "want", want)
+					stopAll()
+					continue
+				}
+			}
 		}
 
 		var machDone, workDone chan struct{}
@@ -210,7 +286,7 @@ func (s *Supervisor) Run(ctx context.Context) {
 // startMachined starts machined, its release's binaries fetched if they are
 // not there yet, and returns once it serves its socket.
 func (s *Supervisor) startMachined(ctx context.Context) (*child, string, error) {
-	bin, release := s.Machined, "local"
+	bin, release := s.Machined, s.wantRelease()
 	if bin == "" {
 		var err error
 		if bin, err = s.Release.Ensure(ctx, s.Paths, s.HTTP); err != nil {
@@ -239,6 +315,7 @@ func (s *Supervisor) startMachined(ctx context.Context) (*child, string, error) 
 	deadline := time.After(time.Minute)
 	for {
 		if _, err := os.Stat(s.Paths.Socket); err == nil {
+			_ = os.WriteFile(s.machinedReleasePath(), []byte(release+"\n"), 0o600)
 			return c, release, nil
 		}
 		select {
@@ -253,6 +330,145 @@ func (s *Supervisor) startMachined(ctx context.Context) (*child, string, error) 
 		case <-wait.C:
 		}
 	}
+}
+
+func (s *Supervisor) machinedReleasePath() string {
+	return filepath.Join(s.Paths.Machined, "machined.release")
+}
+
+func (s *Supervisor) wantRelease() string {
+	if s.Machined != "" {
+		if s.Release.Tag != "" {
+			return s.Release.Tag
+		}
+		return "local"
+	}
+	return s.Release.Tag
+}
+
+func (s *Supervisor) isMachinedIdle(ctx context.Context) (bool, error) {
+	if s.MachinedIdle != nil {
+		return s.MachinedIdle(ctx)
+	}
+	return defaultMachinedIdle(ctx, s.Paths.Socket)
+}
+
+func defaultMachinedIdle(ctx context.Context, socket string) (bool, error) {
+	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	dial := func(ctx context.Context, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socket)
+	}
+	conn, err := grpc.NewClient("passthrough:///machined",
+		grpc.WithContextDialer(dial),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	got, err := machinedv1.NewMachinedClient(conn).ListMachines(dctx, &machinedv1.ListMachinesRequest{})
+	if err != nil {
+		return false, err
+	}
+	for _, m := range got.GetMachines() {
+		switch m.GetStatus().GetState() {
+		case machinedv1.MachineState_MACHINE_STATE_STARTING,
+			machinedv1.MachineState_MACHINE_STATE_RUNNING,
+			machinedv1.MachineState_MACHINE_STATE_SUSPENDED,
+			machinedv1.MachineState_MACHINE_STATE_STOPPING:
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// adoptMachined reconnects to a live machined handed off by a prior daemon so
+// active VMs survive daemon upgrades and restarts.
+func (s *Supervisor) adoptMachined(watchCtx context.Context, poll time.Duration) (*child, string) {
+	pidPath := filepath.Join(s.Paths.Machined, "machined.pid")
+	pid, args, ok := liveProcess(pidPath, s.Paths.Socket)
+	if !ok {
+		return nil, ""
+	}
+	if _, err := os.Stat(s.Paths.Socket); err != nil {
+		return nil, ""
+	}
+	rel := s.adoptedMachinedRelease(args)
+	return watchAdopted(watchCtx, "machined", pid, pidPath, filepath.Join(s.Paths.Logs, "machined.log"), poll), rel
+}
+
+func (s *Supervisor) adoptedMachinedRelease(args string) string {
+	if b, err := os.ReadFile(s.machinedReleasePath()); err == nil {
+		if rel := strings.TrimSpace(string(b)); rel != "" {
+			return rel
+		}
+	}
+	// Backwards compatibility with daemons that ran before machined.release was
+	// written: the binary path is <Machined>/bin/<release>/machined.
+	prefix := filepath.Join(s.Paths.Machined, "bin") + string(filepath.Separator)
+	if _, after, ok := strings.Cut(args, prefix); ok {
+		if rel, _, ok := strings.Cut(after, string(filepath.Separator)); ok && rel != "" {
+			return rel
+		}
+	}
+	return s.wantRelease()
+}
+
+// adoptWorker reconnects to a live worker handed off beside an adopted
+// machined so active commands, shells, and base freshens suffer no disconnect.
+func (s *Supervisor) adoptWorker(watchCtx context.Context, poll time.Duration) *child {
+	pidPath := filepath.Join(s.Paths.Base, "worker.pid")
+	pid, _, ok := liveProcess(pidPath, s.Paths.Worker)
+	if !ok {
+		return nil
+	}
+	return watchAdopted(watchCtx, "worker", pid, pidPath, filepath.Join(s.Paths.Logs, "worker.log"), poll)
+}
+
+func liveProcess(pidPath, wantArg string) (int, string, bool) {
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0, "", false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 1 || syscall.Kill(pid, 0) != nil {
+		return 0, "", false
+	}
+	out, err := exec.Command("/bin/ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, "", false
+	}
+	args := strings.TrimSpace(string(out))
+	if args == "" || !strings.Contains(args, wantArg) {
+		return 0, "", false
+	}
+	return pid, args, true
+}
+
+func watchAdopted(watchCtx context.Context, name string, pid int, pidPath, logPath string, poll time.Duration) *child {
+	c := &child{name: name, pidNum: pid, pidFile: pidPath, done: make(chan struct{}), log: logPath}
+	interval := min(poll, 250*time.Millisecond)
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-t.C:
+				if syscall.Kill(pid, 0) != nil {
+					c.err = errors.New("exited")
+					close(c.done)
+					return
+				}
+			}
+		}
+	}()
+	return c
 }
 
 // start starts name's process, its output appended to logPath and its pid
@@ -285,7 +501,7 @@ func (s *Supervisor) start(_ context.Context, name, logPath, pidPath, bin string
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o600); err != nil {
 		s.Log.Warn("macworker: record a pid", "process", name, "err", err)
 	}
-	c := &child{name: name, cmd: cmd, pid: pidPath, done: make(chan struct{}), log: logPath}
+	c := &child{name: name, pidNum: cmd.Process.Pid, cmd: cmd, pidFile: pidPath, done: make(chan struct{}), log: logPath}
 	go func() {
 		c.err = cmd.Wait()
 		log.Close()
@@ -297,15 +513,18 @@ func (s *Supervisor) start(_ context.Context, name, logPath, pidPath, bin string
 
 // stop stops c: SIGTERM, then SIGKILL if it takes longer than grace.
 func (s *Supervisor) stop(c *child, grace time.Duration) {
-	_ = c.cmd.Process.Signal(syscall.SIGTERM)
+	_ = syscall.Kill(c.pidNum, syscall.SIGTERM)
 	select {
 	case <-c.done:
 	case <-time.After(grace):
 		s.Log.Warn("macworker: killing a process that did not stop", "process", c.name, "grace", grace)
-		_ = c.cmd.Process.Kill()
+		_ = syscall.Kill(c.pidNum, syscall.SIGKILL)
 		<-c.done
 	}
-	_ = os.Remove(c.pid)
+	_ = os.Remove(c.pidFile)
+	if c.name == "machined" {
+		_ = os.Remove(s.machinedReleasePath())
+	}
 	s.Log.Info("macworker: stopped", "process", c.name, "how", c.err)
 }
 

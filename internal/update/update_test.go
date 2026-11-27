@@ -41,6 +41,24 @@ func TestInstall(t *testing.T) {
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 		t.Errorf("Install left %v beside the binary", entries)
 	}
+	if !update.Matches(exe, sum(newBin)) || update.Matches(exe, sum([]byte("other"))) || update.Matches(exe, "") {
+		t.Errorf("Matches gave unexpected results for %s", exe)
+	}
+	// Installing identical bytes again leaves exe's inode untouched so file
+	// watchers do not see a spurious replacement.
+	if err := update.Install(bytes.NewReader(newBin), sum(newBin), exe); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(info, after) {
+		t.Errorf("Install with identical content replaced exe's inode")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("no-op Install left %v beside the binary", entries)
+	}
 }
 
 // Install keeps the binary a machine runs when handed any other platform's

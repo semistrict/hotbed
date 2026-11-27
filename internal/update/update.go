@@ -39,10 +39,35 @@ func (p Platform) Asset() string { return "hotbed-" + p.OS + "-" + p.Arch }
 // SumsName is a release's sums, in sha256sum's format.
 const SumsName = "SHA256SUMS"
 
+// FileSHA256 returns the hex-encoded SHA-256 digest of the file at path.
+func FileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Matches reports whether path exists and its SHA-256 hex digest equals sum.
+func Matches(path, sum string) bool {
+	if sum == "" {
+		return false
+	}
+	got, err := FileSHA256(path)
+	return err == nil && got == sum
+}
+
 // Install puts the binary r reads in place of exe, in one rename, once it
 // matches sum and is an executable for this machine's OS and architecture: a
 // node handed another platform's build (a Mac worker once got the Linux one)
 // keeps the binary it can run rather than replacing it with one it cannot.
+// If exe on disk already matches sum, Install leaves exe untouched so its
+// inode and mtime stay stable for watchers (such as hotbed daemon).
 func Install(r io.Reader, sum, exe string) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(exe), "."+filepath.Base(exe)+".new-")
 	if err != nil {
@@ -66,6 +91,10 @@ func Install(r io.Reader, sum, exe string) (err error) {
 	}
 	if err := RunsHere(tmp.Name()); err != nil {
 		return err
+	}
+	if Matches(exe, sum) {
+		_ = os.Remove(tmp.Name())
+		return nil
 	}
 	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
 		return err

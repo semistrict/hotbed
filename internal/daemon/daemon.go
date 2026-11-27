@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -59,6 +60,7 @@ type Daemon struct {
 	snap    Snapshot
 	subChs  map[chan Snapshot]struct{}
 	restart context.CancelFunc
+	handoff atomic.Bool
 }
 
 // New constructs a Daemon.
@@ -170,15 +172,32 @@ func (d *Daemon) Snapshot() Snapshot {
 	return d.snap
 }
 
+// Restart stops Run so the service manager launches the daemon again, handing
+// off a running Mac worker and machined so active VMs keep running across
+// hotbed upgrades and daemon restarts.
+func (d *Daemon) Restart() {
+	d.handoff.Store(true)
+	d.mu.Lock()
+	cancel := d.restart
+	d.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // Run runs the unified daemon until ctx is cancelled (or Restart is requested
-// from the menubar).
+// for an upgrade or from the menubar).
 func (d *Daemon) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	d.mu.Lock()
 	d.restart = cancel
+	alreadyRestarting := d.handoff.Load()
 	d.mu.Unlock()
+	if alreadyRestarting {
+		cancel()
+	}
 
 	// Publish initial status immediately.
 	if d.cfg.ControllerFunc != nil {
@@ -211,6 +230,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			sup := &macworker.Supervisor{
 				Paths: macworker.NewPaths(d.baseDir), Release: d.cfg.Release, Exe: d.cfg.Exe,
 				HTTP: d.cfg.HTTPClient, Log: d.log,
+				PreserveOnExit: d.handoff.Load,
 				OnState: func(st macworker.State) {
 					d.update(func(s *Snapshot) { s.Worker = st })
 				},
@@ -387,11 +407,6 @@ func (d *Daemon) handleMenubarAction(ctx context.Context, action string) {
 		}
 	case "restart":
 		d.log.Info("daemon: restart requested from menubar")
-		d.mu.Lock()
-		cancel := d.restart
-		d.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
+		d.Restart()
 	}
 }
