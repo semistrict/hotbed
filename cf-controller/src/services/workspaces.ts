@@ -1585,13 +1585,18 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		async getLogLines(req) {
 			const effectiveTail = req.tail > 0 ? req.tail : 2000;
 			const streamed = await ctrl.commands.getOutputLines(req.id, effectiveTail);
-			if (streamed.hasOutput) {
-				return create(CommandLogSchema, {
+			const streamedLog = () =>
+				create(CommandLogSchema, {
 					commandId: req.id,
 					lines: streamed.lines,
 					cut: streamed.cut,
 					lineTimestamps: streamed.lineTimestamps.map((t) => BigInt(t)),
 				});
+			// Only serve straight from CommandDO once outputPusher has written EOF;
+			// while chunks are still in flight (hasOutput && !eof), the worker holds
+			// the complete log and CommandDO only has an incomplete prefix.
+			if (streamed.hasOutput && streamed.eof) {
+				return streamedLog();
 			}
 			const finished = ctrl.store.commands.finished(req.id);
 			let cached = finished ? await ctrl.commands.getOutputLog(req.id) : null;
@@ -1614,6 +1619,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 				return res;
 			} catch (err) {
+				if (streamed.hasOutput) {
+					return streamedLog();
+				}
 				if (!cached) {
 					cached = await ctrl.commands.getOutputLog(req.id);
 				}

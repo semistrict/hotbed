@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { commandDoName, type CommandDO } from "../src/command-do.ts";
 import type { ControllerEnv } from "../src/controller-do.ts";
 import {
+	CheckpointSchema,
 	ClusterService,
 	CommandDiagnosticsSchema,
 	CommandInterventionSchema,
@@ -18,9 +19,11 @@ import {
 	FinishedCommandSchema,
 	InterventionKind,
 	ProfileFunctionSchema,
+	ResourcesSchema,
 	StampSchema,
 	WorkspaceService,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
+import type { TunnelDownMessage, TunnelUpMessage } from "../src/tunnel.ts";
 
 const OWNER_TOKEN = "test-owner-secret";
 const JOIN_TOKEN = "test-join-secret";
@@ -467,5 +470,144 @@ describe("CommandDO per-command SQLite storage via typed Workers RPC", () => {
 			eof: true,
 		});
 		expect((await stub.getOutputLines()).lines).toEqual(["after"]);
+	});
+
+	it("queries the online worker when CommandDO only holds an incomplete prefix, and falls back if offline", async () => {
+		const owner = makeClients(OWNER_TOKEN);
+		const nodeId = "node-partial-log";
+		const hostname = "partial-log-host";
+		const joiner = makeClients(JOIN_TOKEN, {
+			"X-Hotbed-Node-Id": nodeId,
+			"X-Hotbed-Host": hostname,
+		});
+		const joined = await joiner.cluster.join({});
+		const worker = makeClients(joined.workerToken, {
+			"X-Hotbed-Node-Id": nodeId,
+			"X-Hotbed-Host": hostname,
+		});
+		await worker.cluster.heartbeat({
+			clusterId: joined.clusterId,
+			resources: create(ResourcesSchema, { arch: "amd64", cpus: 4, memoryBytes: 4n << 30n }),
+		});
+
+		const cmdId = "cmd-partial-prefix";
+		await worker.cluster.pushEvents({
+			clusterId: joined.clusterId,
+			epoch: "epoch-partial",
+			checkpoint: create(CheckpointSchema, {
+				seq: 1n,
+				commands: [
+					create(CommandSchema, {
+						id: cmdId,
+						workspaceId: "ws-partial",
+						nodeId,
+						state: CommandState.RUNNING,
+						argv: "emit-big-log",
+					}),
+				],
+			}),
+		});
+
+		// Push only the first prefix chunk with eof=false (more output still on the worker).
+		const enc = new TextEncoder();
+		const prefix = enc.encode("prefix-only\n");
+		await worker.cluster.pushCommandOutput({
+			commandId: cmdId,
+			chunks: [
+				{
+					offset: 0n,
+					nextOffset: BigInt(prefix.byteLength),
+					receivedAt: 1_700_000_001_000n,
+					data: prefix,
+				},
+			],
+			eof: false,
+		});
+
+		// Connect a live worker tunnel that serves the full log on GetLogLines.
+		const wsRes = await SELF.fetch("https://controller.test/ws/worker", {
+			headers: {
+				Upgrade: "websocket",
+				Authorization: `Bearer ${joined.workerToken}`,
+				"X-Hotbed-Node-Id": nodeId,
+				"X-Hotbed-Host": hostname,
+			},
+		});
+		expect(wsRes.status).toBe(101);
+		const ws = wsRes.webSocket!;
+		ws.accept();
+		let workerCalls = 0;
+		let forgetCommand = false;
+		ws.addEventListener("message", (ev) => {
+			const raw = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+			if (raw === "pong") return;
+			const msg = JSON.parse(raw) as TunnelDownMessage;
+			if (msg.type !== "rpc_req" || msg.procedure !== "/hotbed.v1.WorkspaceService/GetLogLines") {
+				return;
+			}
+			workerCalls++;
+			if (forgetCommand) {
+				ws.send(
+					JSON.stringify({
+						type: "rpc_err",
+						id: msg.id,
+						code: "not_found",
+						message: "command forgotten",
+					} satisfies TunnelUpMessage),
+				);
+				return;
+			}
+			const body = toBinary(
+				CommandLogSchema,
+				create(CommandLogSchema, {
+					commandId: cmdId,
+					lines: ["final-line-from-worker"],
+					cut: true,
+				}),
+			);
+			let bin = "";
+			for (let i = 0; i < body.length; i++) bin += String.fromCharCode(body[i]);
+			ws.send(
+				JSON.stringify({
+					type: "rpc_msg",
+					id: msg.id,
+					body: btoa(bin),
+				} satisfies TunnelUpMessage),
+			);
+		});
+
+		try {
+			// While eof=false and worker is online, GetLogLines must ask the worker rather than returning the stale prefix.
+			const fromWorker = await owner.workspaces.getLogLines({ id: cmdId, tail: 3 });
+			expect(workerCalls).toBe(1);
+			expect(fromWorker.lines).toEqual(["final-line-from-worker"]);
+			expect(fromWorker.cut).toBe(true);
+
+			// If the worker fails (e.g. forgot the command or went offline), GetLogLines falls back to the partial prefix.
+			forgetCommand = true;
+			const fallback = await owner.workspaces.getLogLines({ id: cmdId, tail: 3 });
+			expect(workerCalls).toBe(2);
+			expect(fallback.lines).toEqual(["prefix-only"]);
+
+			// Once eof=true arrives in CommandDO, GetLogLines serves directly from CommandDO without hitting the worker.
+			const suffix = enc.encode("final-line-in-do\n");
+			await worker.cluster.pushCommandOutput({
+				commandId: cmdId,
+				chunks: [
+					{
+						offset: BigInt(prefix.byteLength),
+						nextOffset: BigInt(prefix.byteLength + suffix.byteLength),
+						receivedAt: 1_700_000_002_000n,
+						data: suffix,
+					},
+				],
+				eof: true,
+			});
+			const complete = await owner.workspaces.getLogLines({ id: cmdId, tail: 3 });
+			expect(workerCalls).toBe(2);
+			expect(complete.lines).toEqual(["prefix-only", "final-line-in-do"]);
+		} finally {
+			ws.close(1000, "test done");
+		}
 	});
 });
