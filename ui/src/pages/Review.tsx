@@ -26,6 +26,7 @@ import { Markdown } from "../components/Markdown";
 import { ProjectTag } from "../components/ProjectTag";
 import { SessionLink } from "../components/SessionLink";
 import { StampLine } from "../components/StampLine";
+import { T3ThreadTag } from "../components/T3ThreadTag";
 import { Card, Empty } from "../components/Panel";
 import { useSnapshot } from "../lib/data";
 import { ago, shortSha } from "../lib/format";
@@ -208,9 +209,7 @@ function ReviewerRow({ s, rv, now }: { s: Snapshot; rv: Reviewer; now: number })
         <span className="font-mono text-[10.5px] text-muted-foreground sm:ml-auto">
           {rv.session ? listed ? <SessionLink id={rv.session} /> : rv.session : ""}
           {rv.t3codeThreadId && (
-            <span className="ml-1.5 text-faint" title={`T3 Code thread ${rv.t3codeThreadId}`}>
-              t3:{rv.t3codeThreadId.slice(0, 8)}
-            </span>
+            <T3ThreadTag id={rv.t3codeThreadId} className="ml-1.5 text-faint" />
           )}
           {rv.started && <span className="ml-1.5 text-faint">started {ago(rv.started.at, now)}</span>}
           {rv.ended && <span className="ml-1.5 text-faint">· ended {ago(rv.ended.at, now)}</span>}

@@ -33,6 +33,7 @@ import { chooseOption, chooseOwnWords, draftAnswer, draftOf, draftReady, EMPTY_D
 import { mergeLatestByRevision, useOptimisticReorder } from "../lib/rankedList";
 import { who } from "../lib/stamps";
 import { PageTitle } from "../components/PageTitle";
+import { T3ThreadTag } from "../components/T3ThreadTag";
 
 export interface QuestionsSearch {
   tab?: QuestionTab;
@@ -298,8 +299,8 @@ function AskedFromLine({ q }: { q: Question }) {
   if (!f && !q.t3codeThreadId) return null;
   if (!f) {
     return (
-      <div className="font-mono text-[11px] text-muted-foreground" title={`T3 Code thread ${q.t3codeThreadId}`}>
-        t3:{q.t3codeThreadId.slice(0, 8)}
+      <div className="font-mono text-[11px] text-muted-foreground">
+        <T3ThreadTag id={q.t3codeThreadId} />
       </div>
     );
   }
@@ -310,8 +311,8 @@ function AskedFromLine({ q }: { q: Question }) {
         <span>
           <FromLine f={f} />
           {q.t3codeThreadId && (
-            <span className="text-faint" title={`T3 Code thread ${q.t3codeThreadId}`}>
-              {" "}· t3:{q.t3codeThreadId.slice(0, 8)}
+            <span className="text-faint">
+              {" "}· <T3ThreadTag id={q.t3codeThreadId} />
             </span>
           )}
         </span>
