@@ -147,8 +147,8 @@ func (e *Engine) UpgradeSystem(ctx context.Context, req *pb.WorkerUpgradeSystemR
 		kernelChanged = !ok || curKernel != stagedKernel
 	}
 
-	hasCladefsBackend := e.cfg.VM != nil || e.cfg.CladefsFUSE != nil
-	needRestart := (cladefsdChanged || req.GetForce()) && (hasCladefsBackend || (e.cfg.SystemUpgradeOps != nil && e.cfg.SystemUpgradeOps.RestartService != nil))
+	backend := e.cladefs()
+	needRestart := (cladefsdChanged || req.GetForce()) && (backend != nil || (e.cfg.SystemUpgradeOps != nil && e.cfg.SystemUpgradeOps.RestartService != nil))
 	needAnyChange := cladefsdChanged || fcChanged || kernelChanged || needRestart
 
 	if !needAnyChange {
@@ -215,14 +215,9 @@ func (e *Engine) UpgradeSystem(ctx context.Context, req *pb.WorkerUpgradeSystemR
 
 	// Stop any remaining VMs (e.g., base provisioning VMs) and detach remaining
 	// FUSE mounts + close cladefsd gRPC clients before restarting cladefsd.
-	if e.cfg.VM != nil {
-		if err := e.cfg.VM.StopAllForUpgrade(ctx); err != nil {
-			slog.Warn("stop VM backend before cladefs upgrade", "err", err)
-		}
-	}
-	if e.cfg.CladefsFUSE != nil {
-		if err := e.cfg.CladefsFUSE.StopAllForUpgrade(ctx); err != nil {
-			slog.Warn("stop cladefs FUSE backend before cladefs upgrade", "err", err)
+	if backend != nil {
+		if err := backend.StopAllForUpgrade(ctx); err != nil {
+			slog.Warn("stop the cladefs backend before cladefs upgrade", "runtime", backend.Kind(), "err", err)
 		}
 	}
 
@@ -266,21 +261,12 @@ func (e *Engine) UpgradeSystem(ctx context.Context, req *pb.WorkerUpgradeSystemR
 				return nil, fmt.Errorf("reconnect cladefsd after restart: %w", err)
 			}
 			res.CladefsIncarnation = inc
-		} else {
-			if e.cfg.VM != nil {
-				inc, err := e.cfg.VM.ReconnectCladefs(ctx)
-				if err != nil {
-					return nil, fmt.Errorf("reconnect VM cladefsd after restart: %w", err)
-				}
-				res.CladefsIncarnation = inc
+		} else if backend != nil {
+			inc, err := backend.ReconnectCladefs(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("reconnect %s cladefsd after restart: %w", backend.Kind(), err)
 			}
-			if e.cfg.CladefsFUSE != nil {
-				inc, err := e.cfg.CladefsFUSE.ReconnectCladefs(ctx)
-				if err != nil {
-					return nil, fmt.Errorf("reconnect host-FUSE cladefsd after restart: %w", err)
-				}
-				res.CladefsIncarnation = inc
-			}
+			res.CladefsIncarnation = inc
 		}
 	}
 

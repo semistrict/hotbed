@@ -15,7 +15,6 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/baseimage"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
 )
 
@@ -884,42 +883,24 @@ func (e *Engine) runBackgroundOptionalFreshen(ctx context.Context, pf *pendingOp
 		prov = e.cfg.BaseImage.Provision
 	}
 
-	switch {
-	case pf.runtime == runtime.KindVM && e.cfg.VM != nil:
-		res, err := e.cfg.VM.ensureProjectBase(
-			ctx, p, heads, pf.sharedBase, baseSpec, e.sandboxEnv(),
-			nil, e.startManagedFreshen, opts,
-		)
+	if b := e.cladefs(); b != nil && pf.runtime == b.Kind() {
+		res, err := b.ensureProjectBase(ctx, p, heads, pf.sharedBase, baseSpec, prov, e.sandboxEnv(), nil, e.startManagedFreshen, opts)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Warn("background optional VM freshen failed", "project", p.GetName(), "err", err)
+				slog.Warn("background optional cladefs freshen failed", "project", p.GetName(), "runtime", b.Kind(), "err", err)
 			}
 			return
 		}
 		if res.Base != nil {
 			e.recordWarmCladefsBase(p, res.Base, goruntime.GOARCH)
 		}
-	case pf.runtime == runtime.KindCladefs && e.cfg.CladefsFUSE != nil:
-		res, err := e.cfg.CladefsFUSE.ensureProjectBase(
-			ctx, p, heads, pf.sharedBase, baseSpec, prov,
-			e.startManagedFreshen, nil, e.sandboxEnv(), opts,
-		)
-		if err != nil {
-			if ctx.Err() == nil {
-				slog.Warn("background optional cladefs freshen failed", "project", p.GetName(), "err", err)
-			}
-			return
-		}
-		if res.Base != nil {
-			e.recordWarmCladefsBase(p, res.Base, goruntime.GOARCH)
-		}
-	default:
-		lock := e.projectLock(p.GetName())
-		lock.Lock()
-		_, _, _, err := e.baseForWithOpts(ctx, p, false, true)
-		lock.Unlock()
-		if err != nil && ctx.Err() == nil {
-			slog.Warn("background optional local freshen failed", "project", p.GetName(), "err", err)
-		}
+		return
+	}
+	lock := e.projectLock(p.GetName())
+	lock.Lock()
+	_, _, _, err = e.baseForWithOpts(ctx, p, false, true)
+	lock.Unlock()
+	if err != nil && ctx.Err() == nil {
+		slog.Warn("background optional local freshen failed", "project", p.GetName(), "err", err)
 	}
 }

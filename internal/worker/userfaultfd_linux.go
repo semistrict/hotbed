@@ -183,32 +183,7 @@ func writeUdevRuleIfChanged(rulePath string, want []byte) (bool, error) {
 			return false, nil
 		}
 	}
-	dir := filepath.Dir(rulePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, err
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(rulePath)+".*")
-	if err != nil {
-		return false, err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if _, err := tmp.Write(want); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	if err := os.Rename(tmpName, rulePath); err != nil {
+	if err := writeFileAtomic(rulePath, want, 0o644); err != nil {
 		return false, err
 	}
 	return true, nil

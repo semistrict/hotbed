@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/semistrict/hotbed/internal/cladefs"
+	"github.com/semistrict/hotbed/internal/statedir"
 )
 
 // fakeLinkCladefsd is a cladefsd whose incarnation the test changes, as a
@@ -57,8 +58,8 @@ func TestCladefsdLinkFollowsARestartedDaemon(t *testing.T) {
 	}
 	const me = "10.0.0.1:9185"
 	peers := []string{"10.0.0.2:9185", me}
-	b := &VMBackend{link: cladefsdLink{incarnation: 7}}
-	b.cfg.CladefsPeerAddr = me
+	b := newVMBackend("", statedir.VMConfig{CladefsPeerAddr: me})
+	b.link = cladefsdLink{incarnation: 7}
 	b.store.Store(st)
 
 	b.ApplyHeartbeat(ctx, peers, []uint64{3}, nil)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/statedir"
 )
 
 // A cladefs FUSE workspace's files are at its mount, not its store volume:
@@ -21,10 +22,12 @@ func TestSweepTmpFindsCladefsFUSEWorkspaceMount(t *testing.T) {
 		}
 	}
 	live := &command{rec: &pb.CommandRecord{Command: &pb.Command{Id: "live-cmd", State: running}}}
+	fuse := newCladefsFUSEBackend("", statedir.CladefsFUSEConfig{})
+	fuse.wsMounts["ws-f"] = fuseWSMount{MountPath: mount}
 	e := &Engine{
 		cfg: EngineConfig{
 			Store:       &fake.Store{Root: t.TempDir()},
-			CladefsFUSE: &CladefsFUSEBackend{wsMounts: map[string]fuseWSMount{"ws-f": {MountPath: mount}}},
+			CladefsFUSE: fuse,
 		},
 		commands: map[string]*command{"live-cmd": live},
 		workspaces: map[string]*workspace{"ws-f": {rec: &pb.WorkspaceRecord{

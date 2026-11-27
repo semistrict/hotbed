@@ -22,6 +22,7 @@ import (
 	"github.com/semistrict/hotbed/internal/cmdlog"
 	"github.com/semistrict/hotbed/internal/daemonlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitauth"
 	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
@@ -205,7 +206,7 @@ type Engine struct {
 	db             *db
 	cred           *syscall.Credential
 	home           string
-	gitAuth        *gitAuthServer
+	gitAuth        gitAuthHelpers
 	containersConf string
 	rtUnits        *runtimeUnits
 	freshenBudget  *freshenBudget
@@ -310,11 +311,11 @@ type Engine struct {
 	streamsDone chan struct{}
 }
 
-// volPath returns the host rootfs path for volume vol, checking CladefsFUSE
-// mounts first before falling back to the host ZFS/btrfs Store.
+// volPath returns the host rootfs path for volume vol: a cladefs cell's
+// host mount, or else the host ZFS/btrfs Store's volume.
 func (e *Engine) volPath(vol string) string {
-	if e.cfg.CladefsFUSE != nil {
-		if p, ok := e.cfg.CladefsFUSE.MountPath(vol); ok {
+	if b := e.cladefs(); b != nil {
+		if p, ok := b.MountPath(vol); ok {
 			return p
 		}
 	}
@@ -545,15 +546,15 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	e.resources.Version = version.String()
 	if cfg.VM != nil {
-		e.resources.Runtimes = cfg.VM.Runtimes()
 		if cfg.Runtime == nil {
 			e.cfg.Runtime = cfg.VM.Runtime()
 		}
 		if cfg.RuntimeFor == nil {
 			e.cfg.RuntimeFor = e.isVMWorkspace
 		}
-	} else if cfg.CladefsFUSE != nil {
-		e.resources.Runtimes = cfg.CladefsFUSE.Runtimes()
+	}
+	if b := e.cladefs(); b != nil {
+		e.resources.Runtimes = b.Runtimes()
 	} else if cfg.Runtime != nil {
 		e.resources.Runtimes = []string{cfg.Runtime.Kind()}
 	} else {
@@ -590,7 +591,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	e.sweepOrphans(ctx)
 	if cfg.GitAuth != nil {
-		ga, err := startGitAuthServer(cfg.Dir, cred, cfg.GitAuth)
+		ga, err := gitauth.Start(cfg.Dir, cred, cfg.GitAuth)
 		if err != nil {
 			bgCancel()
 			d.close()
@@ -598,7 +599,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		}
 		e.gitAuth = ga
 		if e.cfg.VM != nil {
-			e.cfg.VM.SetGitAuthHostSock(ga.sockPath)
+			e.cfg.VM.SetGitAuthHostSock(ga.SockPath())
 		}
 	}
 	return e, nil
@@ -618,8 +619,8 @@ func (e *Engine) load() error {
 		e.workspaces[r.Workspace.Id] = &workspace{rec: r, vmUsed: r.Workspace.Runtime == runtime.KindVM}
 		if r.Workspace.Runtime == runtime.KindVM {
 			e.vmWorkspaces.Store(r.Workspace.Id, struct{}{})
-			if e.cfg.VM != nil && wsHasVolume(r.Workspace.State) {
-				e.cfg.VM.RestoreWorkspaceCell(r.Workspace.Id, r.Workspace.GetCladefsCell())
+			if b := e.cladefs(); b != nil && wsHasVolume(r.Workspace.State) {
+				b.RestoreWorkspaceCell(r.Workspace.Id, r.Workspace.GetCladefsCell())
 			}
 		}
 	}); err != nil {
@@ -928,10 +929,8 @@ func (e *Engine) Sample() {
 	oom, err := e.cfg.System.OOMKills()
 	warn("oom kills", err)
 	var objStore *pb.ObjectStoreStats
-	if e.cfg.VM != nil {
-		objStore = e.cfg.VM.SampleObjectStore(context.Background())
-	} else if e.cfg.CladefsFUSE != nil {
-		objStore = e.cfg.CladefsFUSE.SampleObjectStore(context.Background())
+	if b := e.cladefs(); b != nil {
+		objStore = b.SampleObjectStore(context.Background())
 	}
 	e.mu.Lock()
 	e.oomKills = oom

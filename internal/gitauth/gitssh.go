@@ -1,4 +1,4 @@
-package worker
+package gitauth
 
 import (
 	"bufio"
@@ -112,12 +112,12 @@ type gitSSHProxy struct {
 	port       int
 	keyPath    string
 	helperPath string
-	provider   GitAuthClient
+	provider   Client
 	httpClient *http.Client
 	sshCfg     *ssh.ServerConfig
 }
 
-func startGitSSHProxy(dir string, cred *syscall.Credential, provider GitAuthClient, hc *http.Client) (*gitSSHProxy, error) {
+func startGitSSHProxy(dir string, cred *syscall.Credential, provider Client, hc *http.Client) (*gitSSHProxy, error) {
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate git-ssh host key: %w", err)
@@ -286,11 +286,11 @@ func (p *gitSSHProxy) handleSession(targetHost string, ch ssh.Channel, reqs <-ch
 func (p *gitSSHProxy) runGitCommand(ctx context.Context, host, gitProtocol, cmd string, ch ssh.Channel) uint32 {
 	service, repoPath, err := parseGitSSHCommand(cmd)
 	if err != nil {
-		fmt.Fprintf(ch.Stderr(), "%s %v\n", gitAuthErrPrefix, err)
+		fmt.Fprintf(ch.Stderr(), "%s %v\n", errPrefix, err)
 		return 128
 	}
 	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
-		fmt.Fprintf(ch.Stderr(), "%s invalid SSH target host %q\n", gitAuthErrPrefix, host)
+		fmt.Fprintf(ch.Stderr(), "%s invalid SSH target host %q\n", errPrefix, host)
 		return 128
 	}
 
@@ -306,7 +306,7 @@ func (p *gitSSHProxy) runGitCommand(ctx context.Context, host, gitProtocol, cmd 
 			msg += " (" + ae.Suggestion + ")"
 		}
 		if ae.Code != api.CodeNotFound {
-			fmt.Fprintf(ch.Stderr(), "%s %s\n", gitAuthErrPrefix, msg)
+			fmt.Fprintf(ch.Stderr(), "%s %s\n", errPrefix, msg)
 			return 128
 		}
 		// No credential configured for this repo: try unauthenticated Smart HTTP
@@ -327,9 +327,9 @@ func (p *gitSSHProxy) runGitCommand(ctx context.Context, host, gitProtocol, cmd 
 	if err != nil {
 		if status == http.StatusUnauthorized || status == http.StatusForbidden || (status == http.StatusNotFound && mintErrMsg != "") {
 			if mintErrMsg != "" {
-				fmt.Fprintf(ch.Stderr(), "%s %s\n", gitAuthErrPrefix, mintErrMsg)
+				fmt.Fprintf(ch.Stderr(), "%s %s\n", errPrefix, mintErrMsg)
 			} else {
-				fmt.Fprintf(ch.Stderr(), "%s remote rejected git credentials for %s/%s: %v\n", gitAuthErrPrefix, host, repoPath, err)
+				fmt.Fprintf(ch.Stderr(), "%s remote rejected git credentials for %s/%s: %v\n", errPrefix, host, repoPath, err)
 			}
 		} else {
 			fmt.Fprintf(ch.Stderr(), "fatal: %v\n", err)

@@ -233,12 +233,7 @@ func (h *heldBases) saveLocked(project string, b *projectBase) {
 	if h.dir == "" {
 		return
 	}
-	raw, err := json.MarshalIndent(b, "", "  ")
-	if err != nil {
-		slog.Warn("encode project base", "project", project, "err", err)
-		return
-	}
-	if err := writeFileAtomic(filepath.Join(h.dir, "project-"+project+".json"), raw); err != nil {
+	if err := writeJSONAtomic(filepath.Join(h.dir, "project-"+project+".json"), b); err != nil {
 		slog.Warn("cache project base", "project", project, "err", err)
 	}
 }
@@ -520,15 +515,4 @@ func logThrottled(project, rt, warmBase string, dec freshenDecision) {
 			"project", project, "runtime", rt, "warmBase", warmBase,
 			"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
 	}
-}
-
-func writeFileAtomic(path string, raw []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }

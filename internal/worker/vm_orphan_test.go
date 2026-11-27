@@ -20,6 +20,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/vm"
@@ -179,13 +180,9 @@ func newTestVMBackend(t *testing.T, api *strictVMCladefsClient, fl *fakeVMLaunch
 	if err != nil {
 		t.Fatalf("vm.NewManager: %v", err)
 	}
-	b := &VMBackend{
-		workerDir:    tmp,
-		mgr:          mgr,
-		baseImages:   map[string]cladefs.CellRef{},
-		wsCells:      map[string]cladefs.CellRef{},
-		activeBuilds: map[string]struct{}{},
-	}
+	b := newVMBackend(tmp, statedir.VMConfig{})
+	b.mgr = mgr
+	b.activeBuilds = map[string]struct{}{}
 	b.store.Store(store)
 	b.rt = runtime.NewGuestRuntime(b)
 	return b, cellRoot

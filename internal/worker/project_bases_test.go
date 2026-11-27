@@ -13,6 +13,7 @@ import (
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/statedir"
 )
 
 func TestPickBase(t *testing.T) {
@@ -83,22 +84,20 @@ func newSharingNode(t *testing.T, firstCell uint64) *sharingNode {
 		t.Fatal(err)
 	}
 	store.SetMount(&fakeRetireMountClient{})
+	b := newCladefsFUSEBackend(tmp, statedir.CladefsFUSEConfig{
+		MountRoot:       filepath.Join(tmp, "mnt"),
+		MountStoresRoot: filepath.Join(tmp, "mount-stores"),
+	})
+	b.clearNosuidFn = func(string) error { return nil }
+	b.cleanupMount = func(string, bool) {}
 	n := &sharingNode{
-		b: &CladefsFUSEBackend{
-			workerDir:       tmp,
-			mountRoot:       filepath.Join(tmp, "mnt"),
-			mountStoresRoot: filepath.Join(tmp, "mount-stores"),
-			baseImages:      map[string]cladefs.CellRef{},
-			wsMounts:        map[string]fuseWSMount{},
-			clearNosuidFn:   func(string) error { return nil },
-			cleanupMount:    func(string, bool) {},
-		},
+		b:    b,
 		api:  api,
 		spec: baseimage.Spec{Image: "debian:trixie-slim", Arch: "arm64"}.Normalized(),
 	}
 	n.b.store.Store(store)
 	n.b.loadState()
-	n.b.baseImages[n.b.fuseBaseKey(n.spec)] = cladefs.CellRef{Cell: firstCell - 1, Version: 1}
+	n.b.baseImages[n.b.baseKey(n.spec)] = cladefs.CellRef{Cell: firstCell - 1, Version: 1}
 	return n
 }
 
@@ -118,7 +117,7 @@ func (n *sharingNode) ensure(t *testing.T, p *pb.HostedProject, head string, sha
 			},
 		}, nil
 	}
-	res, err := n.b.ensureProjectBase(t.Context(), p, map[string]string{"app": head}, shared, n.spec, nil, run, nil, nil, ensureBaseOpts{})
+	res, err := n.b.ensureProjectBase(t.Context(), p, map[string]string{"app": head}, shared, n.spec, nil, nil, nil, run, ensureBaseOpts{})
 	if err != nil {
 		t.Fatalf("ensureProjectBase at %s: %v", head, err)
 	}

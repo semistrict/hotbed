@@ -229,6 +229,11 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 	if rt == "" && req.GetPlacement() != nil {
 		rt = req.GetPlacement().GetRuntime()
 	}
+	// fuse: cladefs workspaces mount on the host; vms: workspaces may run
+	// in VMs (by a VM backend, or a runtime of their own in tests).
+	b := e.cladefs()
+	fuse := b != nil && b.Kind() == runtime.KindCladefs
+	vms := (b != nil && b.Kind() == runtime.KindVM) || e.cfg.Runtime != nil
 	if req.GetPlacement().GetBench() {
 		if rt == runtime.KindVM {
 			return "", api.Errorf(api.CodeInvalidArgs, "--bench requires cladefs runtime, not vm")
@@ -236,20 +241,17 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 		if rt != "" && rt != runtime.KindCladefs {
 			return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm or cladefs)", rt)
 		}
-		if e.cfg.CladefsFUSE != nil {
+		if fuse {
 			return runtime.KindCladefs, nil
 		}
-		if e.cfg.VM != nil || e.cfg.Runtime != nil {
+		if vms {
 			return "", api.Errorf(api.CodePlatformNotSupported, "--bench requires cladefs runtime, which is not enabled on this worker")
 		}
 		return runtime.KindCladefs, nil
 	}
 	if rt == "" {
-		if e.cfg.VM != nil {
-			return e.cfg.VM.DefaultRuntime(), nil
-		}
-		if e.cfg.CladefsFUSE != nil {
-			return e.cfg.CladefsFUSE.DefaultRuntime(), nil
+		if b != nil {
+			return b.DefaultRuntime(), nil
 		}
 		if e.cfg.Runtime != nil && e.cfg.RuntimeFor == nil {
 			return e.cfg.Runtime.Kind(), nil
@@ -258,12 +260,12 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 	}
 	switch rt {
 	case runtime.KindVM:
-		if e.cfg.VM == nil && e.cfg.Runtime == nil {
+		if !vms {
 			return "", api.Errorf(api.CodePlatformNotSupported, "vm runtime is not enabled on this worker")
 		}
 		return runtime.KindVM, nil
 	case runtime.KindCladefs:
-		if e.cfg.CladefsFUSE == nil && (e.cfg.VM != nil || e.cfg.Runtime != nil) {
+		if !fuse && vms {
 			return "", api.Errorf(api.CodePlatformNotSupported, "cladefs host-FUSE runtime is not enabled on this worker")
 		}
 		return runtime.KindCladefs, nil
@@ -278,10 +280,8 @@ func (e *Engine) applyCladefsHeartbeat(ctx context.Context, reply *pb.HeartbeatR
 	if reply == nil {
 		return
 	}
-	if e.cfg.VM != nil {
-		e.cfg.VM.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations(), reply.GetRetireBases())
-	} else if e.cfg.CladefsFUSE != nil {
-		e.cfg.CladefsFUSE.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations(), reply.GetRetireBases())
+	if b := e.cladefs(); b != nil {
+		b.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations(), reply.GetRetireBases())
 	}
 }
 
@@ -289,11 +289,8 @@ func (e *Engine) applyCladefsHeartbeat(ctx context.Context, reply *pb.HeartbeatR
 // configuration (VM tuning, managed kernel/guestd paths, DNS, default runtime,
 // FUSE disk/peer settings) onto active backends without restarting the worker.
 func (e *Engine) ApplyWorkerConfig(cfg statedir.WorkerConfig) {
-	if e.cfg.VM != nil && cfg.VM != nil {
-		e.cfg.VM.UpdateConfig(*cfg.VM)
-	}
-	if e.cfg.CladefsFUSE != nil && cfg.CladefsFUSE != nil {
-		e.cfg.CladefsFUSE.UpdateConfig(*cfg.CladefsFUSE)
+	if b := e.cladefs(); b != nil {
+		b.applyConfig(cfg)
 	}
 	if e.freshenBudget != nil {
 		e.freshenBudget.updateConfig(cfg.Freshen)

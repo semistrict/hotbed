@@ -226,16 +226,12 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &VMBackend{
-		workerDir:    tmp,
-		mgr:          mgr,
-		baseImages:   map[string]cladefs.CellRef{},
-		wsCells:      map[string]cladefs.CellRef{},
-		activeBuilds: map[string]struct{}{},
-	}
+	b := newVMBackend(tmp, statedir.VMConfig{})
+	b.mgr = mgr
+	b.activeBuilds = map[string]struct{}{}
 	b.store.Store(cstore)
 	spec := baseimage.Spec{Image: "debian:trixie-slim", Arch: "amd64"}.Normalized()
-	baseKey := b.vmBaseKey(spec)
+	baseKey := b.baseKey(spec)
 	b.baseImages[baseKey] = cladefs.CellRef{Tenant: 0, Cell: 900, Version: 1}
 
 	now := time.Unix(1795600000, 0)
@@ -291,7 +287,7 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	}
 
 	// 1. Cold build succeeds; SetupHash and Runtime="vm" are recorded.
-	res1, err := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c1"}, nil, spec, nil, nil, runFreshen, opts(true))
+	res1, err := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c1"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil {
 		t.Fatalf("cold ensureProjectBase: %v", err)
 	}
@@ -306,7 +302,7 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	}
 
 	// 2. Commit-only drift within minInterval (30m): skipped, returns warm base with empty note.
-	res2, err := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c2"}, nil, spec, nil, nil, runFreshen, opts(true))
+	res2, err := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c2"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || res2.Base.BaseID != res1.Base.BaseID || res2.Note != "" || res2.DeferBackground || runs.Load() != 1 {
 		t.Fatalf("throttled commit-only = (%+v, %v, runs=%d), want warm reuse without build", res2, err, runs.Load())
 	}
@@ -318,7 +314,7 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	lock.Lock()
 	done := make(chan ensureBaseResult, 1)
 	go func() {
-		r, gerr := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c2"}, nil, spec, nil, nil, runFreshen, opts(true))
+		r, gerr := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c2"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 		if gerr != nil {
 			t.Errorf("lock-free defer err: %v", gerr)
 		}
@@ -342,7 +338,7 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		Steps: []*pb.Step{{Name: "build", Hash: "h2-broken", Script: "exit 1", EveryPull: true}},
 	}
 	failNext.Store(true)
-	res4, err := b.ensureProjectBase(ctx, projBroken, map[string]string{"app": "c2"}, nil, spec, nil, nil, runFreshen, opts(true))
+	res4, err := b.ensureProjectBase(ctx, projBroken, map[string]string{"app": "c2"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil {
 		t.Fatalf("failed freshen with warm base must fall back, got err: %v", err)
 	}
@@ -354,7 +350,7 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	}
 
 	// 5. Second caller with same broken recipe is deduped immediately (runs stays 2!).
-	res5, err := b.ensureProjectBase(ctx, projBroken, map[string]string{"app": "c2"}, nil, spec, nil, nil, runFreshen, opts(true))
+	res5, err := b.ensureProjectBase(ctx, projBroken, map[string]string{"app": "c2"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || res5.Base.BaseID != res1.Base.BaseID || !strings.Contains(res5.Note, "failed at step build") || runs.Load() != 2 {
 		t.Fatalf("deduped retry = (%+v, %v, runs=%d), want immediate fallback without rebuilding", res5, err, runs.Load())
 	}
@@ -366,7 +362,7 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		Steps: []*pb.Step{{Name: "build", Hash: "h3-fixed", Script: "echo ok", EveryPull: true}},
 	}
 	failNext.Store(false)
-	res6, err := b.ensureProjectBase(ctx, projFixed, map[string]string{"app": "c2"}, nil, spec, nil, nil, runFreshen, opts(true))
+	res6, err := b.ensureProjectBase(ctx, projFixed, map[string]string{"app": "c2"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || res6.Base.BaseID == res1.Base.BaseID || res6.Note != "" || runs.Load() != 3 {
 		t.Fatalf("after fix = (%+v, %v, runs=%d), want new warm base", res6, err, runs.Load())
 	}
@@ -382,18 +378,14 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		t.Fatal(err)
 	}
 	cstore.SetMount(mnt)
-	b := &CladefsFUSEBackend{
-		workerDir:       tmp,
-		mountRoot:       filepath.Join(tmp, "mnt"),
-		mountStoresRoot: filepath.Join(tmp, "mount-stores"),
-		baseImages:      map[string]cladefs.CellRef{},
-		wsMounts:        map[string]fuseWSMount{},
-		clearNosuidFn:   func(string) error { return nil },
-		cleanupMount:    func(string, bool) {},
-	}
+	b := newCladefsFUSEBackend(tmp, statedir.CladefsFUSEConfig{})
+	b.mountRoot = filepath.Join(tmp, "mnt")
+	b.mountStoresRoot = filepath.Join(tmp, "mount-stores")
+	b.clearNosuidFn = func(string) error { return nil }
+	b.cleanupMount = func(string, bool) {}
 	b.store.Store(cstore)
 	spec := baseimage.Spec{Image: "debian:trixie-slim", Arch: "arm64"}.Normalized()
-	baseKey := b.fuseBaseKey(spec)
+	baseKey := b.baseKey(spec)
 	b.baseImages[baseKey] = cladefs.CellRef{Tenant: 0, Cell: 1900, Version: 1}
 
 	now := time.Unix(1795600000, 0)
@@ -445,7 +437,7 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	}
 
 	// 1. Cold build succeeds with Runtime="cladefs".
-	res1, err := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c1"}, nil, spec, nil, runFreshen, nil, nil, opts(true))
+	res1, err := b.ensureProjectBase(ctx, proj, map[string]string{"app": "c1"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || runs.Load() != 1 {
 		t.Fatalf("cold cladefs ensureProjectBase = (%+v, %v, runs=%d)", res1, err, runs.Load())
 	}
@@ -460,24 +452,24 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		Steps: []*pb.Step{{Name: "build", Hash: "h2", Script: "oom", EveryPull: true}},
 	}
 	failNext.Store(true)
-	res2, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c2"}, nil, spec, nil, runFreshen, nil, nil, opts(true))
+	res2, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c2"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || res2.Base.BaseID != res1.Base.BaseID || !strings.Contains(res2.Note, "killed by the OOM killer") {
 		t.Fatalf("cladefs OOM fallback = (%+v, %v), want warm fallback with OOM note", res2, err)
 	}
 	// Immediate concurrent/follow-up caller gets warm fallback with zero retry!
-	res3, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c2"}, nil, spec, nil, runFreshen, nil, nil, opts(true))
+	res3, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c2"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || res3.Base.BaseID != res1.Base.BaseID || runs.Load() != 2 {
 		t.Fatalf("cladefs dedupe = (%+v, %v, runs=%d), want runs=2", res3, err, runs.Load())
 	}
 
 	// 3. Even a brand-new commit during 15m failure backoff does NOT retry!
-	res4, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c3"}, nil, spec, nil, runFreshen, nil, nil, opts(true))
+	res4, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c3"}, nil, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || res4.Base.BaseID != res1.Base.BaseID || runs.Load() != 2 {
 		t.Fatalf("cladefs new-commit during backoff = (%+v, %v, runs=%d), want runs=2", res4, err, runs.Load())
 	}
 
 	// 4. R2 shared base adoption (Fast Path 2) clears local failure state at 0 build cost!
-	recipeC3 := fuseProjectRecipe(baseKey, proj2, map[string]string{"app": "c3"})
+	recipeC3 := projectRecipe(fuseFlavor.recipeTag, baseKey, proj2, map[string]string{"app": "c3"})
 	adopted, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c3"}, &pb.SharedBase{Cell: &pb.CladefsCell{
 		Project: "demo",
 		Arch:    "arm64",
@@ -487,7 +479,7 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		Tenant:  0,
 		Cell:    7777,
 		Version: 99,
-	}}, spec, nil, runFreshen, nil, nil, opts(true))
+	}}, spec, nil, nil, nil, runFreshen, opts(true))
 	if err != nil || adopted.Base.BaseID != "demo-fuse-adopted" || runs.Load() != 2 {
 		t.Fatalf("R2 adoption = (%+v, %v, runs=%d), want demo-fuse-adopted with runs=2", adopted, err, runs.Load())
 	}

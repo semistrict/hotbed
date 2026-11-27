@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/vm"
 )
 
@@ -208,10 +210,7 @@ func TestAdoptingSharedBaseLeavesRetiringToTheController(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	b := &CladefsFUSEBackend{
-		workerDir: tmp,
-		wsMounts:  map[string]fuseWSMount{},
-	}
+	b := newCladefsFUSEBackend(tmp, statedir.CladefsFUSEConfig{})
 	b.store.Store(store)
 	b.loadState()
 	b.retirer.setGrace(0)
@@ -223,9 +222,9 @@ func TestAdoptingSharedBaseLeavesRetiringToTheController(t *testing.T) {
 		},
 	}
 	spec := baseimage.Spec{Image: "debian:bookworm", Arch: "arm64"}.Normalized()
-	baseKey := b.fuseBaseKey(spec)
+	baseKey := b.baseKey(spec)
 	heads := map[string]string{"cladefs": "deadbeef"}
-	newRecipe := fuseProjectRecipe(baseKey, proj, heads)
+	newRecipe := projectRecipe(fuseFlavor.recipeTag, baseKey, proj, heads)
 
 	b.held.hold("cladefs", &projectBase{
 		Ref:    cladefs.CellRef{Tenant: 0, Cell: 500, Version: 1},
@@ -354,13 +353,9 @@ func TestCladefsFUSEBackendSetsUploadIntervalOnBaseBuilds(t *testing.T) {
 	}
 	store.SetMount(mnt)
 
-	b := &CladefsFUSEBackend{
-		workerDir:       tmp,
-		mountRoot:       mountRoot,
-		mountStoresRoot: filepath.Join(tmp, "mount-stores"),
-		baseImages:      map[string]cladefs.CellRef{},
-		wsMounts:        map[string]fuseWSMount{},
-	}
+	b := newCladefsFUSEBackend(tmp, statedir.CladefsFUSEConfig{})
+	b.mountRoot = mountRoot
+	b.mountStoresRoot = filepath.Join(tmp, "mount-stores")
 	b.store.Store(store)
 	b.retirer.load(b.cacheDir())
 	b.retirer.setGrace(0)
@@ -383,7 +378,7 @@ func TestCladefsFUSEBackendSetsUploadIntervalOnBaseBuilds(t *testing.T) {
 
 	// 2. EnsureProjectBase sets UploadIntervalMs on MountAttach for base builds.
 	spec := baseimage.Spec{Image: "debian:trixie-slim", Arch: "arm64"}.Normalized()
-	baseKey := b.fuseBaseKey(spec)
+	baseKey := b.baseKey(spec)
 	b.baseImages[baseKey] = cladefs.CellRef{Tenant: 0, Cell: 600, Version: 1}
 	proj := &pb.HostedProject{
 		Name:  "demo",
@@ -401,7 +396,7 @@ func TestCladefsFUSEBackendSetsUploadIntervalOnBaseBuilds(t *testing.T) {
 			},
 		}, nil
 	}
-	res, err := b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, runFreshen, nil, nil)
+	res, err := b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, nil, nil, runFreshen)
 	if err != nil {
 		t.Fatalf("EnsureProjectBase: %v", err)
 	}
@@ -416,7 +411,7 @@ func TestCladefsFUSEBackendSetsUploadIntervalOnBaseBuilds(t *testing.T) {
 	}
 
 	// 3. Normal workspace PrepareWorkspace leaves UploadIntervalMs nil.
-	if _, _, err := b.PrepareWorkspace(ctx, "ws-normal", res.Ref, 1); err != nil {
+	if _, err := b.PrepareWorkspace(ctx, "ws-normal", res.Ref, 1); err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
 	if len(mnt.attachReqs) != 3 {
@@ -458,24 +453,29 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 		t.Fatalf("vm.NewManager: %v", err)
 	}
 
-	b := &VMBackend{
-		workerDir:  tmp,
-		mgr:        mgr,
-		baseImages: map[string]cladefs.CellRef{},
-		wsCells:    map[string]cladefs.CellRef{},
-	}
+	b := newVMBackend(tmp, statedir.VMConfig{})
+	b.mgr = mgr
 	b.store.Store(store)
 	spec := baseimage.Spec{Image: "debian:trixie-slim", Arch: "amd64"}.Normalized()
-	baseKey := b.vmBaseKey(spec)
+	baseKey := b.baseKey(spec)
 	b.baseImages[baseKey] = cladefs.CellRef{Tenant: 0, Cell: 850, Version: 3}
 
 	proj := &pb.HostedProject{
 		Name:  "demo",
 		Repos: []*pb.Repo{{Id: "app", Url: "https://example.invalid/app.git", Branch: "main"}},
 	}
-	_, err = b.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected EnsureProjectBase to fail at failingVMLauncher")
+	// The freshen runs as admission starts it: BeforeStart boots its VM, and
+	// a start that fails ends with OnStartFail.
+	bootingFreshen := func(ctx context.Context, s managedFreshenSpec) (*managedFreshenHandle, error) {
+		if err := s.BeforeStart(ctx); err != nil {
+			s.OnStartFail()
+			return nil, err
+		}
+		return nil, errors.New("failingVMLauncher booted a VM")
+	}
+	_, err = b.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil, nil, nil, bootingFreshen)
+	if err == nil || !strings.Contains(err.Error(), "intentional test launch failure") {
+		t.Fatalf("EnsureProjectBase = %v, want it to fail at failingVMLauncher", err)
 	}
 
 	// Verify ForkVersion -> SyncCell -> DropCell -> TakeCell(UploadIntervalMs=15000) -> cleanup DeleteCell.
@@ -511,14 +511,11 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore2: %v", err)
 	}
-	b2 := &VMBackend{
-		workerDir:  tmp,
-		mgr:        mgr,
-		baseImages: map[string]cladefs.CellRef{baseKey: {Tenant: 0, Cell: 850, Version: 3}},
-		wsCells:    map[string]cladefs.CellRef{},
-	}
+	b2 := newVMBackend(tmp, statedir.VMConfig{})
+	b2.mgr = mgr
+	b2.baseImages = map[string]cladefs.CellRef{baseKey: {Tenant: 0, Cell: 850, Version: 3}}
 	b2.store.Store(store2)
-	if _, err := b2.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil, nil, nil); err == nil {
+	if _, err := b2.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil, nil, nil, bootingFreshen); err == nil {
 		t.Fatal("expected EnsureProjectBase to fail when TakeCell fails")
 	}
 	// createReqs[0]: failed TakeCell(951, 15000ms); createReqs[1]: cleanup DeleteBucketCell -> TakeCell(951, nil).

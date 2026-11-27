@@ -49,12 +49,8 @@ func prepareHost(ctx context.Context, h hostPrep) error {
 		return fmt.Errorf("read the host's swap: %w", err)
 	}
 	var cladefsFloor int64
-	if h.ecfg.VM != nil {
-		if osStats := h.ecfg.VM.SampleObjectStore(ctx); osStats != nil {
-			cladefsFloor = int64(osStats.GetExtentCacheFloorBytes())
-		}
-	} else if h.ecfg.CladefsFUSE != nil {
-		if osStats := h.ecfg.CladefsFUSE.SampleObjectStore(ctx); osStats != nil {
+	if b := h.ecfg.cladefs(); b != nil {
+		if osStats := b.SampleObjectStore(ctx); osStats != nil {
 			cladefsFloor = int64(osStats.GetExtentCacheFloorBytes())
 		}
 	}

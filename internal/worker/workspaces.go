@@ -64,11 +64,8 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	if err != nil {
 		return nil, err
 	}
-	if wsRuntime == "vm" && e.cfg.VM != nil {
-		return e.createVMWorkspace(ctx, req)
-	}
-	if wsRuntime == "cladefs" && e.cfg.CladefsFUSE != nil {
-		return e.createCladefsFUSEWorkspace(ctx, req)
+	if b := e.cladefs(); b != nil && wsRuntime == b.Kind() {
+		return e.createCladefsWorkspace(req, b)
 	}
 	lock := e.projectLock(p.Name)
 	lock.Lock()
@@ -543,21 +540,13 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 	wsRT := w.ws().Runtime
 	e.mu.Unlock()
 
-	if e.usesRuntime(id) {
+	if b := e.cladefs(); b != nil && wsRT == b.Kind() {
+		e.dropCladefsWorkspace(ctx, b, id)
+		vol = "" // its cladefs cell is deleted directly; it has no ZFS/btrfs volume
+	} else if e.usesRuntime(id) {
 		if err := e.cfg.Runtime.Teardown(ctx, id); err != nil {
 			slog.Warn("teardown workspace runtime on release", "workspace", id, "err", err)
 		}
-		if e.cfg.VM != nil {
-			if err := e.cfg.VM.DeleteWorkspaceCell(ctx, id); err != nil {
-				slog.Warn("delete cladefs workspace cell on release", "workspace", id, "err", err)
-			}
-			vol = "" // cladefs cell deleted directly; no ZFS/btrfs volume
-		}
-	} else if wsRT == "cladefs" && e.cfg.CladefsFUSE != nil {
-		if err := e.cfg.CladefsFUSE.DeleteWorkspace(ctx, id); err != nil {
-			slog.Warn("delete cladefs FUSE workspace on release", "workspace", id, "err", err)
-		}
-		vol = "" // cladefs FUSE cell deleted directly; no ZFS/btrfs volume
 	}
 
 	freed := true

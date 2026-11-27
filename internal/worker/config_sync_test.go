@@ -35,28 +35,24 @@ func TestVMBaseKeyDecoupledFromGuestdAndInvalidatesOnConfigChange(t *testing.T) 
 	if err := os.WriteFile(guestd, []byte("guestd-v1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	b := &VMBackend{
-		workerDir: dir,
-		cfg: statedir.VMConfig{
-			GuestdBin:  guestd,
-			DiskBytes:  64 << 30,
-			DNSServers: []string{"1.1.1.1"},
-		},
-		baseImages: map[string]cladefs.CellRef{},
-	}
+	b := newVMBackend(dir, statedir.VMConfig{
+		GuestdBin:  guestd,
+		DiskBytes:  64 << 30,
+		DNSServers: []string{"1.1.1.1"},
+	})
 	spec := baseimage.Spec{User: "ramon", UID: 1000, GID: 1000}
 	proj := &pb.HostedProject{Name: "cladefs"}
 
-	key1 := b.vmBaseKey(spec)
-	recipe1 := vmProjectRecipe(key1, proj, nil)
+	key1 := b.baseKey(spec)
+	recipe1 := projectRecipe(vmFlavor.recipeTag, key1, proj, nil)
 
 	// hotbed-guestd lives on a separate read-only tools disk attached at VM boot,
 	// so changing hotbed-guestd bytes must NOT invalidate vmBaseKey or vmProjectRecipe.
 	if err := os.WriteFile(guestd, []byte("guestd-v2-with-dev-perms"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	key2 := b.vmBaseKey(spec)
-	recipe2 := vmProjectRecipe(key2, proj, nil)
+	key2 := b.baseKey(spec)
+	recipe2 := projectRecipe(vmFlavor.recipeTag, key2, proj, nil)
 	if key2 != key1 {
 		t.Fatalf("vmBaseKey changed when hotbed-guestd changed: %q -> %q", key1, key2)
 	}
@@ -68,7 +64,7 @@ func TestVMBaseKeyDecoupledFromGuestdAndInvalidatesOnConfigChange(t *testing.T) 
 	cfg2 := b.configSnapshot()
 	cfg2.DNSServers = []string{"8.8.8.8"}
 	b.UpdateConfig(cfg2)
-	key3 := b.vmBaseKey(spec)
+	key3 := b.baseKey(spec)
 	if key3 == key2 {
 		t.Fatalf("vmBaseKey did not change when DNSServers changed: %q", key2)
 	}
@@ -263,12 +259,8 @@ func TestConfigSyncerHotReloadsManagedArtifactsAndRestartsOnStructuralChange(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	vmb := &VMBackend{
-		cfg:        *local.VM,
-		workerDir:  workerDir,
-		mgr:        mgr,
-		baseImages: map[string]cladefs.CellRef{},
-	}
+	vmb := newVMBackend(workerDir, *local.VM)
+	vmb.mgr = mgr
 	eng := &Engine{
 		cfg:           EngineConfig{VM: vmb},
 		freshenBudget: newFreshenBudget(nil, nil),

@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/hotbed/internal/cladefs"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/statedir"
 )
 
 func sha256HexBytes(b []byte) string {
@@ -343,7 +344,7 @@ func TestUpgradeSystemDryRunAndFullLifecycle(t *testing.T) {
 // receive a clean error rather than panicking on a nil *cladefs.Store.
 func TestBackendStoreRemainsNonNilAcrossStopAllForUpgrade(t *testing.T) {
 	st := &cladefs.Store{}
-	vmb := &VMBackend{wsCells: map[string]cladefs.CellRef{}}
+	vmb := newVMBackend("", statedir.VMConfig{})
 	vmb.store.Store(st)
 	if err := vmb.StopAllForUpgrade(t.Context()); err != nil {
 		t.Fatalf("VMBackend.StopAllForUpgrade: %v", err)
@@ -352,7 +353,7 @@ func TestBackendStoreRemainsNonNilAcrossStopAllForUpgrade(t *testing.T) {
 		t.Fatalf("VMBackend.currentStore() after StopAllForUpgrade = %v, want non-nil %p", got, st)
 	}
 
-	fb := &CladefsFUSEBackend{wsMounts: map[string]fuseWSMount{}}
+	fb := newCladefsFUSEBackend("", statedir.CladefsFUSEConfig{})
 	fb.store.Store(st)
 	if err := fb.StopAllForUpgrade(t.Context()); err != nil {
 		t.Fatalf("CladefsFUSEBackend.StopAllForUpgrade: %v", err)

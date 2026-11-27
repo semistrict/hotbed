@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/semistrict/hotbed/internal/cladefs"
+	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
 )
 
@@ -92,20 +93,18 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 	}
 	store.SetMount(mnt)
 
-	b := &CladefsFUSEBackend{
-		workerDir:       tmp,
-		mountRoot:       mountRoot,
-		mountStoresRoot: mountStoresRoot,
-		wsMounts:        map[string]fuseWSMount{},
-	}
+	b := newCladefsFUSEBackend(tmp, statedir.CladefsFUSEConfig{})
+	b.mountRoot = mountRoot
+	b.mountStoresRoot = mountStoresRoot
 	b.store.Store(store)
 
 	baseRef := cladefs.CellRef{Tenant: 0, Cell: 42, Version: 7}
 
-	cell, mntPath, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 99)
+	cell, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 99)
 	if err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
+	mntPath, _ := b.MountPath("ws/ws-1")
 	if len(api.forkReqs) != 1 || !api.forkReqs[0].GetEphemeral() {
 		t.Fatalf("ForkCell requests = %+v, want 1 ephemeral=true fork", api.forkReqs)
 	}
@@ -129,7 +128,7 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 	// Calling PrepareWorkspace while ws-1 still has an active FUSE mount must fail
 	// ErrBusy without deleting the live mount's cell.
 	deletesBeforeBusy := len(api.deleteReqs)
-	if _, _, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 100); !errors.Is(err, storage.ErrBusy) {
+	if _, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 100); !errors.Is(err, storage.ErrBusy) {
 		t.Fatalf("PrepareWorkspace while active mount exists: err = %v, want storage.ErrBusy", err)
 	}
 	if len(api.deleteReqs) != deletesBeforeBusy {
@@ -148,7 +147,7 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 
 	// Verify attach failure cleans up the forked ephemeral cell.
 	mnt.attachErr = status.Error(codes.Internal, "boom")
-	if _, _, err := b.PrepareWorkspace(ctx, "ws-2", baseRef, 100); err == nil {
+	if _, err := b.PrepareWorkspace(ctx, "ws-2", baseRef, 100); err == nil {
 		t.Fatal("expected PrepareWorkspace error when MountAttach fails")
 	}
 	if len(api.deleteReqs) != 2 || api.deleteReqs[1].GetCell() != 102 {
@@ -159,9 +158,8 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 func TestCladefsFUSEMountStoreDirJBOD(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()
-	b := &CladefsFUSEBackend{
-		mountStoresRoot: string(filepath.ListSeparator) + rootA + string(filepath.ListSeparator) + rootB,
-	}
+	b := newCladefsFUSEBackend("", statedir.CladefsFUSEConfig{})
+	b.mountStoresRoot = string(filepath.ListSeparator) + rootA + string(filepath.ListSeparator) + rootB
 	rel := filepath.Join(cladefs.Base32ID(0), cladefs.Base32ID(42))
 	// Leading empty entry must be skipped, falling back to rootA (not raw ":A:B").
 	got, err := b.mountStoreDir(0, 42)

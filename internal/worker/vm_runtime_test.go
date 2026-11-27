@@ -25,6 +25,7 @@ import (
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/unit"
 	"google.golang.org/protobuf/testing/protocmp"
 )
@@ -500,8 +501,8 @@ func TestIsVMWorkspaceNoDeadlockUnderEngineLock(t *testing.T) {
 }
 
 func TestResolveWorkspaceRuntimeOnlyAllowsVMAndCladefs(t *testing.T) {
-	vmEng := &Engine{cfg: EngineConfig{VM: &VMBackend{}}}
-	fuseEng := &Engine{cfg: EngineConfig{CladefsFUSE: &CladefsFUSEBackend{}}}
+	vmEng := &Engine{cfg: EngineConfig{VM: newVMBackend("", statedir.VMConfig{})}}
+	fuseEng := &Engine{cfg: EngineConfig{CladefsFUSE: newCladefsFUSEBackend("", statedir.CladefsFUSEConfig{})}}
 
 	if got, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{}); err != nil || got != runtime.KindVM {
 		t.Fatalf("vm default = %q, %v; want %q, nil", got, err, runtime.KindVM)
@@ -727,13 +728,13 @@ func TestProjectBaseRecipesAndIncrementalStepSelection(t *testing.T) {
 		},
 	}
 
-	r1VM := vmProjectRecipe("base-a", proj, map[string]string{"cladefs": "aaa111"})
-	r2VM := vmProjectRecipe("base-a", proj, map[string]string{"cladefs": "bbb222"})
+	r1VM := projectRecipe(vmFlavor.recipeTag, "base-a", proj, map[string]string{"cladefs": "aaa111"})
+	r2VM := projectRecipe(vmFlavor.recipeTag, "base-a", proj, map[string]string{"cladefs": "bbb222"})
 	if r1VM == r2VM {
 		t.Fatalf("vmProjectRecipe did not change when repo HEAD moved: %q", r1VM)
 	}
-	r1FUSE := fuseProjectRecipe("base-a", proj, map[string]string{"cladefs": "aaa111"})
-	r2FUSE := fuseProjectRecipe("base-a", proj, map[string]string{"cladefs": "bbb222"})
+	r1FUSE := projectRecipe(fuseFlavor.recipeTag, "base-a", proj, map[string]string{"cladefs": "aaa111"})
+	r2FUSE := projectRecipe(fuseFlavor.recipeTag, "base-a", proj, map[string]string{"cladefs": "bbb222"})
 	if r1FUSE == r2FUSE {
 		t.Fatalf("fuseProjectRecipe did not change when repo HEAD moved: %q", r1FUSE)
 	}

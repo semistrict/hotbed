@@ -6,12 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -23,12 +20,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 	machinedv1 "github.com/semistrict/cladefs/go/machined/v1"
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitauth"
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
@@ -38,93 +35,40 @@ import (
 	"google.golang.org/grpc"
 )
 
-// VMBackend coordinates cladefsd cell management, Firecracker microVMs, peer
-// mesh updates (SetPeers), retired-host decommissioning (DecommissionHost),
-// and R2-backed warm project bases for a hotbed worker with statedir.VMConfig.
+// VMBackend is the cladefs backend whose workspaces each run in a microVM on
+// their cell: Firecracker's under the host cladefsd, or machined's (whose
+// embedded cladefs daemon holds the cells) when vm.machinedSock is set. It
+// builds project bases in VMs too, and is the runtime.GuestResolver its
+// GuestRuntime reaches each VM's hotbed-guestd by.
 type VMBackend struct {
-	cfg       statedir.VMConfig
-	workerDir string
-	store     atomic.Pointer[cladefs.Store]
-	mgr       *vm.Manager
+	cladefsCore
+	mgr *vm.Manager
 	// machined is the connection to machined when its machines run the
 	// VMs (cfg.MachinedSock), nil under Firecracker.
 	machined *grpc.ClientConn
 	rt       *runtime.GuestRuntime
-	link     cladefsdLink
-	// metricsURL is the host cladefsd's Prometheus endpoint, empty where
-	// none serves one (machined embeds its daemon; tests run none).
-	metricsURL string
 
-	baseMu       sync.Mutex // serializes base image provisioning
-	held         heldBases  // the project bases this node hands out
 	mu           sync.Mutex
-	baseImages   map[string]cladefs.CellRef // vmBaseKey -> cached R2 base cell ref
+	cfg          statedir.VMConfig
 	wsCells      map[string]cladefs.CellRef // wsID -> forked cell ref
 	activeBuilds map[string]struct{}        // in-flight base-* / prov-* VM IDs owned by this worker
-	retirer      baseRetirer
 	// boots serializes EnsureVM per VM (ID -> *sync.Mutex): a VM is down
 	// between commands, and callers that find it so at once wait for one
 	// boot rather than race it.
 	boots sync.Map
 }
 
-// selectProjectBaseSteps returns the subset of p's setup steps that must run
-// when freshening from prev (nil for a cold build from the OS base image).
-// On an incremental freshen, steps whose script hash changed (or that are new)
-// always run, and --every-pull steps run whenever any repo commit moved.
-func selectProjectBaseSteps(p *pb.HostedProject, prev *projectBase, heads map[string]string) []*pb.Step {
-	steps := p.GetSteps()
-	if prev == nil || prev.StepHashes == nil {
-		return steps
+// newVMBackend is a VMBackend for cfg keeping its state in workerDir, with
+// no store or VM manager yet.
+func newVMBackend(workerDir string, cfg statedir.VMConfig) *VMBackend {
+	b := &VMBackend{
+		cfg:          cfg,
+		wsCells:      map[string]cladefs.CellRef{},
+		activeBuilds: map[string]struct{}{},
 	}
-	repoMoved := false
-	for _, r := range p.GetRepos() {
-		want := heads[r.GetId()]
-		if want == "" || prev.Repos[r.GetId()] != want {
-			repoMoved = true
-			break
-		}
-	}
-	var out []*pb.Step
-	for _, s := range steps {
-		prevHash, ran := prev.StepHashes[s.GetName()]
-		if !ran || prevHash != s.GetHash() || (s.GetEveryPull() && repoMoved) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func projectStepHashes(p *pb.HostedProject) map[string]string {
-	out := make(map[string]string, len(p.GetSteps()))
-	for _, s := range p.GetSteps() {
-		out[s.GetName()] = s.GetHash()
-	}
-	return out
-}
-
-// tenantCellRoot returns the cell root directory (or colon-separated JBOD list)
-// for a cladefs tenant. Tenant 0 (default/legacy org) uses baseRoot directly to
-// preserve existing on-disk cell paths; non-zero org tenants each get an
-// isolated tenant-<id> subdirectory under every configured JBOD root so
-// cladefsd.Grant (Dir + Dirs) isolates tenants without losing JBOD striping.
-func tenantCellRoot(baseRoot string, tenantID uint64) string {
-	if tenantID == 0 {
-		return baseRoot
-	}
-	sub := fmt.Sprintf("tenant-%d", tenantID)
-	parts := filepath.SplitList(baseRoot)
-	var scoped []string
-	for _, r := range parts {
-		if r == "" {
-			continue
-		}
-		scoped = append(scoped, filepath.Join(r, sub))
-	}
-	if len(scoped) == 0 {
-		return filepath.Join(baseRoot, sub)
-	}
-	return strings.Join(scoped, string(filepath.ListSeparator))
+	b.cladefsCore = newCladefsCore(vmFlavor, b, workerDir)
+	b.rt = runtime.NewGuestRuntime(b)
+	return b
 }
 
 func resolveVMUserIDs(vmUser string) (uid, gid uint32) {
@@ -142,6 +86,21 @@ func resolveVMUserIDs(vmUser string) (uid, gid uint32) {
 		return 0, 0
 	}
 	return uint32(uid64), uint32(gid64)
+}
+
+// firecrackerStoreConfig is how a Firecracker node reaches the host
+// cladefsd holding its VMs' cells.
+func firecrackerStoreConfig(cfg statedir.VMConfig) cladefs.Config {
+	vmUID, vmGID := resolveVMUserIDs(cfg.VMUser)
+	return cladefs.Config{
+		ControlSock: cfg.CladefsControlSock,
+		VMSock:      cfg.CladefsVMSock,
+		CellRoot:    tenantCellRoot(cmp.Or(cfg.CellRoot, defaultCellRoot), cfg.TenantID),
+		TenantID:    cfg.TenantID,
+		VMUID:       vmUID,
+		VMGID:       vmGID,
+		DefaultCap:  cfg.DiskBytes,
+	}
 }
 
 // OpenVMBackend connects to the cladefs daemon holding the VMs' cells,
@@ -178,16 +137,7 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		if goruntime.GOOS != "linux" {
 			return nil, api.Errorf(api.CodePlatformNotSupported, "Firecracker VMs need Linux: on %s, set vm.machinedSock to run them on machined", goruntime.GOOS)
 		}
-		vmUID, vmGID := resolveVMUserIDs(cfg.VMUser)
-		cladefsCfg = cladefs.Config{
-			ControlSock: cfg.CladefsControlSock,
-			VMSock:      cfg.CladefsVMSock,
-			CellRoot:    tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID),
-			TenantID:    cfg.TenantID,
-			VMUID:       vmUID,
-			VMGID:       vmGID,
-			DefaultCap:  cfg.DiskBytes,
-		}
+		cladefsCfg = firecrackerStoreConfig(cfg)
 		metricsURL = hostCladefsdMetricsURL
 	}
 	closeMachined := func() {
@@ -204,12 +154,11 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 	if err != nil {
 		slog.Warn("read cladefsd incarnation failed; continuing without ephemeral incarnation", "err", err)
 	}
-	runDir := filepath.Join(workerDir, "vms")
 	mgr, err := vm.NewManager(vm.Config{
 		FirecrackerBin:     cfg.FirecrackerBin,
 		KernelPath:         cfg.KernelPath,
 		GuestdBin:          cfg.GuestdBin,
-		RunDir:             runDir,
+		RunDir:             filepath.Join(workerDir, "vms"),
 		Slice:              slice,
 		VMUser:             cfg.VMUser,
 		DefaultVCPUs:       cfg.VCPUs,
@@ -238,20 +187,13 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 	}
 
 	_ = ensureDirTraversable(workerDir)
-	b := &VMBackend{
-		cfg:          cfg,
-		workerDir:    workerDir,
-		mgr:          mgr,
-		machined:     machined,
-		link:         cladefsdLink{incarnation: inc},
-		metricsURL:   metricsURL,
-		baseImages:   map[string]cladefs.CellRef{},
-		wsCells:      map[string]cladefs.CellRef{},
-		activeBuilds: map[string]struct{}{},
-	}
+	b := newVMBackend(workerDir, cfg)
+	b.mgr = mgr
+	b.machined = machined
+	b.link = cladefsdLink{incarnation: inc}
+	b.metricsURL = metricsURL
 	b.store.Store(cstore)
 	b.loadCachedBases()
-	b.rt = runtime.NewGuestRuntime(b)
 	return b, nil
 }
 
@@ -267,10 +209,6 @@ func machinedVMConfig(cfg statedir.VMConfig) statedir.VMConfig {
 	return cfg
 }
 
-func (b *VMBackend) currentStore() *cladefs.Store {
-	return b.store.Load()
-}
-
 func (b *VMBackend) configSnapshot() statedir.VMConfig {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -279,6 +217,11 @@ func (b *VMBackend) configSnapshot() statedir.VMConfig {
 		cfg.DNSServers = slices.Clone(cfg.DNSServers)
 	}
 	return cfg
+}
+
+func (b *VMBackend) settings() cladefsSettings {
+	cfg := b.configSnapshot()
+	return cladefsSettings{tenant: cfg.TenantID, peerAddr: cfg.CladefsPeerAddr}
 }
 
 // UpdateConfig hot-reloads VM tuning, kernel path, guestd binary path, DNS,
@@ -313,57 +256,9 @@ func (b *VMBackend) UpdateConfig(cfg statedir.VMConfig) {
 	}
 }
 
-func (b *VMBackend) cacheDir() string {
-	if b.cfg.TenantID > 0 {
-		return filepath.Join(b.workerDir, fmt.Sprintf("vm-bases-t%d", b.cfg.TenantID))
-	}
-	return filepath.Join(b.workerDir, "vm-bases")
-}
-
-func (b *VMBackend) loadCachedBases() {
-	b.retirer.load(b.cacheDir())
-	wantTenant := b.cfg.TenantID
-	b.held.load(b.cacheDir(), wantTenant)
-	ents, err := os.ReadDir(b.cacheDir())
-	if err != nil {
-		return
-	}
-	for _, ent := range ents {
-		if !strings.HasSuffix(ent.Name(), ".json") {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(b.cacheDir(), ent.Name()))
-		if err != nil {
-			continue
-		}
-		if key, ok := strings.CutPrefix(ent.Name(), "baseimage-"); ok {
-			key = strings.TrimSuffix(key, ".json")
-			var ref cladefs.CellRef
-			if json.Unmarshal(raw, &ref) == nil && ref.Cell > 0 && ref.Version > 0 && ref.Tenant == wantTenant {
-				if b.baseImages == nil {
-					b.baseImages = map[string]cladefs.CellRef{}
-				}
-				b.baseImages[key] = ref
-			}
-		}
-	}
-}
-
-func (b *VMBackend) saveCacheJSON(name string, v any) {
-	if b.workerDir == "" {
-		return
-	}
-	if err := os.MkdirAll(b.cacheDir(), 0o755); err != nil {
-		return
-	}
-	raw, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return
-	}
-	p := filepath.Join(b.cacheDir(), name)
-	tmp := p + ".tmp"
-	if os.WriteFile(tmp, raw, 0o644) == nil {
-		_ = os.Rename(tmp, p)
+func (b *VMBackend) applyConfig(cfg statedir.WorkerConfig) {
+	if cfg.VM != nil {
+		b.UpdateConfig(*cfg.VM)
 	}
 }
 
@@ -388,425 +283,6 @@ func (b *VMBackend) OnMachined() bool { return b.machined != nil }
 
 // Runtime returns the GuestRuntime implementing runtime.WorkspaceRuntime.
 func (b *VMBackend) Runtime() runtime.WorkspaceRuntime { return b.rt }
-
-// DefaultRuntime returns "vm".
-func (b *VMBackend) DefaultRuntime() string {
-	return runtime.KindVM
-}
-
-// Runtimes returns the runtimes supported by this worker.
-func (b *VMBackend) Runtimes() []string {
-	return []string{runtime.KindVM}
-}
-
-// HeartbeatMeta returns the cladefs peer address, incarnation, the project
-// bases held here and the base cells retired since, for HeartbeatRequest.
-func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, held []*pb.SharedBase, retired []*pb.CladefsCell) {
-	held, retired = b.held.report(runtime.KindVM)
-	return b.configSnapshot().CladefsPeerAddr, b.link.Incarnation(), held, retired
-}
-
-// SampleObjectStore fetches cumulative cladefsd R2 object-store counters and
-// the peer mesh this worker last applied.
-func (b *VMBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	return sampleCladefsObjectStore(ctx, b.currentStore(), b.metricsURL, b.configSnapshot().CladefsPeerAddr, b.link.Peers())
-}
-
-// hostCladefsdMetricsURL is where the Linux host's cladefsd.service serves
-// its Prometheus metrics.
-const hostCladefsdMetricsURL = "http://127.0.0.1:9184/metrics"
-
-// sampleCladefsObjectStore reads store's counters and gauges, and the
-// Prometheus metrics at metricsURL unless it is empty.
-func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store, metricsURL, peerAddr string, peers []string) *pb.ObjectStoreStats {
-	if store == nil {
-		return nil
-	}
-	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	resp, err := store.GetCounters(cctx)
-	if err != nil {
-		slog.Warn("sample cladefsd object-store counters", "err", err)
-		return nil
-	}
-	out := objectStoreStatsFromCounters(resp)
-	out.PeerAddress = peerAddr
-	out.Peers = peers
-	sctx, scancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-	defer scancel()
-	if stats, serr := store.GetStats(sctx, &cladefsdv1.GetStatsRequest{
-		WaitMs:             500,
-		LeaveOutHistograms: true,
-	}); serr == nil {
-		applyCladefsStats(out, stats)
-	}
-	if metricsURL != "" {
-		scrapeLocalCladefsMetrics(sctx, metricsURL, out)
-	}
-	return out
-}
-
-func applyCladefsStats(out *pb.ObjectStoreStats, stats *cladefsdv1.GetStatsResponse) {
-	if out == nil || stats == nil {
-		return
-	}
-	g := stats.GetGauges()
-	out.ExtentCacheBytes = g["memory_bytes"]
-	out.ExtentCacheCapacityBytes = g["memory_capacity_bytes"]
-	out.ExtentCacheLimitBytes = g["memory_limit_bytes"]
-	out.ExtentCachePinnedEntries = g["extent_cache_pinned_entries"]
-	out.ExtentCacheIdleEntries = g["extent_cache_idle_entries"]
-	out.WindowMappedBytes = g["window_mapped_bytes"]
-	out.OpenCells = uint32(g["stores_open"])
-	out.HostDiskCellsBytes = g["disk_bytes"]
-	if c := stats.GetCounters(); c != nil {
-		out.CacheTrims = c["cache_trims"]
-	}
-	vms := stats.GetVms()
-	out.ActiveVms = uint32(len(vms))
-	for _, v := range vms {
-		gc := v.GetGuest().GetCounters()
-		if len(gc) == 0 {
-			continue
-		}
-		out.DaxWindowFull += gc["window_full"]
-		out.DaxWindowReclaims += gc["window_reclaims"]
-		out.DaxRegionsFull += gc["window_regions_full"]
-		out.DaxWritesHeldBySealsNs += gc["writes_held_by_seals_ns"]
-		out.DaxDeviceReadBytes += gc["device_read_bytes"]
-		out.DaxDeviceReadsNs += gc["device_reads_ns"]
-	}
-}
-
-var cladefsMetricsHTTP = &http.Client{Timeout: 500 * time.Millisecond}
-
-func scrapeLocalCladefsMetrics(ctx context.Context, url string, out *pb.ObjectStoreStats) bool {
-	if out == nil {
-		return false
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := cladefsMetricsHTTP.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return false
-	}
-	return applyCladefsPrometheusMetrics(out, string(body))
-}
-
-func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
-	if out == nil {
-		return false
-	}
-	var (
-		matched          bool
-		hostDiskSize     uint64
-		hostDiskFree     uint64
-		hostDiskCells    uint64
-		hostDiskCache    uint64
-		hostDiskOther    uint64
-		uploadPending    uint64
-		sawHostDiskCells bool
-	)
-	for _, line := range strings.Split(text, "\n") {
-		name, labels, val, ok := parsePromLine(line)
-		if !ok {
-			continue
-		}
-		switch name {
-		case "cladefsd_part_cache_bytes":
-			out.PartCacheBytes = val
-			matched = true
-		case "cladefsd_part_cache_capacity_bytes":
-			out.PartCacheCapacityBytes = val
-			matched = true
-		case "cladefsd_host_disk_size_bytes":
-			hostDiskSize += val
-			matched = true
-		case "cladefsd_host_disk_free_bytes":
-			hostDiskFree += val
-			matched = true
-		case "cladefsd_host_disk_stores_bytes":
-			hostDiskCells += val
-			sawHostDiskCells = true
-			matched = true
-		case "cladefsd_host_disk_cache_bytes":
-			hostDiskCache += val
-			matched = true
-		case "cladefsd_host_disk_other_bytes":
-			hostDiskOther += val
-			matched = true
-		case "cladefsd_host_disk_pressure":
-			if val > 0 {
-				out.HostDiskPressure = true
-			}
-			matched = true
-		case "cladefsd_mount_cells":
-			if labels == `state="attached"` {
-				out.MountCellsAttached = uint32(val)
-				matched = true
-			}
-		case "cladefsd_page_cache_bytes":
-			out.PageCacheBytes = val
-			matched = true
-		case "cladefsd_page_cache_dirty_bytes":
-			out.PageCacheDirtyBytes = val
-			matched = true
-		case "cladefsd_page_cache_limit_bytes":
-			out.PageCacheLimitBytes = val
-			matched = true
-		case "cladefsd_part_cache_shard_state":
-			out.PartCacheShards = append(out.PartCacheShards, partCacheShard(labels, val))
-			matched = true
-		case "cladefsd_peer_parts_total":
-			switch promLabel(labels, "outcome") {
-			case "given":
-				out.PeerPartsGiven = val
-			case "missing":
-				out.PeerPartsMissing = val
-			case "failed":
-				out.PeerPartsFailed = val
-			}
-			matched = true
-		case "cladefsd_peer_asked_parts_total":
-			out.PeerPartsAsked = val
-			matched = true
-		case "cladefsd_peer_given_bytes_total":
-			out.PeerGivenBytes = val
-			matched = true
-		case "cladefsd_peer_served_bytes_total":
-			out.PeerServedBytes = val
-			matched = true
-		case "cladefsd_part_fetches_total", "cladefsd_part_fetch_bytes_total", "cladefsd_tail_fetches_total":
-			if out.PartFetches == nil {
-				out.PartFetches = &pb.PartFetches{}
-			}
-			applyPartFetch(out.PartFetches, name, promLabel(labels, "source"), val)
-			matched = true
-		case "cladefsd_peer_served_parts_total":
-			switch promLabel(labels, "outcome") {
-			case "served":
-				out.PeerPartsServed = val
-			case "missing":
-				out.PeerServedPartsMissing = val
-			}
-			matched = true
-		case "cladefsd_upload_pending_bytes":
-			uploadPending += val
-			matched = true
-		case "cladefsd_memory_pressure":
-			if val > 0 {
-				out.MemoryPressure = true
-			}
-			matched = true
-		case "cladefsd_memory_full":
-			if val > 0 {
-				out.MemoryFull = true
-			}
-			matched = true
-		case "cladefsd_memory_limit_bytes":
-			out.ExtentCacheLimitBytes = val
-			matched = true
-		case "cladefsd_memory_floor_bytes":
-			out.ExtentCacheFloorBytes = val
-			matched = true
-		}
-	}
-	if hostDiskSize > 0 {
-		out.HostDiskSizeBytes = hostDiskSize
-		out.HostDiskFreeBytes = hostDiskFree
-		out.HostDiskCacheBytes = hostDiskCache
-		out.HostDiskOtherBytes = hostDiskOther
-	}
-	if sawHostDiskCells {
-		out.HostDiskCellsBytes = hostDiskCells
-	}
-	if uploadPending > 0 {
-		out.UploadPendingBytes = uploadPending
-	}
-	return matched
-}
-
-// applyPartFetch records one sample of cladefsd's part and tail fetch
-// counters by source.
-func applyPartFetch(f *pb.PartFetches, name, source string, val uint64) {
-	var dst *uint64
-	switch name + "/" + source {
-	case "cladefsd_part_fetches_total/memory":
-		dst = &f.Memory
-	case "cladefsd_part_fetch_bytes_total/memory":
-		dst = &f.MemoryBytes
-	case "cladefsd_part_fetches_total/part_cache":
-		dst = &f.PartCache
-	case "cladefsd_part_fetch_bytes_total/part_cache":
-		dst = &f.PartCacheBytes
-	case "cladefsd_part_fetches_total/peer":
-		dst = &f.Peer
-	case "cladefsd_part_fetch_bytes_total/peer":
-		dst = &f.PeerBytes
-	case "cladefsd_part_fetches_total/bucket":
-		dst = &f.Bucket
-	case "cladefsd_part_fetch_bytes_total/bucket":
-		dst = &f.BucketBytes
-	case "cladefsd_tail_fetches_total/part_cache":
-		dst = &f.TailsFromPartCache
-	case "cladefsd_tail_fetches_total/bucket":
-		dst = &f.TailsFromBucket
-	default:
-		slog.Warn("cladefsd fetch counter with an unknown source", "metric", name, "source", source)
-		return
-	}
-	*dst = val
-}
-
-// partCacheShard reads one cladefsd_part_cache_shard_state sample: cladefsd
-// reports 0=online, 1=suspect, 2=offline, 3=returning.
-func partCacheShard(labels string, state uint64) *pb.PartCacheShard {
-	shard, err := strconv.ParseUint(promLabel(labels, "shard"), 10, 32)
-	if err != nil {
-		slog.Warn("cladefsd part cache shard without a numeric shard label", "labels", labels, "err", err)
-	}
-	st := pb.PartCacheShardState_PART_CACHE_SHARD_STATE_UNSPECIFIED
-	switch state {
-	case 0:
-		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_ONLINE
-	case 1:
-		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_SUSPECT
-	case 2:
-		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_OFFLINE
-	case 3:
-		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_RETURNING
-	default:
-		slog.Warn("cladefsd part cache shard in an unknown state", "labels", labels, "state", state)
-	}
-	return &pb.PartCacheShard{Shard: uint32(shard), Device: promLabel(labels, "device"), State: st}
-}
-
-// promLabel returns the value of label key in a raw Prometheus label block
-// (`a="x",b="y"`), or "" if it is absent. cladefsd's label values never
-// contain commas or escaped quotes.
-func promLabel(labels, key string) string {
-	for _, kv := range strings.Split(labels, ",") {
-		k, v, ok := strings.Cut(kv, "=")
-		if ok && strings.TrimSpace(k) == key {
-			return strings.Trim(strings.TrimSpace(v), `"`)
-		}
-	}
-	return ""
-}
-
-// parsePromLine splits a Prometheus text exposition sample line into its metric
-// name, raw label block (without braces), and integer value.
-func parsePromLine(line string) (name, labels string, val uint64, ok bool) {
-	line = strings.TrimSpace(line)
-	if line == "" || line[0] == '#' {
-		return "", "", 0, false
-	}
-	var rest string
-	if i := strings.IndexByte(line, '{'); i >= 0 {
-		j := strings.IndexByte(line[i+1:], '}')
-		if j < 0 {
-			return "", "", 0, false
-		}
-		name = line[:i]
-		labels = line[i+1 : i+1+j]
-		rest = strings.TrimSpace(line[i+1+j+1:])
-	} else {
-		var found bool
-		name, rest, found = strings.Cut(line, " ")
-		if !found {
-			return "", "", 0, false
-		}
-		rest = strings.TrimSpace(rest)
-	}
-	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
-		rest = rest[:sp]
-	}
-	v, err := parsePromUint64(rest)
-	if err != nil {
-		return "", "", 0, false
-	}
-	return name, labels, v, true
-}
-
-func parsePromUint64(s string) (uint64, error) {
-	if v, err := strconv.ParseUint(s, 10, 64); err == nil {
-		return v, nil
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil || f < 0 {
-		return 0, fmt.Errorf("invalid metric value %q", s)
-	}
-	return uint64(f), nil
-}
-
-func objectStoreStatsFromCounters(resp interface {
-	GetCommitWaitNs() uint64
-	GetPageInBytes() uint64
-	GetFetchedBytes() uint64
-	GetObjectStorage() *cladefsdv1.ObjectStorageStats
-}) *pb.ObjectStoreStats {
-	if resp == nil {
-		return nil
-	}
-	out := &pb.ObjectStoreStats{
-		CommitWaitNs: resp.GetCommitWaitNs(),
-		PageInBytes:  resp.GetPageInBytes(),
-		FetchedBytes: resp.GetFetchedBytes(),
-	}
-	if os := resp.GetObjectStorage(); os != nil {
-		out.DownloadedBytes = os.GetDownloadedBytes()
-		for k, v := range os.GetUploadedBytes() {
-			out.UploadedBytes += v
-			switch k {
-			case "segments":
-				out.UploadedSegmentsBytes += v
-			case "extents":
-				out.UploadedExtentsBytes += v
-			case "checkpoints":
-				out.UploadedCheckpointsBytes += v
-			default:
-				out.UploadedOtherBytes += v
-			}
-		}
-		for k, v := range os.GetRequests() {
-			switch k {
-			case "get", "get-range":
-				out.GetRequests += v
-			case "create", "update", "overwrite":
-				out.PutRequests += v
-			default:
-				out.OtherRequests += v
-			}
-		}
-		for _, v := range os.GetFailures() {
-			out.FailedRequests += v
-		}
-	}
-	return out
-}
-
-// ApplyHeartbeat reconciles cladefs peer mesh (SetPeers), retired-host
-// decommissioning (DecommissionHost) and the project base cells to retire
-// from HeartbeatResponse.
-func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommission []uint64, retire []*pb.CladefsCell) {
-	st := b.currentStore()
-	if st == nil {
-		return
-	}
-	b.link.sync(ctx, st, b.configSnapshot().CladefsPeerAddr, peers, decommission)
-	b.held.retire(ctx, st, retire)
-	b.retirer.sweep(ctx, st, time.Now())
-}
 
 // runGuestCommand runs a command inside a booted VM, streams its output, and
 // returns its combined output and error if exit code != 0.
@@ -851,38 +327,30 @@ func (b *VMBackend) runGuestCommand(ctx context.Context, vmID, cmdID, dir string
 	}
 }
 
-// vmBaseKey identifies the OS-level VM rootfs base cell. hotbed-guestd is
+// baseKey identifies the OS-level VM rootfs base cell. hotbed-guestd is
 // attached at VM boot time via a separate read-only virtio-blk tools disk, so
 // guestd upgrades never invalidate OS or project VM bases.
-func (b *VMBackend) vmBaseKey(spec baseimage.Spec) string {
+func (b *VMBackend) baseKey(spec baseimage.Spec) string {
 	cfg := b.configSnapshot()
-	baseKey := spec.Key()
 	h := sha256.New()
 	fmt.Fprintf(h, "disk=%d\ndns=%s\n", cfg.DiskBytes, strings.Join(cfg.DNSServers, ","))
-	return baseKey + "-" + hex.EncodeToString(h.Sum(nil))[:8]
+	return spec.Key() + "-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
-func (b *VMBackend) trackBuild(vmID string) func() {
+// trackBuild marks build VM vmID as this worker's, so ReconcileOrphans
+// leaves it be, until the returned untrack.
+func (b *VMBackend) trackBuild(vmID string) (untrack func()) {
 	b.mu.Lock()
 	if b.activeBuilds == nil {
 		b.activeBuilds = map[string]struct{}{}
 	}
 	b.activeBuilds[vmID] = struct{}{}
 	b.mu.Unlock()
-	return func() {
+	return sync.OnceFunc(func() {
 		b.mu.Lock()
 		delete(b.activeBuilds, vmID)
 		b.mu.Unlock()
-	}
-}
-
-func (b *VMBackend) cleanupCell(ctx context.Context, tenant, cell uint64) {
-	if cell == 0 {
-		return
-	}
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-	defer cancel()
-	_ = b.currentStore().DeleteCell(cctx, tenant, cell)
+	})
 }
 
 func (b *VMBackend) stopBuildVM(ctx context.Context, vmID string, syncFS bool) error {
@@ -897,57 +365,43 @@ func (b *VMBackend) stopBuildVM(ctx context.Context, vmID string, syncFS bool) e
 	return b.mgr.Stop(sctx, vmID, syncFS)
 }
 
-// makeVersionAndSyncAfterStop versions and syncs rel after a build VM exits.
-// cladefsd tears down the VM's virtio-extent session asynchronously on socket
-// EOF, so an immediate MakeVersion can transiently fail with EBUSY (storage.ErrBusy)
-// even after Firecracker has exited. Retrying EBUSY avoids discarding a finished
-// multi-minute VM base build.
-func makeVersionAndSyncAfterStop(
-	ctx context.Context,
-	makeAndSync func(context.Context) (uint64, error),
-	maxWait time.Duration,
-	initialBackoff time.Duration,
-) (uint64, error) {
-	deadline := time.Now().Add(maxWait)
-	delay := initialBackoff
-	for {
-		ver, err := makeAndSync(ctx)
-		if err == nil || !errors.Is(err, storage.ErrBusy) {
-			return ver, err
-		}
-		if ctx.Err() != nil || time.Now().After(deadline) {
-			return 0, err
-		}
-		slog.Warn("cladefsd cell still busy right after build VM exit; retrying MakeVersion", "retryIn", delay, "err", err)
-		t := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			return 0, ctx.Err()
-		case <-t.C:
-		}
-		delay = min(delay*2, time.Second)
-	}
+// startBuildVM boots build VM vmID on cell.
+func (b *VMBackend) startBuildVM(ctx context.Context, vmID string, cell cladefs.CellRef) error {
+	_, err := b.mgr.Start(ctx, vm.LaunchSpec{
+		ID:            vmID,
+		CellHostPath:  cell.CellID(),
+		CladefsVMSock: b.currentStore().VMSock(),
+	})
+	return err
 }
 
-// EnsureProvisionedBaseImage ensures the shared provisioned Debian + toolchains
-// VM rootfs base cell exists, is versioned, and is synced to R2.
-func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseimage.Spec) (cladefs.CellRef, error) {
-	spec = spec.Normalized()
-	cfg := b.configSnapshot()
-	key := b.vmBaseKey(spec)
-
-	b.baseMu.Lock()
-	defer b.baseMu.Unlock()
-
-	b.mu.Lock()
-	if ref, ok := b.baseImages[key]; ok && ref.Cell > 0 && ref.Version > 0 {
-		b.mu.Unlock()
-		b.retirer.sweep(ctx, b.currentStore(), time.Now())
-		return ref, nil
+// takeForBuild re-opens cell, synced to the bucket, with
+// baseBuildUploadInterval so cladefsd coalesces a build's writes into fuller
+// R2 segments; the build's MakeVersionAndSync flushes everything at the end
+// (question 534). It deletes the cell should that fail.
+func (b *VMBackend) takeForBuild(ctx context.Context, cell cladefs.CellRef) (cladefs.CellRef, error) {
+	st := b.currentStore()
+	if err := st.DropCell(ctx, cell.Tenant, cell.Cell); err != nil {
+		b.cleanupCell(ctx, cell.Tenant, cell.Cell)
+		return cladefs.CellRef{}, fmt.Errorf("drop cell %d before take: %w", cell.Cell, err)
 	}
-	b.mu.Unlock()
+	taken, err := st.TakeCell(ctx, cell.Tenant, cell.Cell, b.configSnapshot().DiskBytes, nil, baseBuildUploadInterval)
+	if err != nil {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		if derr := st.DeleteBucketCell(cctx, cell.Tenant, cell.Cell); derr != nil {
+			slog.Warn("delete a cell that could not be taken for a build", "cell", cell.Cell, "err", derr)
+		}
+		cancel()
+		return cladefs.CellRef{}, fmt.Errorf("re-open cell %d with upload interval: %w", cell.Cell, err)
+	}
+	return taken, nil
+}
 
+// provisionBaseImage imports spec's OS image into a new cell and, when spec
+// has a provisioning script, runs it (installing git, gh, build-essential,
+// rustup/cargo, tracers and the non-root user) in a VM booted on the cell.
+func (b *VMBackend) provisionBaseImage(ctx context.Context, key string, spec baseimage.Spec, _ baseimage.Provisioner) (cladefs.CellRef, error) {
+	cfg := b.configSnapshot()
 	provID := "prov-" + key
 	if b.mgr != nil {
 		if err := b.mgr.EnsureNotRunning(ctx, provID); err != nil {
@@ -957,7 +411,6 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 
 	tarPath := filepath.Join(b.currentStore().PickRoot(), "vm-"+key+".tar")
 	defer os.Remove(tarPath)
-	slog.Info("building VM base image", "key", key, "image", spec.Image)
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
 		ImageRef:   spec.Image,
 		Arch:       spec.Arch,
@@ -966,476 +419,155 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	}); err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("build VM guest base tar: %w", err)
 	}
-	rawRef, err := b.currentStore().ImportImage(ctx, tarPath, cfg.DiskBytes)
+	ref, err := b.currentStore().ImportImage(ctx, tarPath, cfg.DiskBytes)
 	if err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("import VM base image into cladefsd: %w", err)
 	}
-
-	// Boot a temporary Firecracker VM on rawRef to run DefaultProvisionScript
-	// (installs git, gh, build-essential, rustup/cargo, tracers, non-root user).
-	if spec.Script != "" {
-		// Re-open the already-synced imported cell with baseBuildUploadInterval
-		// so cladefsd coalesces provisioning writes into fuller R2 segments;
-		// MakeVersionAndSync flushes everything at the end (question 534).
-		if err := b.currentStore().DropCell(ctx, rawRef.Tenant, rawRef.Cell); err != nil {
-			b.cleanupCell(ctx, rawRef.Tenant, rawRef.Cell)
-			return cladefs.CellRef{}, fmt.Errorf("drop VM base image %s before take: %w", key, err)
-		}
-		takenRef, err := b.currentStore().TakeCell(ctx, rawRef.Tenant, rawRef.Cell, cfg.DiskBytes, nil, baseBuildUploadInterval)
-		if err != nil {
-			cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			_ = b.currentStore().DeleteBucketCell(cctx, rawRef.Tenant, rawRef.Cell)
-			cancel()
-			return cladefs.CellRef{}, fmt.Errorf("re-open VM base image %s with upload interval: %w", key, err)
-		}
-		rawRef = takenRef
-
-		untrack := b.trackBuild(provID)
-		inst, err := b.mgr.Start(ctx, vm.LaunchSpec{
-			ID:            provID,
-			CellHostPath:  rawRef.CellID(),
-			CladefsVMSock: b.currentStore().VMSock(),
-		})
-		if err != nil {
-			untrack()
-			b.cleanupCell(ctx, rawRef.Tenant, rawRef.Cell)
-			return cladefs.CellRef{}, fmt.Errorf("boot provisioning VM %s: %w", provID, err)
-		}
-		_ = inst
-		_, runErr := b.runGuestCommand(ctx, provID, "provision", "/", []string{"/bin/bash", "-c", spec.Script}, []string{
-			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			"HOME=/root",
-		}, 0, 0)
-		stopErr := b.stopBuildVM(ctx, provID, runErr == nil)
-		untrack()
-		if runErr != nil {
-			if stopErr == nil {
-				b.cleanupCell(ctx, rawRef.Tenant, rawRef.Cell)
-			}
-			return cladefs.CellRef{}, fmt.Errorf("provision VM base image %s: %w", key, runErr)
-		}
-		if stopErr != nil {
-			return cladefs.CellRef{}, fmt.Errorf("stop provisioning VM %s: %w", provID, stopErr)
-		}
+	if spec.Script == "" {
+		return ref, nil
 	}
 
-	ver, err := makeVersionAndSyncAfterStop(ctx, func(ctx context.Context) (uint64, error) {
-		return b.currentStore().MakeVersionAndSync(ctx, rawRef.Tenant, rawRef.Cell, 2)
-	}, 15*time.Second, 100*time.Millisecond)
+	if ref, err = b.takeForBuild(ctx, ref); err != nil {
+		return cladefs.CellRef{}, fmt.Errorf("provision VM base image %s: %w", key, err)
+	}
+	untrack := b.trackBuild(provID)
+	defer untrack()
+	if err := b.startBuildVM(ctx, provID, ref); err != nil {
+		b.cleanupCell(ctx, ref.Tenant, ref.Cell)
+		return cladefs.CellRef{}, fmt.Errorf("boot provisioning VM %s: %w", provID, err)
+	}
+	_, runErr := b.runGuestCommand(ctx, provID, "provision", "/", []string{"/bin/bash", "-c", spec.Script}, []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+	}, 0, 0)
+	stopErr := b.stopBuildVM(ctx, provID, runErr == nil)
+	if runErr != nil {
+		if stopErr == nil {
+			b.cleanupCell(ctx, ref.Tenant, ref.Cell)
+		}
+		return cladefs.CellRef{}, fmt.Errorf("provision VM base image %s: %w", key, runErr)
+	}
+	if stopErr != nil {
+		return cladefs.CellRef{}, fmt.Errorf("stop provisioning VM %s: %w", provID, stopErr)
+	}
+	return ref, nil
+}
+
+func buildVMID(baseID string) string { return "base-" + baseID }
+
+func (b *VMBackend) prepareBaseBuild(ctx context.Context, baseID string) error {
+	if b.mgr == nil {
+		return nil
+	}
+	return b.mgr.EnsureNotRunning(ctx, buildVMID(baseID))
+}
+
+// openBaseBuild syncs fork's head, takes it with baseBuildUploadInterval and
+// readies a VM to boot on it once the build's freshen is admitted.
+func (b *VMBackend) openBaseBuild(ctx context.Context, fork cladefs.CellRef, t baseBuildTarget) (baseBuildCell, error) {
+	if err := b.currentStore().SyncCell(ctx, fork.Tenant, fork.Cell); err != nil {
+		b.cleanupCell(ctx, fork.Tenant, fork.Cell)
+		return nil, fmt.Errorf("sync forked cell %d: %w", fork.Cell, err)
+	}
+	taken, err := b.takeForBuild(ctx, fork)
 	if err != nil {
-		b.cleanupCell(ctx, rawRef.Tenant, rawRef.Cell)
-		return cladefs.CellRef{}, fmt.Errorf("version & sync VM base image %s to R2: %w", key, err)
+		return nil, err
 	}
-	// Drop the local base cell directory now that its version is durable in R2;
-	// subsequent forks read from R2 via the local SSD CLADEFSD_PART_CACHE.
-	_ = b.currentStore().DropCell(ctx, rawRef.Tenant, rawRef.Cell)
-	rawRef.Version = ver
-	b.mu.Lock()
-	if b.baseImages == nil {
-		b.baseImages = map[string]cladefs.CellRef{}
-	}
-	superseded := collectSupersededBaseImages(b.baseImages, key, rawRef.Cell)
-	b.baseImages[key] = rawRef
-	b.mu.Unlock()
-	b.saveCacheJSON("baseimage-"+key+".json", rawRef)
-	now := time.Now()
-	if b.workerDir != "" {
-		retireSupersededBaseImages(b.cacheDir(), superseded, &b.retirer, now)
-	} else {
-		retireSupersededBaseImages("", superseded, &b.retirer, now)
-	}
-	b.retirer.sweep(ctx, b.currentStore(), now)
-	slog.Info("VM base image provisioned and synced to R2", "key", key, "cell", rawRef.Cell, "version", rawRef.Version)
-	return rawRef, nil
+	vmID := buildVMID(t.baseID)
+	return &vmBaseBuild{b: b, cell: taken, vmID: vmID, home: t.spec.Home, untrack: b.trackBuild(vmID)}, nil
 }
 
-func vmProjectRecipe(baseKey string, p *pb.HostedProject, heads map[string]string) string {
-	h := sha256.New()
-	fmt.Fprintf(h, "vm-v2\nbase=%s\narch=%s\nproject=%s\nepoch=%d\n", baseKey, goruntime.GOARCH, p.GetName(), p.GetScratchEpoch())
-	for _, r := range p.GetRepos() {
-		fmt.Fprintf(h, "repo=%s|%s|%s|%s\n", r.GetId(), r.GetUrl(), r.GetBranch(), heads[r.GetId()])
-	}
-	for _, s := range p.GetSteps() {
-		fmt.Fprintf(h, "step=%s|%s|%v\n", s.GetName(), s.GetHash(), s.GetEveryPull())
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
+// vmBaseBuild is a project base build in a VM booted on its cell when its
+// freshen is admitted.
+type vmBaseBuild struct {
+	b       *VMBackend
+	cell    cladefs.CellRef
+	vmID    string
+	home    string
+	untrack func()
+	started atomic.Bool // the VM is up
+
+	mu               sync.Mutex
+	startFailStopErr error // stopping the VM after its freshen failed to start
+	bootStartMs      int64
+	bootEndMs        int64
+	bootSecs         float64
+
+	// stopErr is how stopping the VM failed in finish: it may hold the cell
+	// still, which then cannot be deleted.
+	stopErr error
 }
 
-// EnsureProjectBase returns a warm project base for p's workspaces: the one
-// this node holds or the cluster's newest (shared), whichever is up to date,
-// or a new one built on top of the newer of them in a Firecracker VM, with
-// every repo at its head under /work/<repo> and the steps that need to run run,
-// and uploaded to the shared bucket.
-func (b *VMBackend) EnsureProjectBase(
-	ctx context.Context,
-	p *pb.HostedProject,
-	heads map[string]string,
-	shared *pb.SharedBase,
-	spec baseimage.Spec,
-	sandboxEnv []string,
-	onBaseTarget func(baseID string),
-	runFreshen managedFreshenRunner,
-) (*projectBase, error) {
-	res, err := b.ensureProjectBase(ctx, p, heads, shared, spec, sandboxEnv, onBaseTarget, runFreshen, ensureBaseOpts{})
-	return res.Base, err
-}
+func (v *vmBaseBuild) ref() cladefs.CellRef { return v.cell }
 
-func (b *VMBackend) ensureProjectBase(
-	ctx context.Context,
-	p *pb.HostedProject,
-	heads map[string]string,
-	shared *pb.SharedBase,
-	spec baseimage.Spec,
-	sandboxEnv []string,
-	onBaseTarget func(baseID string),
-	runFreshen managedFreshenRunner,
-	opts ensureBaseOpts,
-) (ensureBaseResult, error) {
-	spec = spec.Normalized()
-	baseKey := b.vmBaseKey(spec)
-	recipe := vmProjectRecipe(baseKey, p, heads)
-	tenant := b.configSnapshot().TenantID
-	if st := b.currentStore(); st != nil {
-		tenant = st.TenantID()
-	}
-	return b.held.ensure(ctx, baseRequest{
-		project:      p,
-		heads:        heads,
-		shared:       shared,
-		runtime:      runtime.KindVM,
-		tenant:       tenant,
-		baseKey:      baseKey,
-		recipe:       recipe,
-		baseID:       fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8]),
-		onBaseTarget: onBaseTarget,
-		opts:         opts,
-		build: func(ctx context.Context, plan basePlan) (builtBase, error) {
-			return b.buildProjectBase(ctx, p, heads, spec, baseKey, sandboxEnv, runFreshen, plan)
-		},
-	})
-}
-
-// buildProjectBase builds plan's base: it forks the base to build on (or the
-// provisioned base image), boots a Firecracker VM on the fork, freshens the
-// repos and runs the steps that need to run in it, and uploads the result.
-func (b *VMBackend) buildProjectBase(
-	ctx context.Context,
-	p *pb.HostedProject,
-	heads map[string]string,
-	spec baseimage.Spec,
-	baseKey string,
-	sandboxEnv []string,
-	runFreshen managedFreshenRunner,
-	plan basePlan,
-) (builtBase, error) {
-	baseID, prevBase := plan.baseID, plan.prev
-	fail := func(cmdID, summary string, stepFailed bool, active time.Duration, err error) (builtBase, error) {
-		return builtBase{}, &baseBuildError{cmdID: cmdID, summary: summary, stepFailed: stepFailed, active: active, err: err}
-	}
-
-	vmID := "base-" + baseID
-	if b.mgr != nil {
-		if err := b.mgr.EnsureNotRunning(ctx, vmID); err != nil {
-			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, 0, fmt.Errorf("prepare VM project base %s: %w", baseID, err))
-		}
-	}
-
-	createdAt := time.Now().UnixMilli()
-	prepStart := time.Now()
-	var prepPhases []*pb.FreshenPhase
-	fromBaseID := ""
-
-	var forkRef cladefs.CellRef
-	var err error
-	if prevBase != nil {
-		forkStart := time.Now()
-		forkStartMs := forkStart.UnixMilli()
-		forkRef, err = b.currentStore().ForkVersion(ctx, prevBase.Ref, false)
-		if err != nil {
-			if ctx.Err() != nil {
-				return fail("", fmt.Sprintf("base %s cancelled: %v", baseID, err), false, time.Since(prepStart), err)
-			}
-			return builtBase{}, &incrementalForkError{err: err}
-		}
-		forkEndMs := time.Now().UnixMilli()
-		fromBaseID = prevBase.BaseID
-		prepPhases = append(prepPhases, &pb.FreshenPhase{
-			Name:      "fork",
-			StartedAt: forkStartMs,
-			EndedAt:   &forkEndMs,
-			Seconds:   time.Since(forkStart).Seconds(),
-			Detail:    "from " + prevBase.BaseID,
-		})
-	} else {
-		imgStart := time.Now()
-		imgStartMs := imgStart.UnixMilli()
-		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec)
-		if berr != nil {
-			return fail("", fmt.Sprintf("base %s failed: %v", baseID, berr), false, time.Since(prepStart), berr)
-		}
-		imgEndMs := time.Now().UnixMilli()
-		prepPhases = append(prepPhases, &pb.FreshenPhase{
-			Name:      "base_image",
-			StartedAt: imgStartMs,
-			EndedAt:   &imgEndMs,
-			Seconds:   time.Since(imgStart).Seconds(),
-			Detail:    baseKey,
-		})
-		forkStart := time.Now()
-		forkStartMs := forkStart.UnixMilli()
-		forkRef, err = b.currentStore().ForkVersion(ctx, baseImgRef, false)
-		if err != nil {
-			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("fork VM project base %s: %w", baseID, err))
-		}
-		forkEndMs := time.Now().UnixMilli()
-		prepPhases = append(prepPhases, &pb.FreshenPhase{
-			Name:      "fork",
-			StartedAt: forkStartMs,
-			EndedAt:   &forkEndMs,
-			Seconds:   time.Since(forkStart).Seconds(),
-			Detail:    "from " + baseKey,
-		})
-	}
-
-	// Re-open the forked base cell via TakeCell with baseBuildUploadInterval so
-	// cladefsd coalesces segment uploads while the VM clones repos and runs
-	// setup steps; MakeVersionAndSync flushes everything at the end (question 534).
-	cfg := b.configSnapshot()
-	takeStart := time.Now()
-	takeStartMs := takeStart.UnixMilli()
-	if err := b.currentStore().SyncCell(ctx, forkRef.Tenant, forkRef.Cell); err != nil {
-		b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-		return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("sync forked VM project base %s: %w", baseID, err))
-	}
-	if err := b.currentStore().DropCell(ctx, forkRef.Tenant, forkRef.Cell); err != nil {
-		b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-		return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("drop forked VM project base %s before take: %w", baseID, err))
-	}
-	takenRef, err := b.currentStore().TakeCell(ctx, forkRef.Tenant, forkRef.Cell, cfg.DiskBytes, nil, baseBuildUploadInterval)
-	if err != nil {
-		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		_ = b.currentStore().DeleteBucketCell(cctx, forkRef.Tenant, forkRef.Cell)
-		cancel()
-		return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err))
-	}
-	forkRef = takenRef
-	takeEndMs := time.Now().UnixMilli()
-	prepPhases = append(prepPhases, &pb.FreshenPhase{
-		Name:      "take_cell",
-		StartedAt: takeStartMs,
-		EndedAt:   &takeEndMs,
-		Seconds:   time.Since(takeStart).Seconds(),
-	})
-	prepSeconds := time.Since(prepStart).Seconds()
-
-	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
-	script := freshenScript(p.GetRepos(), heads, prevBase.repoIDs(), stepsToRun)
-
-	var (
-		repoHeads  map[string]string
-		handle     *managedFreshenHandle
-		freshenRes managedFreshenResult
+func (v *vmBaseBuild) freshen(spec *managedFreshenSpec) {
+	spec.Env = append(spec.Env,
+		"HOME="+v.home,
+		"HOTBED_GIT_CRED_SOCK="+gitauth.ChrootDir+"/git-cred.sock",
 	)
-	var finalizeSeconds float64
-	activeDuration := func() time.Duration {
-		secs := prepSeconds + freshenRes.ActiveRunSeconds + finalizeSeconds
-		if secs < 0 {
-			secs = 0
+	spec.VMID = v.vmID
+	spec.BeforeStart = func(ctx context.Context) error {
+		t0 := time.Now()
+		if err := v.b.startBuildVM(ctx, v.vmID, v.cell); err != nil {
+			return fmt.Errorf("boot project base VM %s: %w", v.vmID, err)
 		}
-		return time.Duration(secs * float64(time.Second))
+		v.mu.Lock()
+		v.bootStartMs, v.bootEndMs, v.bootSecs = t0.UnixMilli(), time.Now().UnixMilli(), time.Since(t0).Seconds()
+		v.mu.Unlock()
+		v.started.Store(true)
+		return nil
 	}
-	if runFreshen != nil {
-		env := append(slices.Clone(sandboxEnv),
-			"HOME="+spec.Home,
-			"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
-		)
-		var (
-			vmStarted        atomic.Bool
-			stopMu           sync.Mutex
-			startFailStopErr error
-			bootPhaseMu      sync.Mutex
-			bootStartMs      int64
-			bootEndMs        int64
-			bootSecs         float64
-		)
-		untrack := b.trackBuild(vmID)
-		handle, err = runFreshen(ctx, managedFreshenSpec{
-			Project:     p,
-			BaseID:      baseID,
-			Recipe:      plan.recipe,
-			Arch:        goruntime.GOARCH,
-			Runtime:     runtime.KindVM,
-			Cold:        prevBase == nil,
-			ColdReason:  plan.coldReason,
-			FromBaseID:  fromBaseID,
-			Optional:    !plan.required,
-			CreatedAt:   createdAt,
-			PrepSeconds: prepSeconds,
-			PrepPhases:  prepPhases,
-			PrevBase:    prevBase,
-			StepsToRun:  stepsToRun,
-			Heads:       heads,
-			Script:      script,
-			Env:         env,
-			VMID:        vmID,
-			BeforeStart: func(startCtx context.Context) error {
-				t0 := time.Now()
-				s0 := t0.UnixMilli()
-				if _, err := b.mgr.Start(startCtx, vm.LaunchSpec{
-					ID:            vmID,
-					CellHostPath:  forkRef.CellID(),
-					CladefsVMSock: b.currentStore().VMSock(),
-				}); err != nil {
-					return fmt.Errorf("boot project base VM %s: %w", vmID, err)
-				}
-				bootPhaseMu.Lock()
-				bootStartMs = s0
-				bootEndMs = time.Now().UnixMilli()
-				bootSecs = time.Since(t0).Seconds()
-				bootPhaseMu.Unlock()
-				vmStarted.Store(true)
-				return nil
-			},
-			OnStartFail: func() {
-				if vmStarted.Swap(false) {
-					err := b.stopBuildVM(context.Background(), vmID, false)
-					stopMu.Lock()
-					startFailStopErr = err
-					stopMu.Unlock()
-				}
-			},
-		})
-		if err != nil {
-			untrack()
-			b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("queue VM project base %s: %w", baseID, err))
-		}
-		var waitErr error
-		freshenRes, waitErr = handle.Wait(ctx)
-		bootPhaseMu.Lock()
-		bs0, bs1, bsecs := bootStartMs, bootEndMs, bootSecs
-		bootPhaseMu.Unlock()
-		if bs0 > 0 {
-			handle.RecordPhase("vm_boot", bs0, bs1, bsecs, vmID)
-		}
-		runOK := waitErr == nil && freshenRes.State == succeeded
-		stopMu.Lock()
-		stopErr := startFailStopErr
-		stopMu.Unlock()
-		if vmStarted.Swap(false) {
-			if runOK {
-				handle.SetFinalizing("vm_stop")
-			}
-			stopStart := time.Now()
-			stopStartMs := stopStart.UnixMilli()
-			stopErr = b.stopBuildVM(ctx, vmID, runOK)
-			stopSecs := time.Since(stopStart).Seconds()
-			handle.RecordPhase("vm_stop", stopStartMs, time.Now().UnixMilli(), stopSecs, "")
-			if runOK {
-				finalizeSeconds += stopSecs
-			}
-		}
-		untrack()
-		if waitErr != nil {
-			if stopErr == nil {
-				b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-			}
-			freshenRes.FinalizeSeconds = finalizeSeconds
-			handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
-			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, waitErr.Error())
-			return fail(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr))
-		}
-		if freshenRes.State != succeeded {
-			if stopErr == nil {
-				b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-			}
-			detail := cmp.Or(freshenRes.Reason, "freshen "+stateName(freshenRes.State))
-			freshenRes.FinalizeSeconds = finalizeSeconds
-			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
-			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
-			return fail(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail))
-		}
-		if stopErr != nil {
-			freshenRes.FinalizeSeconds = finalizeSeconds
-			detail := fmt.Sprintf("stop project base VM %s: %v", vmID, stopErr)
-			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
-			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
-			return fail(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
-		}
-		repoHeads = freshenRes.RepoHeads
-	} else {
-		untrack := b.trackBuild(vmID)
-		runStart := time.Now()
-		if _, err := b.mgr.Start(ctx, vm.LaunchSpec{
-			ID:            vmID,
-			CellHostPath:  forkRef.CellID(),
-			CladefsVMSock: b.currentStore().VMSock(),
-		}); err != nil {
-			untrack()
-			b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("boot project base VM %s: %w", vmID, err))
-		}
-		env := append([]string{}, cacheEnv()...)
-		env = append(env, sandboxEnv...)
-		env = append(env,
-			"HOME="+spec.Home,
-			"XDG_RUNTIME_DIR="+fmt.Sprintf("/run/user/%d", spec.UID),
-			"PATH="+strings.Join(cachePath, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
-		)
-		out, runErr := b.runGuestCommand(ctx, vmID, "freshen-"+baseID, "/work", []string{"/bin/bash", "-c", script}, env, spec.UID, spec.GID)
-		freshenRes.ActiveRunSeconds = time.Since(runStart).Seconds()
-		stopErr := b.stopBuildVM(ctx, vmID, runErr == nil)
-		untrack()
-		if runErr != nil {
-			if stopErr == nil {
-				b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-			}
-			return fail("", fmt.Sprintf("base %s failed: %v", baseID, runErr), false, activeDuration(), fmt.Errorf("freshen VM project base %s: %w", baseID, runErr))
-		}
-		if stopErr != nil {
-			return fail("", fmt.Sprintf("base %s failed: %v", baseID, stopErr), false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
-		}
-		repoHeads = map[string]string{}
-		for _, line := range strings.Split(out, "\n") {
-			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "::hotbed-head:: "); ok {
-				parts := strings.Fields(rest)
-				if len(parts) == 2 {
-					repoHeads[parts[0]] = parts[1]
-				}
-			}
+	spec.OnStartFail = func() {
+		if v.started.Swap(false) {
+			err := v.b.stopBuildVM(context.Background(), v.vmID, false)
+			v.mu.Lock()
+			v.startFailStopErr = err
+			v.mu.Unlock()
 		}
 	}
+}
 
-	handle.SetFinalizing("r2_sync")
-	syncStart := time.Now()
-	syncStartMs := syncStart.UnixMilli()
-	ver, err := makeVersionAndSyncAfterStop(ctx, func(ctx context.Context) (uint64, error) {
-		return b.currentStore().MakeVersionAndSync(ctx, forkRef.Tenant, forkRef.Cell, 2)
-	}, 15*time.Second, 100*time.Millisecond)
-	syncSecs := time.Since(syncStart).Seconds()
-	finalizeSeconds += syncSecs
-	handle.RecordPhase("r2_sync", syncStartMs, time.Now().UnixMilli(), syncSecs, "")
-	freshenRes.FinalizeSeconds = finalizeSeconds
-	if err != nil {
-		b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-		detail := fmt.Sprintf("sync to R2: %v", err)
-		handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
-		summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
-		return fail(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("sync VM project base %s to R2: %w", baseID, err))
+// finish stops the build VM, its guest's filesystem synced when ran.
+func (v *vmBaseBuild) finish(ctx context.Context, h *managedFreshenHandle, ran bool) (float64, error) {
+	defer v.untrack()
+	v.mu.Lock()
+	bootStartMs, bootEndMs, bootSecs, stopErr := v.bootStartMs, v.bootEndMs, v.bootSecs, v.startFailStopErr
+	v.mu.Unlock()
+	if bootStartMs > 0 {
+		h.RecordPhase("vm_boot", bootStartMs, bootEndMs, bootSecs, v.vmID)
 	}
-	// Drop the local project base cell directory now that it is durable in R2;
-	// local SSD stays strictly a cache (CLADEFSD_PART_CACHE) + active workspaces.
-	_ = b.currentStore().DropCell(ctx, forkRef.Tenant, forkRef.Cell)
-	forkRef.Version = ver
-	handle.Finish(true, freshenRes, forkRef, "")
-	return builtBase{ref: forkRef, repoHeads: repoHeads, steps: len(stepsToRun), active: activeDuration()}, nil
+	var finalizeSecs float64
+	if v.started.Swap(false) {
+		if ran {
+			h.SetFinalizing("vm_stop")
+		}
+		stopStart := time.Now()
+		stopErr = v.b.stopBuildVM(ctx, v.vmID, ran)
+		stopSecs := time.Since(stopStart).Seconds()
+		h.RecordPhase("vm_stop", stopStart.UnixMilli(), time.Now().UnixMilli(), stopSecs, "")
+		if ran {
+			finalizeSecs = stopSecs
+		}
+	}
+	v.stopErr = stopErr
+	if stopErr != nil {
+		return finalizeSecs, fmt.Errorf("stop project base VM %s: %w", v.vmID, stopErr)
+	}
+	return finalizeSecs, nil
+}
+
+// discard deletes the cell, unless its VM may not have let it go.
+func (v *vmBaseBuild) discard(ctx context.Context) {
+	v.untrack()
+	if v.stopErr == nil {
+		v.b.cleanupCell(ctx, v.cell.Tenant, v.cell.Cell)
+	}
 }
 
 // PrepareWorkspace forks an ephemeral workspace cell from baseRef (reads come
 // from R2 through the local SSD CLADEFSD_PART_CACHE; writes stay local-only on
 // the host SSD with FSYNC_LEVEL_ORDERED so fsync never waits on disk or R2 and
-// big builds never hit R2 upload lag bounds), and boots the Firecracker microVM.
+// big builds never hit R2 upload lag bounds), and boots the microVM.
 func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, error) {
 	if b.mgr != nil {
 		if err := b.mgr.EnsureNotRunning(ctx, wsID); err != nil {
@@ -1560,9 +692,9 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 	}
 }
 
-// DeleteWorkspaceCell deletes the cladefsd rootfs cell backing wsID after its
+// DeleteWorkspace deletes the cladefsd rootfs cell backing wsID after its
 // VM stops.
-func (b *VMBackend) DeleteWorkspaceCell(ctx context.Context, wsID string) error {
+func (b *VMBackend) DeleteWorkspace(ctx context.Context, wsID string) error {
 	b.mu.Lock()
 	ref, ok := b.wsCells[wsID]
 	delete(b.wsCells, wsID)
@@ -1718,176 +850,15 @@ func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
 // swaps in a fresh gRPC client, noting the new incarnation; the next
 // heartbeat applies the peer mesh to it.
 func (b *VMBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
-	cfg := b.configSnapshot()
-	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
-	vmUID, vmGID := resolveVMUserIDs(cfg.VMUser)
-	ccfg := cladefs.Config{
-		ControlSock: cfg.CladefsControlSock,
-		VMSock:      cfg.CladefsVMSock,
-		CellRoot:    cellRoot,
-		TenantID:    cfg.TenantID,
-		VMUID:       vmUID,
-		VMGID:       vmGID,
-		DefaultCap:  cfg.DiskBytes,
-	}
-	st, inc, err := waitForCladefsReconnect(ctx, ccfg, cladefsdStartWait, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
+	return b.reconnectStore(ctx, firecrackerStoreConfig(b.configSnapshot()), func(ctx context.Context, s *cladefs.Store) (uint64, error) {
 		return s.Incarnation(ctx)
-	})
-	if err != nil {
-		return 0, err
-	}
-	old := b.store.Swap(st)
-	b.link.restarted(inc)
-	if old != nil && old != st {
-		if err := old.Close(); err != nil {
-			slog.Warn("close the cladefsd client of before its restart", "err", err)
-		}
-	}
-	return inc, nil
+	}, nil)
 }
 
-// SetGitAuthHostSock wires the worker's live gitAuthServer Unix socket into the
+// SetGitAuthHostSock wires the worker's live git-auth Unix socket into the
 // Firecracker VM manager for guest->host vsock port 5002 bridging.
 func (b *VMBackend) SetGitAuthHostSock(sock string) {
 	if b.mgr != nil {
 		b.mgr.SetGitAuthHostSock(sock)
 	}
-}
-
-// createVMWorkspace creates a cladefsd + Firecracker microVM workspace directly
-// from a warm R2 project base (freshening and publishing it to R2 on first use),
-// without touching ZFS/btrfs volumes.
-func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
-	p := req.Project
-	now := e.nowMs()
-	var repos []*pb.WorkspaceRepo
-	for _, r := range p.GetRepos() {
-		repos = append(repos, &pb.WorkspaceRepo{Repo: r.GetId()})
-	}
-	w := &workspace{rec: &pb.WorkspaceRecord{
-		Workspace: &pb.Workspace{
-			Id: req.Id, Project: p.Name, BaseId: "vm-base", NodeId: e.cfg.NodeID, Agent: req.Agent,
-			Repos: repos, State: preparing, CreatedAt: now, LastActiveAt: now,
-			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: runtime.KindVM, Throwaway: req.Throwaway,
-			Reason: "preparing Firecracker VM base",
-		},
-		Volume: "ws/" + req.Id, BaseSnapshot: "vm-base",
-	}}
-	e.mu.Lock()
-	if _, dup := e.workspaces[req.Id]; dup {
-		e.mu.Unlock()
-		return nil, fmt.Errorf("workspace %s exists", req.Id)
-	}
-	w.forking = true
-	done := make(chan struct{})
-	w.forkDone = done
-	e.vmWorkspaces.Store(req.Id, struct{}{})
-	e.workspaces[req.Id] = w
-	e.saveWorkspace(w, change{what: "created", detail: "cladefs + Firecracker VM"})
-	e.mu.Unlock()
-
-	finishVM := func(bgCtx context.Context) {
-		start := e.now()
-		var baseSpec baseimage.Spec
-		if e.cfg.BaseImage != nil {
-			baseSpec = e.cfg.BaseImage.Spec
-		}
-		heads, err := e.remoteHeads(bgCtx, p)
-		var baseRes ensureBaseResult
-		if err == nil {
-			baseRes, err = e.cfg.VM.ensureProjectBase(
-				bgCtx, p, heads, req.GetSharedBase(), baseSpec, e.sandboxEnv(),
-				func(baseID string) { e.setPreparingWorkspaceBase(req.Id, baseID) },
-				e.startManagedFreshen,
-				ensureBaseOpts{
-					Budget:          e.freshenBudget,
-					Now:             e.now,
-					AllowBackground: req.GetSyncDir() != "",
-					OnRequireBuild:  func() { e.cancelBgFreshen(p.Name) },
-				},
-			)
-		}
-		projBase := baseRes.Base
-		if err == nil {
-			e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
-			if baseRes.DeferBackground {
-				e.scheduleOptionalFreshen(p, runtime.KindVM, req.GetSharedBase())
-			}
-		}
-		var cell *pb.CladefsCell
-		if err == nil {
-			cell, err = e.cfg.VM.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken())
-			if cladefs.IsGone(err) {
-				e.cfg.VM.held.forget(p.Name, projBase.Ref)
-			}
-		}
-		forkMs := e.now().Sub(start).Milliseconds()
-
-		e.mu.Lock()
-		w.forking = false
-		w.forkDone = nil
-		close(done)
-		if w.ws().State == released || w.releasing {
-			e.mu.Unlock()
-			if err == nil {
-				_ = e.cfg.VM.StopVM(context.Background(), req.Id)
-				_ = e.cfg.VM.DeleteWorkspaceCell(context.Background(), req.Id)
-			}
-			return
-		}
-		if err != nil {
-			w.ws().State = failedWS
-			w.ws().Reason = "could not start Firecracker VM: " + err.Error()
-			e.saveWorkspace(w, change{what: "failed", detail: w.ws().Reason})
-			for _, c := range e.commands {
-				if c.cmd().WorkspaceId == w.ws().Id && c.cmd().State == queued {
-					e.end(c, failed, nil, "its workspace failed: "+w.ws().Reason)
-				}
-			}
-			e.mu.Unlock()
-			return
-		}
-		w.ws().BaseId = projBase.BaseID
-		w.rec.BaseSnapshot = projBase.BaseID
-		w.rec.Note = baseRes.Note
-		for _, r := range w.ws().Repos {
-			if head, ok := projBase.Repos[r.Repo]; ok && head != "" {
-				r.Head = head
-				r.BaseCommit = head
-			}
-		}
-		w.ws().State = idle
-		if e.workspaceBusy(w.ws().Id) {
-			w.ws().State = activeWS
-		}
-		w.ws().Reason = baseRes.Note
-		w.ws().ForkMillis = forkMs
-		w.ws().CladefsCell = cell
-		w.ws().LastActiveAt = e.nowMs()
-		e.saveWorkspace(w, change{
-			what:   "ready",
-			detail: fmt.Sprintf("Firecracker VM ready in %d ms (cell %d/%d)", forkMs, cell.Tenant, cell.Cell),
-			feed:   feed(feedFork, fmt.Sprintf("vm %s ready in %d ms · %s", req.Id, forkMs, req.Agent), ref("workspace", req.Id)),
-		})
-		e.stepSoon()
-		e.mu.Unlock()
-	}
-
-	// Run VM base provisioning/freshening + boot asynchronously so cold base
-	// builds never hit CreateWorkspace's RPC timeout; WatchWorkspace notifies
-	// callers the instant the VM transitions from PREPARING to IDLE.
-	e.mu.Lock()
-	started := e.startBgLocked(finishVM)
-	e.mu.Unlock()
-	if !started {
-		e.mu.Lock()
-		w.forking = false
-		w.forkDone = nil
-		close(done)
-		w.ws().State = failedWS
-		w.ws().Reason = "worker is shutting down"
-		e.mu.Unlock()
-		return nil, fmt.Errorf("worker is shutting down")
-	}
-	return e.Workspace(req.Id)
 }

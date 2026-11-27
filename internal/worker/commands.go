@@ -20,6 +20,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitauth"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/shell"
@@ -1504,9 +1505,9 @@ func (e *Engine) inRootfs(spec *unit.Spec, volPath string) {
 		spec.ReadOnlyBinds = append(spec.ReadOnlyBinds, unit.Bind{Source: e.containersConf, Target: containersConfChrootPath})
 	}
 	if e.gitAuth != nil {
-		spec.ReadOnlyBinds = append(spec.ReadOnlyBinds, unit.Bind{Source: e.gitAuth.Dir(), Target: gitAuthChrootDir})
-		spec.Env = append(e.gitAuth.chrootEnv(), spec.Env...)
-		spec.PathPrefix = append([]string{gitAuthChrootDir + "/bin"}, spec.PathPrefix...)
+		spec.ReadOnlyBinds = append(spec.ReadOnlyBinds, unit.Bind{Source: e.gitAuth.Dir(), Target: gitauth.ChrootDir})
+		spec.Env = append(e.gitAuth.ChrootEnv(), spec.Env...)
+		spec.PathPrefix = append([]string{gitauth.ChrootDir + "/bin"}, spec.PathPrefix...)
 	}
 }
 

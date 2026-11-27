@@ -2,7 +2,6 @@ package worker
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 )
 
@@ -27,16 +26,7 @@ events_logger = "file"
 
 func writeContainersConf(stateDir string) (string, error) {
 	path := filepath.Join(stateDir, "containers.conf")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(containersConfContent), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := os.Chmod(tmp, 0o644); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("chmod %s: %w", path, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := writeFileAtomic(path, []byte(containersConfContent), 0o644); err != nil {
 		return "", fmt.Errorf("install %s: %w", path, err)
 	}
 	return path, nil

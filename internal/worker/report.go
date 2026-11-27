@@ -20,9 +20,10 @@ import (
 // latest wins. It names the sessions clients used here since the last one,
 // which keeps them alive.
 func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
-	var fuseRuntimes []string
-	if e.cfg.CladefsFUSE != nil {
-		fuseRuntimes = e.cfg.CladefsFUSE.RuntimesForHeartbeat()
+	b := e.cladefs()
+	var runtimes []string
+	if b != nil {
+		runtimes = b.RuntimesForHeartbeat()
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -30,12 +31,10 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		ClusterId: clusterID, Resources: clone(e.resources), Usage: clone(e.usage),
 		DiskBytes: e.diskBytes, Disk: clone(e.disk), Storage: e.cfg.Store.Kind(), OomKills: e.oomKills,
 	}
-	if e.cfg.VM != nil {
-		h.CladefsPeerAddr, h.CladefsIncarnation, h.HeldBases, h.RetiredBases = e.cfg.VM.HeartbeatMeta()
-	} else if e.cfg.CladefsFUSE != nil {
-		h.CladefsPeerAddr, h.CladefsIncarnation, h.HeldBases, h.RetiredBases = e.cfg.CladefsFUSE.HeartbeatMeta()
+	if b != nil {
+		h.CladefsPeerAddr, h.CladefsIncarnation, h.HeldBases, h.RetiredBases = b.HeartbeatMeta()
 		if h.Resources != nil {
-			h.Resources.Runtimes = fuseRuntimes
+			h.Resources.Runtimes = runtimes
 		}
 	}
 	if e.objectStore != nil {
@@ -93,11 +92,8 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 // heartbeat told the controller about; those of a heartbeat that failed go
 // with the next one.
 func (e *Engine) delivered(h *pb.HeartbeatRequest) {
-	switch {
-	case e.cfg.VM != nil:
-		e.cfg.VM.held.delivered(h.HeldBases, h.RetiredBases)
-	case e.cfg.CladefsFUSE != nil:
-		e.cfg.CladefsFUSE.held.delivered(h.HeldBases, h.RetiredBases)
+	if b := e.cladefs(); b != nil {
+		b.heldBases().delivered(h.HeldBases, h.RetiredBases)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

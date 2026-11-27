@@ -82,17 +82,8 @@ func (r *baseRetirer) saveLocked() {
 	if r.cacheDir == "" {
 		return
 	}
-	if err := os.MkdirAll(r.cacheDir, 0o755); err != nil {
-		return
-	}
-	raw, err := json.MarshalIndent(r.pending, "", "  ")
-	if err != nil {
-		return
-	}
-	p := filepath.Join(r.cacheDir, retiredBasesFile)
-	tmp := p + ".tmp"
-	if os.WriteFile(tmp, raw, 0o644) == nil {
-		_ = os.Rename(tmp, p)
+	if err := writeJSONAtomic(filepath.Join(r.cacheDir, retiredBasesFile), r.pending); err != nil {
+		slog.Warn("save the base cells waiting to retire", "dir", r.cacheDir, "err", err)
 	}
 }
 

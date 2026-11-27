@@ -44,7 +44,7 @@ func TestLiveMachinedVMBackend(t *testing.T) {
 		Image:  "public.ecr.aws/debian/debian:trixie-slim",
 		Arch:   "arm64",
 		Script: "echo provisioned-on-machined > /etc/hotbed-provisioned",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("EnsureProvisionedBaseImage: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestLiveMachinedVMBackend(t *testing.T) {
 	if err := b.StopVM(ctx, "ws-live"); err != nil {
 		t.Fatalf("StopVM: %v", err)
 	}
-	if err := b.DeleteWorkspaceCell(ctx, "ws-live"); err != nil {
-		t.Fatalf("DeleteWorkspaceCell: %v", err)
+	if err := b.DeleteWorkspace(ctx, "ws-live"); err != nil {
+		t.Fatalf("DeleteWorkspace: %v", err)
 	}
 }

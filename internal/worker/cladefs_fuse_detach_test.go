@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/statedir"
 )
 
 type detachControlMountClient struct {
@@ -121,27 +122,23 @@ func TestCladefsFUSEBackendDetachCleanupForceAndTimeout(t *testing.T) {
 		eventsMu.Unlock()
 	}
 
-	b := &CladefsFUSEBackend{
-		workerDir:       tmp,
-		mountRoot:       mountRoot,
-		mountStoresRoot: filepath.Join(tmp, "mount-stores"),
-		baseImages:      map[string]cladefs.CellRef{},
-		wsMounts:        map[string]fuseWSMount{},
-		detachTimeout:   80 * time.Millisecond,
-		cleanupMount: func(dir string, syncFS bool) {
-			if syncFS {
-				record("cleanup:sync:" + dir)
-			} else {
-				record("cleanup:nosync:" + dir)
-			}
-		},
+	b := newCladefsFUSEBackend(tmp, statedir.CladefsFUSEConfig{})
+	b.mountRoot = mountRoot
+	b.mountStoresRoot = filepath.Join(tmp, "mount-stores")
+	b.detachTimeout = 80 * time.Millisecond
+	b.cleanupMount = func(dir string, syncFS bool) {
+		if syncFS {
+			record("cleanup:sync:" + dir)
+		} else {
+			record("cleanup:nosync:" + dir)
+		}
 	}
 	b.store.Store(store)
 	b.retirer.load(b.cacheDir())
 	b.retirer.setGrace(0)
 
 	spec := baseimage.Spec{Image: "debian:trixie-slim", Arch: "arm64"}.Normalized()
-	b.baseImages[b.fuseBaseKey(spec)] = cladefs.CellRef{Tenant: 0, Cell: 600, Version: 1}
+	b.baseImages[b.baseKey(spec)] = cladefs.CellRef{Tenant: 0, Cell: 600, Version: 1}
 	proj := &pb.HostedProject{
 		Name:  "demo",
 		Repos: []*pb.Repo{{Id: "app", Url: "https://example.invalid/app.git", Branch: "main"}},
@@ -182,7 +179,7 @@ func TestCladefsFUSEBackendDetachCleanupForceAndTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err = b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, runFreshen, nil, nil)
+	_, err = b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, nil, nil, runFreshen)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("first EnsureProjectBase err = %v, want context.DeadlineExceeded", err)
 	}
@@ -195,7 +192,7 @@ func TestCladefsFUSEBackendDetachCleanupForceAndTimeout(t *testing.T) {
 	eventsMu.Lock()
 	events = nil
 	eventsMu.Unlock()
-	res, err := b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, runFreshen, nil, nil)
+	res, err := b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, nil, nil, runFreshen)
 	if err != nil {
 		t.Fatalf("second EnsureProjectBase after detach timeout failed: %v", err)
 	}
@@ -209,10 +206,11 @@ func TestCladefsFUSEBackendDetachCleanupForceAndTimeout(t *testing.T) {
 
 	// 3. DeleteWorkspace must still cleanupMount(mntDir, false), detach, and delete
 	// even when caller's ctx is already cancelled (without hanging forever).
-	cell, mntPath, err := b.PrepareWorkspace(ctx, "ws-cancel", res.Ref, 1)
+	cell, err := b.PrepareWorkspace(ctx, "ws-cancel", res.Ref, 1)
 	if err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
+	mntPath, _ := b.MountPath("ws/ws-cancel")
 	eventsMu.Lock()
 	events = nil
 	eventsMu.Unlock()

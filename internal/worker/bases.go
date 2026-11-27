@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/baseimage"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitauth"
 	"github.com/semistrict/hotbed/internal/gitops"
 	hotbedruntime "github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/shell"
@@ -300,7 +301,7 @@ func (e *Engine) remoteHead(ctx context.Context, r *pb.Repo) (string, error) {
 	}
 	out, err := e.git("").Run(ctx, "ls-remote", "--", r.Url, ref)
 	if err != nil {
-		if reason, ok := extractGitAuthError(err); ok {
+		if reason, ok := gitauth.ExtractError(err); ok {
 			return "", api.Errorf(api.CodeNotAuthorized, "cannot authenticate %s (%s): %s", r.Id, r.Url, reason).
 				WithSuggestion("configure centralized git credentials on the controller: hotbed auth login (or gh auth token | hotbed auth set github --token-file -)")
 		}
@@ -988,7 +989,7 @@ func short(commit string) string {
 func (e *Engine) git(dir string) gitops.Git {
 	env := []string{"HOME=" + e.home, "GIT_TERMINAL_PROMPT=0"}
 	if e.gitAuth != nil {
-		env = append(env, e.gitAuth.hostEnv()...)
+		env = append(env, e.gitAuth.HostEnv()...)
 	}
 	return gitops.Git{Dir: dir, Cred: e.cred, Env: env}
 }

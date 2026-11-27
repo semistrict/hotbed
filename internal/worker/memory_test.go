@@ -401,7 +401,7 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 	e, _, _, _ := parkEngine(t)
 	e.mu.Lock()
 	e.resources.MemoryBytes = 10 * GiB
-	e.cfg.VM = &VMBackend{cfg: statedir.VMConfig{MemMiB: 6144}}
+	e.cfg.VM = newVMBackend("", statedir.VMConfig{MemMiB: 6144})
 	e.cfg.Runtime = &trackingRuntime{}
 	e.cfg.RuntimeFor = e.isVMWorkspace
 	e.vmWorkspaces.Store("ws-vm", struct{}{})

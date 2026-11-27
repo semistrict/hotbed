@@ -10,6 +10,7 @@ import (
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitauth"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -54,14 +55,23 @@ func TestCommandsRunChrootedWithPerfmonAndTraceFS(t *testing.T) {
 // the worker runs the same helpers on the host, and root of a sandbox may
 // write a read-write idmapped bind of root's files.
 func TestGitAuthIsReadOnlyInARootfs(t *testing.T) {
-	e := &Engine{cfg: EngineConfig{BaseImage: &baseimage.Manager{}}, gitAuth: &gitAuthServer{dir: "/var/lib/hotbed/git-auth", sshProxy: &gitSSHProxy{}}}
+	e := &Engine{cfg: EngineConfig{BaseImage: &baseimage.Manager{}}, gitAuth: stubGitAuth{dir: "/var/lib/hotbed/git-auth"}}
 	var spec unit.Spec
 	e.inRootfs(&spec, "/vol/ws/a")
-	bind := unit.Bind{Source: "/var/lib/hotbed/git-auth", Target: gitAuthChrootDir}
+	bind := unit.Bind{Source: "/var/lib/hotbed/git-auth", Target: gitauth.ChrootDir}
 	if !slices.Contains(spec.ReadOnlyBinds, bind) || slices.Contains(spec.Binds, bind) {
 		t.Errorf("binds %v, read-only binds %v; want git-auth read-only only", spec.Binds, spec.ReadOnlyBinds)
 	}
 }
+
+// stubGitAuth is git authentication served from dir, by no one.
+type stubGitAuth struct{ dir string }
+
+func (s stubGitAuth) Dir() string         { return s.dir }
+func (s stubGitAuth) SockPath() string    { return s.dir + "/git-cred.sock" }
+func (s stubGitAuth) HostEnv() []string   { return nil }
+func (s stubGitAuth) ChrootEnv() []string { return nil }
+func (s stubGitAuth) Close() error        { return nil }
 
 // NewEngine fails hard when BaseImage is nil rather than silently falling back
 // to host-root execution (board 7872).

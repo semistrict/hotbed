@@ -195,12 +195,8 @@ func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := baseimage.Spec{User: "ramon", UID: 1000, GID: 1000}.Normalized()
-	b := &CladefsFUSEBackend{
-		workerDir:  dir,
-		baseImages: map[string]cladefs.CellRef{},
-		wsMounts:   map[string]fuseWSMount{},
-	}
-	wantKey := b.fuseBaseKey(spec)
+	b := newCladefsFUSEBackend(dir, statedir.CladefsFUSEConfig{})
+	wantKey := b.baseKey(spec)
 	// Write both the wanted key and a lexicographically later stale key.
 	for key, cell := range map[string]uint64{
 		wantKey:        101,
@@ -233,15 +229,8 @@ func TestTenantCellRootAndCacheIsolation(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	vm0 := &VMBackend{
-		workerDir:  dir,
-		baseImages: map[string]cladefs.CellRef{},
-	}
-	vm2 := &VMBackend{
-		cfg:        statedir.VMConfig{TenantID: 2},
-		workerDir:  dir,
-		baseImages: map[string]cladefs.CellRef{},
-	}
+	vm0 := newVMBackend(dir, statedir.VMConfig{})
+	vm2 := newVMBackend(dir, statedir.VMConfig{TenantID: 2})
 	if vm0.cacheDir() != filepath.Join(dir, "vm-bases") {
 		t.Fatalf("vm0.cacheDir() = %q, want legacy vm-bases", vm0.cacheDir())
 	}
@@ -270,13 +259,8 @@ func TestTenantCellRootAndCacheIsolation(t *testing.T) {
 	}
 
 	// Same isolation for CladefsFUSEBackend.
-	fuse0 := &CladefsFUSEBackend{workerDir: dir}
-	fuse4 := &CladefsFUSEBackend{
-		cfg:        statedir.CladefsFUSEConfig{TenantID: 4},
-		workerDir:  dir,
-		baseImages: map[string]cladefs.CellRef{},
-		wsMounts:   map[string]fuseWSMount{},
-	}
+	fuse0 := newCladefsFUSEBackend(dir, statedir.CladefsFUSEConfig{})
+	fuse4 := newCladefsFUSEBackend(dir, statedir.CladefsFUSEConfig{TenantID: 4})
 	if fuse0.cacheDir() != filepath.Join(dir, "cladefs-fuse-bases") || fuse0.wsStatePath() != filepath.Join(dir, "cladefs-fuse-ws.json") {
 		t.Fatalf("fuse0 paths changed unexpectedly: cache=%q ws=%q", fuse0.cacheDir(), fuse0.wsStatePath())
 	}
@@ -309,24 +293,23 @@ func TestCladefsFUSEHeartbeatWithdrawsUnhealthyRuntimeAndRecoversENOTCONN(t *tes
 	var detached atomic.Int32
 	reconnected := make(chan struct{}, 4)
 
-	b := &CladefsFUSEBackend{
-		mountRoot: "/var/lib/cladefs/mnt",
-		mountHealthFn: func(string) error {
-			if healthy.Load() {
-				return nil
-			}
-			return errNotConn
-		},
-		isNotConnFn: func(err error) bool { return errors.Is(err, errNotConn) },
-		detachDeadFn: func(string) error {
-			detached.Add(1)
+	b := newCladefsFUSEBackend("", statedir.CladefsFUSEConfig{})
+	b.mountRoot = "/var/lib/cladefs/mnt"
+	b.mountHealthFn = func(string) error {
+		if healthy.Load() {
 			return nil
-		},
-		reconnectFn: func(context.Context) (uint64, error) {
-			healthy.Store(true)
-			reconnected <- struct{}{}
-			return 42, nil
-		},
+		}
+		return errNotConn
+	}
+	b.isNotConnFn = func(err error) bool { return errors.Is(err, errNotConn) }
+	b.detachDeadFn = func(string) error {
+		detached.Add(1)
+		return nil
+	}
+	b.reconnectFn = func(context.Context) (uint64, error) {
+		healthy.Store(true)
+		reconnected <- struct{}{}
+		return 42, nil
 	}
 
 	// While mountRoot returns ENOTCONN, heartbeats must withdraw "cladefs"
@@ -357,23 +340,22 @@ func TestCladefsFUSEEnsureMountReadyRecoversFromENOTCONN(t *testing.T) {
 	var attempts atomic.Int32
 	var detached, reconnected atomic.Int32
 
-	b := &CladefsFUSEBackend{
-		mountRoot: "/var/lib/cladefs/mnt",
-		clearNosuidFn: func(string) error {
-			if attempts.Add(1) == 1 {
-				return errNotConn
-			}
-			return nil
-		},
-		isNotConnFn: func(err error) bool { return errors.Is(err, errNotConn) },
-		detachDeadFn: func(string) error {
-			detached.Add(1)
-			return nil
-		},
-		reconnectFn: func(context.Context) (uint64, error) {
-			reconnected.Add(1)
-			return 7, nil
-		},
+	b := newCladefsFUSEBackend("", statedir.CladefsFUSEConfig{})
+	b.mountRoot = "/var/lib/cladefs/mnt"
+	b.clearNosuidFn = func(string) error {
+		if attempts.Add(1) == 1 {
+			return errNotConn
+		}
+		return nil
+	}
+	b.isNotConnFn = func(err error) bool { return errors.Is(err, errNotConn) }
+	b.detachDeadFn = func(string) error {
+		detached.Add(1)
+		return nil
+	}
+	b.reconnectFn = func(context.Context) (uint64, error) {
+		reconnected.Add(1)
+		return 7, nil
 	}
 
 	if err := b.ensureMountReady(context.Background()); err != nil {

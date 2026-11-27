@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/gitauth"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/unit"
 )
@@ -132,7 +133,7 @@ func (e *Engine) execSpec(volPath, dir string, argv []string, bundles ...string)
 		// A checkout is a partial clone: git fetches what it lacks from
 		// the repo's remote, with the worker's credentials, as a
 		// command's git does (inRootfs).
-		roBinds = append(roBinds, unit.Bind{Source: e.gitAuth.Dir(), Target: gitAuthChrootDir})
+		roBinds = append(roBinds, unit.Bind{Source: e.gitAuth.Dir(), Target: gitauth.ChrootDir})
 	}
 	for i, b := range bundles {
 		roBinds = append(roBinds, unit.Bind{Source: b, Target: bundleInSandbox(i)})
@@ -150,8 +151,8 @@ func (e *Engine) sandboxEnv() []string {
 	path := "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	var env []string
 	if e.gitAuth != nil {
-		env = e.gitAuth.chrootEnv()
-		path = gitAuthChrootDir + "/bin:" + path
+		env = e.gitAuth.ChrootEnv()
+		path = gitauth.ChrootDir + "/bin:" + path
 	}
 	return append(env, "HOME="+e.chrootHome(), "GIT_TERMINAL_PROMPT=0", "PATH="+path)
 }

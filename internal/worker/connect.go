@@ -351,17 +351,17 @@ func deliver[T proto.Message](ctx context.Context, d *db, k pendingKind[T], save
 	return nil
 }
 
-// shedOversizedEvent drops optional bulk payloads (command profiles and any
-// legacy inline diagnostics) from an event that would otherwise exceed the RPC
-// size limit and wedge the stream.
+// shedOversizedEvent drops a command's profile, its optional bulk payload,
+// from an event that would otherwise exceed the RPC size limit and wedge the
+// stream. (Diagnostics never ride on events: they go by
+// SaveCommandDiagnostics.)
 func shedOversizedEvent(ev *pb.Event) (*pb.Event, bool) {
 	c := ev.GetCommand()
-	if c == nil || (c.Profile == nil && c.Diagnostics == nil) {
+	if c == nil || c.Profile == nil {
 		return ev, false
 	}
 	cp := proto.Clone(ev).(*pb.Event)
 	cp.GetCommand().Profile = nil
-	cp.GetCommand().Diagnostics = nil
 	return cp, true
 }
 
