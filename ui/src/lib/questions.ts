@@ -1,26 +1,4 @@
-import { QuestionState, type Answer, type AnswerInput, type Question, type Stamp } from "../api";
-
-/**
- * Where moving question `moved` to position `to` in the user's order puts
- * it, `to` counted among the others: just before which question, or last
- * (null). Undefined when it would stay where it is.
- */
-export function placement(order: number[], moved: number, to: number): { before: number | null } | undefined {
-  const others = order.filter((id) => id !== moved);
-  const at = Math.max(0, Math.min(to, others.length));
-  if (order.indexOf(moved) === at) return undefined;
-  return { before: others[at] ?? null };
-}
-
-/** The list as it is once `moved` goes just before `before`, or last: what a move shows before the controller confirms it. */
-export function reorder<T extends { id: number }>(list: T[], moved: number, before: number | null): T[] {
-  const item = list.find((q) => q.id === moved);
-  if (!item) return list;
-  const others = list.filter((q) => q.id !== moved);
-  const at = before === null ? others.length : others.findIndex((q) => q.id === before);
-  if (at < 0) return list;
-  return [...others.slice(0, at), item, ...others.slice(at)];
-}
+import { QuestionState, type Answer, type AnswerInput, type Question } from "../api";
 
 /**
  * An answer as the form holds it: the options picked, whether the user
@@ -74,11 +52,6 @@ export function responseLine(q: Question): string {
   return [...q.answer.picked, q.answer.other].filter((s) => s.trim() !== "").join("; ");
 }
 
-/** Who made a change: the session, or "you". */
-export function who(st: Stamp): string {
-  return st.session || "you";
-}
-
 /** The questions a tab of the page shows. */
 export type QuestionTab = "inbox" | "outbox" | "handled" | "deleted" | "all";
 
@@ -89,45 +62,3 @@ export const TAB_STATES: Record<QuestionTab, QuestionState[]> = {
   deleted: [QuestionState.DELETED],
   all: [QuestionState.OPEN, QuestionState.ANSWERED, QuestionState.DISMISSED, QuestionState.HANDLED, QuestionState.DELETED],
 };
-
-/** A commit as people say it: its first 8 hex digits. */
-export function shortHead(head: string): string {
-  return head.slice(0, 8);
-}
-
-/**
- * Where a question dragged onto another goes, counted among the others: just
- * before the target, or just after it. Undefined for a drop on itself, which
- * moves nothing.
- */
-export function dropAt(order: number[], dragged: number, target: number, after: boolean): number | undefined {
-  if (dragged === target) return undefined;
-  const at = order.filter((id) => id !== dragged).indexOf(target);
-  return at < 0 ? undefined : at + (after ? 1 : 0);
-}
-
-/**
- * Guard a polled list of questions against out-of-order stale responses.
- * Keeps the highest `revision` (breaking ties by `updatedAt`) seen per ID in
- * `seen` and synchronously returns the freshest known version of each incoming
- * question that matches `states` (when provided) and `project` (when non-empty).
- */
-export function mergeLatestQuestions(
-  seen: Map<number, Question>,
-  incoming: readonly Question[],
-  states?: readonly QuestionState[],
-  project?: string | null,
-): Question[] {
-  const out: Question[] = [];
-  for (const q of incoming) {
-    if (project && q.project !== project) continue;
-    const prev = seen.get(q.id);
-    const fresher =
-      !prev || q.revision > prev.revision || (q.revision === prev.revision && q.updatedAt >= prev.updatedAt);
-    const best = fresher ? q : prev;
-    if (fresher) seen.set(q.id, q);
-    if (project && best.project !== project) continue;
-    if (!states || states.includes(best.state)) out.push(best);
-  }
-  return out;
-}

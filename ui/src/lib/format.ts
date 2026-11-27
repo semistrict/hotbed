@@ -34,9 +34,14 @@ export function limit(n: number | bigint): string {
   return v === 0 ? "none" : bytes(v);
 }
 
-/** A commit as people quote it: its first 10 hex digits. */
-export function shortSha(sha: string): string {
-  return sha.slice(0, 10);
+/** A commit as people quote it: its first 8 hex digits. */
+export function shortSha(sha: string, len = 8): string {
+  return sha.slice(0, len);
+}
+
+/** A byte count in KiB to one decimal, for small budgets: "1.4 KiB", "4.0 KiB". */
+export function kib(n: number): string {
+  return `${(n / 1024).toFixed(1)} KiB`;
 }
 
 /** 840 ms, 14.2 s, 6m 10s, 3h 12m, 41h 12m. */
@@ -52,6 +57,17 @@ export function duration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.round((seconds % 3600) / 60);
   return m === 60 ? `${h + 1}h 0m` : `${h}h ${m}m`;
+}
+
+/** A duration as a setting is written, in its largest whole unit: "30m", "6h", "1d", "90s" → "1m 30s". */
+export function compactDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds === 0) return "0s";
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 /** The two units of duration() separately, for a hero figure: ["41", "h", "12", "m"]. */

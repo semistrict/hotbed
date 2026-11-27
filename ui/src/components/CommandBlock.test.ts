@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CommandBlock, copyToClipboard, formatRawWithEnv, formatShellEnv } from "./CommandBlock";
+import { CommandBlock, formatRawWithEnv, formatShellEnv } from "./CommandBlock";
+import { copyToClipboard } from "./CopyButton";
 
 describe("formatShellEnv", () => {
   it("keeps simple KEY=VAL assignments unquoted and quotes values with shell-special characters", () => {

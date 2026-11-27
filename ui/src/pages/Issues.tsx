@@ -4,12 +4,11 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, IssueState, type Issue, type Stamp } from "../api";
+import { api, IssueState, type Issue } from "../api";
 import { Markdown } from "../components/Markdown";
 import { Card, Empty } from "../components/Panel";
 import { ProjectTag } from "../components/ProjectTag";
-import { SessionLink } from "../components/SessionLink";
-import { ago } from "../lib/format";
+import { StampLine } from "../components/StampLine";
 import { PageTitle } from "./Nodes";
 
 export type IssuesTab = "open" | "archived" | "all";
@@ -85,16 +84,6 @@ export function IssueDetailPage() {
   );
 }
 
-function By({ st, now }: { st?: Stamp; now: number }) {
-  if (!st) return null;
-  return (
-    <span className="inline-flex flex-wrap items-baseline gap-1 text-[11px] text-muted-foreground">
-      {st.session ? <SessionLink id={st.session} /> : <span className="font-mono">{st.host || "someone"}</span>}
-      <span className="text-faint">{ago(st.at, now)}</span>
-    </span>
-  );
-}
-
 function IssueCard({ issue, now }: { issue: Issue; now: number }) {
   const qc = useQueryClient();
   const [reason, setReason] = useState("");
@@ -116,9 +105,11 @@ function IssueCard({ issue, now }: { issue: Issue; now: number }) {
             </Link>
             {issue.project && <ProjectTag name={issue.project} />}
             <span className={`font-mono text-[10.5px] ${archived ? "text-faint" : "text-primary"}`}>{archived ? "archived" : "open"}</span>
-            <span className="sm:ml-auto">
-              reported by <By st={issue.reported} now={now} />
-            </span>
+            {issue.reported && (
+              <span className="text-[11px] text-muted-foreground sm:ml-auto">
+                <StampLine st={issue.reported} now={now} verb="reported" />
+              </span>
+            )}
           </header>
           <h2 className="text-[15px] leading-snug font-semibold text-pretty text-foreground">{issue.title}</h2>
           {issue.body && <Markdown className="text-[13px] leading-relaxed text-foreground/85">{issue.body}</Markdown>}
@@ -127,7 +118,11 @@ function IssueCard({ issue, now }: { issue: Issue; now: number }) {
               {issue.upvotes.map((u, i) => (
                 <li key={i} className="flex flex-wrap items-baseline gap-1.5 text-[12px]">
                   <span className="font-mono text-[11px] text-primary">+1</span>
-                  <By st={u.by} now={now} />
+                  {u.by && (
+                    <span className="text-[11px] text-muted-foreground">
+                      <StampLine st={u.by} now={now} />
+                    </span>
+                  )}
                   {u.comment && <span className="text-foreground/85">{u.comment}</span>}
                 </li>
               ))}
@@ -136,7 +131,7 @@ function IssueCard({ issue, now }: { issue: Issue; now: number }) {
           {archived ? (
             <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2 text-[12px] text-muted-foreground">
               <span>
-                archived by <By st={issue.archived} now={now} />
+                {issue.archived && <StampLine st={issue.archived} now={now} verb="archived" />}
                 {issue.archived?.reason ? `: ${issue.archived.reason}` : ""}
               </span>
               <Button type="button" variant="outline" size="xs" className="ml-auto font-mono text-[11px]" disabled={reopen.isPending} onClick={() => reopen.mutate()}>

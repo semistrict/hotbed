@@ -23,7 +23,8 @@ let mockRevokeJoinError: Error | null = null;
 let mockCreateApiError: Error | null = null;
 let mockRevokeApiError: Error | null = null;
 
-vi.mock("../lib/auth", () => ({
+vi.mock("../lib/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/auth")>()),
   useAuthMe: () => ({
     data: {
       authenticated: true,

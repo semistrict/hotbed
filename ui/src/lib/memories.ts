@@ -1,4 +1,4 @@
-import { MemoryMode, MemoryScope, MemoryState, type Memory } from "../api";
+import { MemoryMode, MemoryState, type Memory } from "../api";
 
 export type MemoryTab = "active" | "history" | "all";
 
@@ -61,80 +61,6 @@ export function computeStartupBudget(memories: readonly Memory[]): StartupBudget
   };
 }
 
-export interface DiffLine {
-  kind: "same" | "add" | "del";
-  text: string;
-}
-
-/** Simple LCS line diff for showing proposal updates against superseded targets. */
-export function computeLineDiff(before: string, after: string): DiffLine[] {
-  const a = before === "" ? [] : before.split("\n");
-  const b = after === "" ? [] : after.split("\n");
-  const m = a.length;
-  const n = b.length;
-  // Guard pathological inputs: fall back to full delete + add.
-  if (m * n > 200_000) {
-    return [
-      ...a.map((text): DiffLine => ({ kind: "del", text })),
-      ...b.map((text): DiffLine => ({ kind: "add", text })),
-    ];
-  }
-  const dp = new Int32Array((m + 1) * (n + 1));
-  const at = (r: number, c: number) => dp[r * (n + 1) + c] ?? 0;
-  for (let i = m - 1; i >= 0; i--) {
-    for (let j = n - 1; j >= 0; j--) {
-      dp[i * (n + 1) + j] = a[i] === b[j] ? at(i + 1, j + 1) + 1 : Math.max(at(i + 1, j), at(i, j + 1));
-    }
-  }
-  const out: DiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < m && j < n) {
-    const ai = a[i] ?? "";
-    const bj = b[j] ?? "";
-    if (ai === bj) {
-      out.push({ kind: "same", text: ai });
-      i++;
-      j++;
-    } else if (at(i + 1, j) >= at(i, j + 1)) {
-      out.push({ kind: "del", text: ai });
-      i++;
-    } else {
-      out.push({ kind: "add", text: bj });
-      j++;
-    }
-  }
-  while (i < m) out.push({ kind: "del", text: a[i++] ?? "" });
-  while (j < n) out.push({ kind: "add", text: b[j++] ?? "" });
-  return out;
-}
-
-/** Revision-safe merge of polled memory lists so out-of-order responses never revert edits. */
-export function mergeLatestMemories(
-  seen: Map<number, Memory>,
-  incoming: readonly Memory[],
-  states?: readonly MemoryState[],
-): Memory[] {
-  const out: Memory[] = [];
-  for (const m of incoming) {
-    const prev = seen.get(m.id);
-    const fresher =
-      !prev || m.revision > prev.revision || (m.revision === prev.revision && m.updatedAt >= prev.updatedAt);
-    const best = fresher ? m : prev;
-    if (fresher) seen.set(m.id, m);
-    if (!states || states.includes(best.state)) out.push(best);
-  }
-  return out;
-}
-
-export function memoryScopeLabel(m: Memory): string {
-  return m.scope === MemoryScope.GLOBAL || !m.project ? "global" : m.project;
-}
-
 export function memoryModeLabel(mode: MemoryMode): string {
   return mode === MemoryMode.ALWAYS ? "always-on" : "on-demand";
-}
-
-export function formatBytesKB(bytes: number): string {
-  return `${(bytes / 1024).toFixed(1)} KB`;
 }

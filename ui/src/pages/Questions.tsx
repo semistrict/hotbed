@@ -1,7 +1,7 @@
-import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,16 +19,17 @@ import {
   type Question,
   type QuestionOrderSlug,
   type Snapshot,
-  type Stamp,
 } from "../api";
 import { InlineMarkdown, Markdown } from "../components/Markdown";
-import { SessionLink } from "../components/SessionLink";
 import { Card, Empty } from "../components/Panel";
 import { ProjectTag } from "../components/ProjectTag";
+import { SortableList } from "../components/SortableList";
+import { FromLine, StampLine } from "../components/StampLine";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
-import { ago } from "../lib/format";
-import { chooseOption, chooseOwnWords, draftAnswer, draftOf, draftReady, dropAt, EMPTY_DRAFT, mergeLatestQuestions, placement, reorder, responseLine, shortHead, TAB_STATES, who, type Draft, type QuestionTab } from "../lib/questions";
+import { chooseOption, chooseOwnWords, draftAnswer, draftOf, draftReady, EMPTY_DRAFT, responseLine, TAB_STATES, type Draft, type QuestionTab } from "../lib/questions";
+import { mergeLatestByRevision, useOptimisticReorder } from "../lib/rankedList";
+import { who } from "../lib/stamps";
 import { PageTitle } from "./Nodes";
 
 export interface QuestionsSearch {
@@ -73,12 +74,17 @@ function Questions({ s }: { s: Snapshot }) {
         : "newest";
   const [project] = useProject();
   const key = ["questions", project, tab, sort] as const;
-  // No refresh while a move is on its way: one landing first would show the old order again.
-  const moving = useIsMutating({ mutationKey: MOVE }) > 0;
+  const move = useOptimisticReorder<"questions", ListQuestionsResponse>({
+    key,
+    field: "questions",
+    mutationKey: ["move-question"],
+    move: (id, before) => api.moveQuestion(id, before),
+    invalidate: ["questions"],
+  });
   const list = useQuery({
     queryKey: key,
     queryFn: () => api.questions({ project, states: TAB_STATES[tab], order: QUESTION_ORDER_FROM_SLUG[sort] }),
-    refetchInterval: moving ? false : 2000,
+    refetchInterval: move.moving ? false : 2000,
     // Only reuse previous data while staying within the same project scope;
     // switching projects must not render another project's actionable questions.
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === project ? prev : undefined),
@@ -92,9 +98,9 @@ function Questions({ s }: { s: Snapshot }) {
     if (seenRef.current.project !== project) {
       seenRef.current = { project, map: new Map() };
     }
-    return rawQuestions ? mergeLatestQuestions(seenRef.current.map, rawQuestions, TAB_STATES[tab], project) : [];
+    const inProject = project ? (q: Question) => q.project === project : undefined;
+    return rawQuestions ? mergeLatestByRevision(seenRef.current.map, rawQuestions, TAB_STATES[tab], inProject) : [];
   }, [rawQuestions, tab, project]);
-  const move = useMove(key);
   const counts: Partial<Record<QuestionTab, number>> = { inbox: s.openQuestions, outbox: outbox.data?.total };
 
   return (
@@ -147,7 +153,14 @@ function Questions({ s }: { s: Snapshot }) {
           <Empty>{TABS.find((t) => t.tab === tab)?.empty}</Empty>
         </Card>
       ) : (
-        <QuestionList s={s} questions={questions} now={now} movable={movable} onMove={(id, before) => move.mutate({ id, before })} />
+        <SortableList
+          items={questions}
+          movable={movable}
+          onMove={(id, before) => move.mutate({ id, before })}
+          render={(q, i, { mover, onEditingChange }) => (
+            <QuestionCard s={s} q={q} now={now} delay={Math.min(i, 8) * 40} mover={mover} onEditingChange={onEditingChange} />
+          )}
+        />
       )}
       {tab === "inbox" && !movable && questions.length > 1 && <p className="font-mono text-[11px] text-faint">Sort by your order to rearrange the inbox.</p>}
     </div>
@@ -183,167 +196,6 @@ export function QuestionDetailPage() {
   );
 }
 
-const MOVE = ["move-question"];
-
-/** Moves a question, showing it in its new place at once and putting it back if the controller refuses. */
-function useMove(key: readonly unknown[]) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationKey: MOVE,
-    mutationFn: ({ id, before }: { id: number; before: number | null }) => api.moveQuestion(id, before),
-    onMutate: async ({ id, before }) => {
-      await qc.cancelQueries({ queryKey: key });
-      const was = qc.getQueryData<ListQuestionsResponse>(key);
-      if (was) qc.setQueryData<ListQuestionsResponse>(key, { ...was, questions: reorder(was.questions, id, before) });
-      return { was };
-    },
-    onError: (_err, _vars, ctx) => {
-      if (ctx?.was) qc.setQueryData(key, ctx.was);
-    },
-    onSettled: () => qc.invalidateQueries({ queryKey: ["questions"] }),
-  });
-}
-
-/** The questions as cards; in the user's order, each can be dragged, or stepped up and down, to a new place. */
-function QuestionList({ s, questions, now, movable, onMove }: { s: Snapshot; questions: Question[]; now: number; movable: boolean; onMove: (id: number, before: number | null) => void }) {
-  const [dragged, setDragged] = useState<number | null>(null);
-  const [armedId, setArmedId] = useState<number | null>(null);
-  const [editingIds, setEditingIds] = useState<Set<number>>(() => new Set());
-  const [drop, setDrop] = useState<{ id: number; after: boolean } | null>(null);
-  const order = questions.map((q) => q.id);
-
-  useEffect(() => {
-    if (armedId === null) return;
-    const clear = () => setArmedId(null);
-    window.addEventListener("pointerup", clear);
-    window.addEventListener("pointercancel", clear);
-    return () => {
-      window.removeEventListener("pointerup", clear);
-      window.removeEventListener("pointercancel", clear);
-    };
-  }, [armedId]);
-
-  const setCardEditing = useCallback((id: number, isEditing: boolean) => {
-    setEditingIds((prev) => {
-      const has = prev.has(id);
-      if (has === isEditing) return prev;
-      const next = new Set(prev);
-      if (isEditing) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-    if (isEditing) setArmedId((cur) => (cur === id ? null : cur));
-  }, []);
-
-  const moveTo = (id: number, to: number) => {
-    const p = placement(order, id, to);
-    if (p) onMove(id, p.before);
-  };
-  const over = (e: DragEvent, id: number) => {
-    // Not a drop target for itself: letting go where it started moves nothing.
-    if (dragged === null || dragged === id) return;
-    e.preventDefault();
-    const box = e.currentTarget.getBoundingClientRect();
-    setDrop({ id, after: e.clientY > box.top + box.height / 2 });
-  };
-  const dropped = (e: DragEvent) => {
-    e.preventDefault();
-    const to = dragged !== null && drop ? dropAt(order, dragged, drop.id, drop.after) : undefined;
-    if (dragged !== null && to !== undefined) moveTo(dragged, to);
-    setDragged(null);
-    setDrop(null);
-    setArmedId(null);
-  };
-
-  return (
-    <ol className="space-y-4">
-      {questions.map((q, i) => {
-        const isEditing = editingIds.has(q.id);
-        const canDrag = movable && !isEditing;
-        return (
-          <li
-            key={q.id}
-            draggable={canDrag && armedId === q.id}
-            onDragStart={(e) => {
-              if (!canDrag || armedId !== q.id) {
-                e.preventDefault();
-                return;
-              }
-              setDragged(q.id);
-              e.dataTransfer.effectAllowed = "move";
-            }}
-            onDragEnd={() => {
-              setDragged(null);
-              setDrop(null);
-              setArmedId(null);
-            }}
-            onDragOver={(e) => over(e, q.id)}
-            onDrop={dropped}
-            className={`relative ${dragged === q.id ? "opacity-40" : ""}`}
-          >
-            {drop?.id === q.id && dragged !== q.id && <span aria-hidden className={`absolute right-2 left-2 h-0.5 rounded-full bg-primary ${drop.after ? "-bottom-2.5" : "-top-2.5"}`} />}
-            <QuestionCard
-              s={s}
-              q={q}
-              now={now}
-              delay={Math.min(i, 8) * 40}
-              onEditingChange={setCardEditing}
-              mover={
-                movable ? (
-                  <Mover
-                    first={i === 0}
-                    last={i === questions.length - 1}
-                    dragDisabled={isEditing}
-                    onArmDrag={() => setArmedId(q.id)}
-                    onUp={() => moveTo(q.id, i - 1)}
-                    onDown={() => moveTo(q.id, i + 1)}
-                  />
-                ) : null
-              }
-            />
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-function Mover({
-  first,
-  last,
-  dragDisabled = false,
-  onArmDrag,
-  onUp,
-  onDown,
-}: {
-  first: boolean;
-  last: boolean;
-  dragDisabled?: boolean;
-  onArmDrag?: () => void;
-  onUp: () => void;
-  onDown: () => void;
-}) {
-  const btn = "rounded p-1.5 leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent sm:px-1 sm:py-0.5";
-  return (
-    <div className="flex shrink-0 flex-col items-center gap-0.5 font-mono text-[11px]">
-      <button type="button" className={btn} disabled={first} onClick={onUp} aria-label="Move up" title="Move up">
-        ▲
-      </button>
-      <span
-        onPointerDown={dragDisabled ? undefined : onArmDrag}
-        className={`select-none text-faint ${dragDisabled ? "cursor-default opacity-30" : "cursor-grab active:cursor-grabbing"}`}
-        title={dragDisabled ? "Finish editing to reorder" : "Drag to reorder"}
-        aria-hidden
-      >
-        ⋮⋮
-      </span>
-      <button type="button" className={btn} disabled={last} onClick={onDown} aria-label="Move down" title="Move down">
-        ▼
-      </button>
-    </div>
-  );
-}
-
 const STATE_TAG: Record<QuestionState, { text: string; className: string }> = {
   [QuestionState.UNSPECIFIED]: { text: "● waiting for you", className: "text-primary" },
   [QuestionState.OPEN]: { text: "● waiting for you", className: "text-primary" },
@@ -373,7 +225,7 @@ function QuestionCard({
   q: Question;
   now: number;
   delay: number;
-  mover: React.ReactNode;
+  mover: ReactNode;
   onEditingChange?: (id: number, editing: boolean) => void;
 }) {
   const tag = STATE_TAG[q.state] ?? STATE_TAG[QuestionState.OPEN];
@@ -439,18 +291,6 @@ function QuestionCard({
   );
 }
 
-/** "asked by brave-otter on asahimbp, 12m ago"; the session links when the cockpit still lists it. */
-function StampLine({ s, st, now, verb }: { s: Snapshot; st: Stamp; now: number; verb: string }) {
-  const listed = st.session !== "" && s.sessions.some((x) => x.id === st.session);
-  return (
-    <span title={new Date(Number(st.at)).toLocaleString()}>
-      {verb ? `${verb} by ` : "by "}
-      {st.session === "" ? <span className="text-foreground">you</span> : listed ? <SessionLink id={st.session} /> : <span className="font-mono text-[11px]">{st.session}</span>}
-      {st.host && <span className="text-faint"> on {st.host}</span>}, {ago(st.at, now)}
-    </span>
-  );
-}
-
 function AskedFromLine({ q }: { q: Question }) {
   const f = q.askedFrom;
   if (!f && !q.t3codeThreadId) return null;
@@ -461,16 +301,12 @@ function AskedFromLine({ q }: { q: Question }) {
       </div>
     );
   }
-  const repo = (f.remote || f.dir).replace(/\.git$/, "").split(/[/:]/).pop();
   return (
     <Collapsible className="text-[11.5px] text-muted-foreground">
       <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] hover:text-foreground">
         <ChevronRightIcon className="size-3 text-faint transition-transform group-data-panel-open:rotate-90" />
         <span>
-          from {repo}
-          {f.branch && <> @ {f.branch}</>}
-          {f.head && <span className="text-faint"> {shortHead(f.head)}</span>}
-          {f.dirtyFiles > 0 && <span className="text-warning-ink"> · {f.dirtyFiles} changed</span>}
+          <FromLine f={f} />
           {q.t3codeThreadId && (
             <span className="text-faint" title={`T3 Code thread ${q.t3codeThreadId}`}>
               {" "}· t3:{q.t3codeThreadId.slice(0, 8)}
@@ -674,7 +510,7 @@ function AnswerForm({ q }: { q: Question }) {
  * One choice of an answer: a radio or a checkbox. Not a button, since its
  * markdown may hold links, which a button must not.
  */
-function Choice({ multi, on, busy, mark, onChoose, onFocus, children }: { multi: boolean; on: boolean; busy: boolean; mark: keyof typeof MARKS | null; onChoose: () => void; onFocus: () => void; children: React.ReactNode }) {
+function Choice({ multi, on, busy, mark, onChoose, onFocus, children }: { multi: boolean; on: boolean; busy: boolean; mark: keyof typeof MARKS | null; onChoose: () => void; onFocus: () => void; children: ReactNode }) {
   const look = on ? "border-primary/60 bg-ember-wash" : mark ? `${MARKS[mark].row} hover:border-border-strong` : "border-border hover:border-border-strong hover:bg-muted/60";
   return (
     <div

@@ -5,8 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CopyButton } from "../components/CopyButton";
 import { Card, Empty } from "../components/Panel";
 import {
+  isOrgAdmin,
+  isReadOnlyViewer,
   useApiTokens,
   useAuthMe,
   useCreateApiToken,
@@ -34,6 +37,11 @@ function formatDate(ms: number | string | null | undefined): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** The command that joins a host to this cluster with a freshly minted join token. */
+function joinCommand(origin: string, token: string): string {
+  return `sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${token}`;
+}
+
 const INVITE_ROLES = [
   { value: "viewer", label: "viewer" },
   { value: "member", label: "member" },
@@ -46,8 +54,8 @@ export function OrganizationPage() {
   const [, chooseProject] = useProject();
   const workosEnabled = Boolean(auth?.workosEnabled);
   const activeOrg = auth?.organization ?? null;
-  const isOrgAdmin = !workosEnabled || activeOrg?.role === "admin" || activeOrg?.role === "owner";
-  const isViewer = workosEnabled && activeOrg?.role === "viewer";
+  const orgAdmin = isOrgAdmin(auth);
+  const isViewer = isReadOnlyViewer(auth);
 
   const { data: team, isLoading: loadingTeam, error: teamErr } = useOrgMembers(Boolean(workosEnabled && activeOrg));
   const { data: joinTokens, isLoading: loadingJoinTokens, error: joinTokensErr } = useJoinTokens();
@@ -72,40 +80,8 @@ export function OrganizationPage() {
   const [apiName, setApiName] = useState("");
   const [apiDays, setApiDays] = useState("90");
   const [mintedApi, setMintedApi] = useState<MintedApiToken | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "https://hotbed-controller";
-
-  async function copy(key: string, value: string) {
-    let ok = false;
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(value);
-        ok = true;
-      } catch {
-        ok = false;
-      }
-    }
-    if (!ok && typeof document !== "undefined") {
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = value;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-      } catch {
-        ok = false;
-      }
-    }
-    if (ok) {
-      setCopied(key);
-      setTimeout(() => setCopied((c) => (c === key ? null : c)), 1800);
-    }
-  }
 
   async function onCreateOrg(e: FormEvent) {
     e.preventDefault();
@@ -263,7 +239,7 @@ export function OrganizationPage() {
             title="Members & Invitations"
             sub="Multiple users in this organization share its cluster, nodes, projects, and sessions."
           >
-            {isOrgAdmin && (
+            {orgAdmin && (
               <form onSubmit={onInvite} className="mb-4 flex flex-wrap gap-2">
                 <Input
                   type="email"
@@ -327,7 +303,7 @@ export function OrganizationPage() {
                           {m.email} · {m.role}
                         </div>
                       </div>
-                      {isOrgAdmin && m.userId !== auth?.user.id && (
+                      {orgAdmin && m.userId !== auth?.user.id && (
                         <Button
                           type="button"
                           variant="outline"
@@ -356,7 +332,7 @@ export function OrganizationPage() {
                             {inv.role} · expires {formatDate(inv.expiresAt)}
                           </div>
                         </div>
-                        {isOrgAdmin && (
+                        {orgAdmin && (
                           <Button
                             type="button"
                             variant="outline"
@@ -424,24 +400,15 @@ export function OrganizationPage() {
                 <AlertTitle className="font-mono text-[11px] font-medium text-primary">
                   Copy now — shown once
                 </AlertTitle>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  onClick={() =>
-                    void copy(
-                      "join",
-                      `sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${mintedJoin.token}`,
-                    )
-                  }
-                  className="shrink-0 border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
-                >
-                  {copied === "join" ? "Copied" : "Copy join command"}
-                </Button>
+                <CopyButton
+                  text={joinCommand(origin, mintedJoin.token)}
+                  label="Copy join command"
+                  className="shrink-0 border-primary/40 text-primary hover:bg-primary/10 hover:text-primary"
+                />
               </div>
               <AlertDescription className="mt-1.5 min-w-0">
                 <pre className="max-w-full overflow-x-auto font-mono text-[11px] text-foreground">
-                  {`sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${mintedJoin.token}`}
+                  {joinCommand(origin, mintedJoin.token)}
                 </pre>
               </AlertDescription>
             </Alert>
@@ -535,15 +502,11 @@ export function OrganizationPage() {
                 <AlertTitle className="font-mono text-[11px] font-medium text-primary">
                   Copy now — shown once
                 </AlertTitle>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  onClick={() => void copy("api", mintedApi.token)}
-                  className="shrink-0 border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
-                >
-                  {copied === "api" ? "Copied" : "Copy token"}
-                </Button>
+                <CopyButton
+                  text={mintedApi.token}
+                  label="Copy token"
+                  className="shrink-0 border-primary/40 text-primary hover:bg-primary/10 hover:text-primary"
+                />
               </div>
               <AlertDescription className="mt-1.5 min-w-0">
                 <pre className="max-w-full overflow-x-auto font-mono text-[11px] text-foreground">{mintedApi.token}</pre>

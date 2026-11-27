@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commandSummary, shellJoinWords, shellQuoteWord, unwrapCommand } from "../lib/command";
 import { CodeLines, useHighlighter } from "./CodeLines";
+import { CopyButton } from "./CopyButton";
 
 const SHELL_VAR_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -22,62 +23,6 @@ export function formatRawWithEnv(raw: string, env?: readonly string[]): string {
   if (!env || env.length === 0) return raw;
   const prefix = env.map(formatShellEnv).join(" ");
   return raw ? `${prefix} ${raw}` : prefix;
-}
-
-/** Copy text to the clipboard, falling back to `document.execCommand("copy")` over non-HTTPS hosts. */
-export async function copyToClipboard(text: string): Promise<boolean> {
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // Fall through to execCommand fallback (e.g. insecure LAN/tailnet HTTP or denied permission).
-    }
-  }
-  if (typeof document === "undefined" || typeof document.execCommand !== "function") return false;
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "");
-  ta.style.position = "fixed";
-  ta.style.opacity = "0";
-  ta.style.pointerEvents = "none";
-  document.body.appendChild(ta);
-  ta.select();
-  ta.setSelectionRange(0, text.length);
-  let ok = false;
-  try {
-    ok = document.execCommand("copy");
-  } catch {
-    ok = false;
-  } finally {
-    document.body.removeChild(ta);
-  }
-  return ok;
-}
-
-function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const onCopy = () => {
-    void copyToClipboard(text).then((ok) => {
-      if (!ok) return;
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="xs"
-      onClick={onCopy}
-      className="h-6 font-mono text-[10.5px] text-muted-foreground hover:text-foreground"
-      title={`Copy ${label.toLowerCase()} to clipboard`}
-    >
-      {copied ? "✓ Copied" : label}
-    </Button>
-  );
 }
 
 /**

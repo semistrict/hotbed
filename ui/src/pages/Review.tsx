@@ -20,28 +20,26 @@ import {
   type Reviewer,
   type ReviewEvent,
   type Snapshot,
-  type Stamp,
 } from "../api";
 import { Markdown } from "../components/Markdown";
 import { ProjectTag } from "../components/ProjectTag";
 import { SessionLink } from "../components/SessionLink";
+import { StampLine } from "../components/StampLine";
 import { Card, Empty } from "../components/Panel";
 import { useSnapshot } from "../lib/data";
-import { ago } from "../lib/format";
+import { ago, shortSha } from "../lib/format";
 import { remoteName } from "../lib/projects";
+import { actorSummary, isUserActor } from "../lib/stamps";
 import {
-  actorSummary,
   bySeverity,
   commitUrl,
   ended,
   findingReviewer,
   handled,
-  isUserActor,
   numbered,
   QUICKS,
   quickLabel,
   SEVERITIES,
-  short,
   thread,
   where,
 } from "../lib/reviews";
@@ -96,13 +94,13 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
               {r.branch && <span className="text-muted-foreground">{r.branch} · </span>}
               {r.base ? (
                 <>
-                  {short(r.base)}..{short(r.head)}
+                  {shortSha(r.base)}..{shortSha(r.head)}
                 </>
               ) : (
-                <>{short(r.head)}, the whole tree</>
+                <>{shortSha(r.head)}, the whole tree</>
               )}
             </span>
-            {r.snapshotOf && <div className="mt-0.5 text-[11px] text-warning-ink">uncommitted changes on {short(r.snapshotOf)}, as a snapshot commit</div>}
+            {r.snapshotOf && <div className="mt-0.5 text-[11px] text-warning-ink">uncommitted changes on {shortSha(r.snapshotOf)}, as a snapshot commit</div>}
           </Fact>
           <Fact label="implementer">
             {implStamp ? (
@@ -112,7 +110,7 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
                     <ModelPill model={implModel} />
                   </div>
                 ) : null}
-                <StampLine s={s} st={implStamp} now={now} hideModel={implModel !== ""} />
+                <StampLine actor s={s} st={implStamp} now={now} hideModel={implModel !== ""} />
               </div>
             ) : (
               <span className="text-faint">—</span>
@@ -120,11 +118,11 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
           </Fact>
           {separateRequester && r.requested && (
             <Fact label="asked by">
-              <StampLine s={s} st={r.requested} now={now} />
+              <StampLine actor s={s} st={r.requested} now={now} />
             </Fact>
           )}
           <Fact label={r.state === ReviewState.DONE ? "finished" : r.state === ReviewState.FAILED ? "failed" : r.state === ReviewState.CANCELLED ? "cancelled" : "ended"}>
-            {r.ended ? <StampLine s={s} st={r.ended} now={now} /> : <span className="text-faint">not yet</span>}
+            {r.ended ? <StampLine actor s={s} st={r.ended} now={now} /> : <span className="text-faint">not yet</span>}
           </Fact>
         </dl>
 
@@ -267,35 +265,6 @@ function Report({ text, label = "the reviewer's report" }: { text: string; label
   );
 }
 
-/** Clearly distinguishes human user vs AI agent (+ model, subagent, session, T3 thread). */
-function StampLine({ s, st, now, hideModel = false }: { s: Snapshot; st: Stamp; now: number; hideModel?: boolean }) {
-  const user = isUserActor(st);
-  const listed = !user && st.session !== "" && s.sessions.some((x) => x.id === st.session);
-  const titleParts = [new Date(Number(st.at)).toLocaleString()];
-  if (st.t3codeThreadId) titleParts.push(`T3 thread: ${st.t3codeThreadId}`);
-  if (st.subagent) titleParts.push(`subagent: ${st.subagent}`);
-  if (st.model) titleParts.push(`model: ${st.model}`);
-  return (
-    <span className="inline-flex flex-wrap items-center gap-1" title={titleParts.join(" · ")}>
-      {user ? (
-        <>
-          <span className="rounded bg-ember-wash px-1 py-px font-mono text-[10px] font-medium text-primary">user</span>
-          <span className="text-foreground">{st.user || "you"}</span>
-        </>
-      ) : (
-        <>
-          <span className="rounded border border-border px-1 py-px font-mono text-[10px] text-muted-foreground">agent</span>
-          {listed ? <SessionLink id={st.session} /> : <span className="font-mono text-[11px]">{st.session}</span>}
-          {!hideModel && st.model && <span className="rounded bg-muted px-1 py-px font-mono text-[10.5px] text-foreground">{st.model}</span>}
-          {st.subagent && <span className="font-mono text-[10.5px] text-muted-foreground">({st.subagent})</span>}
-        </>
-      )}
-      {st.host && <span className="text-faint">on {st.host}</span>}
-      <span className="text-faint">· {ago(st.at, now)}</span>
-    </span>
-  );
-}
-
 const DECISION: Record<FindingDecision, { text: string; className: string }> = {
   [FindingDecision.UNSPECIFIED]: { text: "undecided", className: "text-muted-foreground border-border" },
   [FindingDecision.OPEN]: { text: "undecided", className: "text-muted-foreground border-border" },
@@ -364,7 +333,7 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5 py-1.5 text-[11.5px]">
             <span className="rounded-md bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] text-primary">{quickLabel(f.quick)}</span>
             <span className="text-muted-foreground">
-              selected by {f.quickBy ? <StampLine s={s} st={f.quickBy} now={now} /> : <span className="font-mono text-faint">unknown</span>}
+              selected by {f.quickBy ? <StampLine actor s={s} st={f.quickBy} now={now} /> : <span className="font-mono text-faint">unknown</span>}
             </span>
           </div>
         )}
@@ -385,16 +354,16 @@ function FixNote({ s, r, f, now }: { s: Snapshot; r: Review; f: Finding; now: nu
         <span className="eyebrow">fixed in</span>
         {url ? (
           <a href={url} target="_blank" rel="noreferrer" className="font-mono text-frost hover:underline" title={f.fix.commit}>
-            {short(f.fix.commit)}
+            {shortSha(f.fix.commit)}
           </a>
         ) : (
           <span className="font-mono text-foreground" title={f.fix.commit}>
-            {short(f.fix.commit)}
+            {shortSha(f.fix.commit)}
           </span>
         )}
         {f.decided && (
           <span className="text-muted-foreground">
-            by <StampLine s={s} st={f.decided} now={now} />
+            by <StampLine actor s={s} st={f.decided} now={now} />
           </span>
         )}
       </div>
@@ -420,7 +389,7 @@ function Evidence({ s, f, now }: { s: Snapshot; f: Finding; now: number }) {
         <span className="eyebrow">invalid — evidence</span>
         {f.decided && (
           <span className="text-muted-foreground">
-            by <StampLine s={s} st={f.decided} now={now} />
+            by <StampLine actor s={s} st={f.decided} now={now} />
           </span>
         )}
       </div>
@@ -456,7 +425,7 @@ function Thread({ s, events, now }: { s: Snapshot; events: ReviewEvent[]; now: n
         <li key={String(e.seq)} className="space-y-1 text-[12.5px]">
           {e.by && (
             <div className="text-[11px] text-muted-foreground">
-              <StampLine s={s} st={e.by} now={now} />
+              <StampLine actor s={s} st={e.by} now={now} />
             </div>
           )}
           {e.quick !== QuickResponse.UNSPECIFIED && (
@@ -547,7 +516,7 @@ function Timeline({ s, r, now }: { s: Snapshot; r: Review; now: number }) {
               {e.findingId !== 0 && <span className="font-mono text-faint"> #{e.findingId}</span>}{" "}
               {e.by && (
                 <>
-                  by <StampLine s={s} st={e.by} now={now} />
+                  by <StampLine actor s={s} st={e.by} now={now} />
                 </>
               )}
               {e.quick !== QuickResponse.UNSPECIFIED && <span>: {quickLabel(e.quick)}</span>}

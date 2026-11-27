@@ -1,7 +1,8 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { ActorKind, ReviewSchema, ReviewerSchema, StampSchema } from "../gen/hotbed/v1/hotbed_pb";
-import { actorSummary, commitUrl, isUserActor, reviewerModels } from "./reviews";
+import { commitUrl, reviewerModels } from "./reviews";
+import { actorSummary, isUserActor } from "./stamps";
 
 describe("commitUrl", () => {
   const sha = "8edf54eddb3e676375fe8ef97f34e26a96f84ca3";

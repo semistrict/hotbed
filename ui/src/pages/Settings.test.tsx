@@ -22,7 +22,8 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: unknown }) => children,
 }));
 
-vi.mock("../lib/auth", () => ({
+vi.mock("../lib/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/auth")>()),
   useAuthMe: () => ({
     data: {
       authenticated: true,
@@ -184,5 +185,25 @@ describe("SettingsPage per-org scoping and RBAC", () => {
     const adminHtml = renderSettings();
     expect(adminHtml).toContain("Start GitHub login");
     expect(adminHtml).toContain("Save credential");
+  });
+
+  it("hides the node scope picker on the org-wide Git Auth tab", () => {
+    mockRole = "admin";
+    mockSearch = { tab: "git" };
+    expect(renderSettings()).not.toContain("Configuration Scope");
+    mockSearch = { tab: "freshen" };
+    expect(renderSettings()).toContain("Configuration Scope");
+  });
+
+  it("renders a node override's VM fields from their specs, hinting at the org defaults it inherits", () => {
+    mockRole = "admin";
+    mockSearch = { scope: "ubu1", tab: "vm" };
+    const html = renderSettings();
+    expect(html).toContain('id="vm-mem"');
+    expect(html).toContain('value="12288"');
+    expect(html).toContain("12.0 GiB");
+    expect(html).toContain("Org default: 8");
+    expect(html).toContain("Managed Guest Kernels (vmlinux)");
+    expect(html).toContain("managed tenant_id = 7");
   });
 });

@@ -113,6 +113,13 @@ export async function fetchAuthMe(): Promise<AuthMe | null> {
   return (await res.json()) as AuthMe;
 }
 
+/** Whether the signed-in user may change the organization: always without WorkOS, else its admins and owners. */
+export function isOrgAdmin(auth: AuthMe | null | undefined): boolean {
+  if (!auth?.workosEnabled) return true;
+  const role = auth.organization?.role;
+  return role === "admin" || role === "owner";
+}
+
 export function isReadOnlyViewer(auth: AuthMe | null | undefined): boolean {
   return Boolean(auth?.workosEnabled && auth.organization?.role === "viewer");
 }

@@ -1,5 +1,4 @@
 import {
-  ActorKind,
   FindingDecision,
   FindingSeverity,
   QuickResponse,
@@ -9,8 +8,8 @@ import {
   type Review,
   type Reviewer,
   type ReviewEvent,
-  type Stamp,
 } from "../api";
+import { shortSha } from "./format";
 
 export const SEVERITIES: { severity: FindingSeverity; label: string; hint: string }[] = [
   { severity: FindingSeverity.IMPORTANT, label: "Important", hint: "bugs the change adds or makes worse" },
@@ -63,14 +62,9 @@ export function handled(f: Finding): boolean {
   return f.decision === FindingDecision.FIXED;
 }
 
-/** A commit as people say it. */
-export function short(commit: string): string {
-  return commit.slice(0, 8);
-}
-
 /** The version reviewed in a line: 8d708783..6cb0ca1f, or 6cb0ca1f for the whole tree. */
 export function versionLine(r: Review): string {
-  return r.base ? `${short(r.base)}..${short(r.head)}` : `${short(r.head)} (whole tree)`;
+  return r.base ? `${shortSha(r.base)}..${shortSha(r.head)}` : `${shortSha(r.head)} (whole tree)`;
 }
 
 export function ended(st: ReviewState): boolean {
@@ -85,27 +79,6 @@ export const QUICKS: { quick: QuickResponse; label: string; hint: string }[] = [
 
 export function quickLabel(q: QuickResponse): string {
   return QUICKS.find((x) => x.quick === q)?.label ?? "";
-}
-
-/** True when a stamp represents a human user (explicit USER or legacy empty session). */
-export function isUserActor(st?: Stamp | null): boolean {
-  if (!st) return false;
-  if (st.actorKind === ActorKind.USER) return true;
-  if (st.actorKind === ActorKind.AGENT) return false;
-  return st.session === "";
-}
-
-/** Short human-readable actor summary, distinguishing User vs Agent (model). */
-export function actorSummary(st?: Stamp | null): string {
-  if (!st) return "unknown";
-  if (isUserActor(st)) {
-    return st.user ? `User (${st.user})` : "User";
-  }
-  const parts: string[] = [];
-  if (st.model) parts.push(st.model);
-  if (st.subagent) parts.push(st.subagent);
-  if (st.session) parts.push(st.session);
-  return parts.length > 0 ? `Agent (${parts.join(" · ")})` : "Agent";
 }
 
 /** Distinct reviewer models recorded on a review, in start order. */

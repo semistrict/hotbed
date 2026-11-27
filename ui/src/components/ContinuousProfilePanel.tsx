@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type ProfileBucket, type ProfileFrame } from "../api";
 import { foldStack } from "../api/folded";
 import { duration, hhmmss } from "../lib/format";
+import { CopyButton } from "./CopyButton";
 import { FlameGraph } from "./FlameGraph";
 import { Card, Empty } from "./Panel";
 
@@ -103,7 +104,6 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
   const [windowBucket, setWindowBucket] = useState<ProfileBucket | null>(null);
   const [rangeTimeline, setRangeTimeline] = useState<ProfileTimeline | null>(null);
   const [view, setView] = useState<ProfileView>("flamegraph");
-  const [copied, setCopied] = useState(false);
 
   // Debounce profile search text so typing does not fire a backend RPC per keystroke.
   useEffect(() => {
@@ -160,17 +160,6 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
   const kernelPct = p && p.matchedSamples > 0n ? 100 - userPct : 0;
 
   const foldedText = p?.stacks.map((s) => `${foldStack(s, p.frames)} ${s.samples}`).join("\n") ?? "";
-
-  const copyFolded = async () => {
-    if (!foldedText) return;
-    try {
-      await navigator.clipboard.writeText(foldedText + "\n");
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch {
-      // Clipboard may be blocked in non-HTTPS contexts.
-    }
-  };
 
   const downloadFolded = () => {
     if (!foldedText) return;
@@ -406,20 +395,17 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
           ) : (
             <div className="space-y-2">
               <div className="flex items-center justify-end gap-2">
-                <button
+                <CopyButton text={foldedText && `${foldedText}\n`} label="Copy folded" />
+                <Button
                   type="button"
-                  onClick={copyFolded}
-                  className="rounded-md border border-border px-2.5 py-1 font-mono text-[11px] text-muted-foreground hover:border-border-strong hover:text-foreground"
-                >
-                  {copied ? "Copied" : "Copy folded"}
-                </button>
-                <button
-                  type="button"
+                  variant="outline"
+                  size="xs"
+                  disabled={!foldedText}
                   onClick={downloadFolded}
-                  className="rounded-md border border-border px-2.5 py-1 font-mono text-[11px] text-muted-foreground hover:border-border-strong hover:text-foreground"
+                  className="font-mono text-[10.5px] text-muted-foreground hover:text-foreground"
                 >
                   Download .folded
-                </button>
+                </Button>
               </div>
               <pre className="max-h-[360px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11px] leading-relaxed text-foreground/85">
                 {foldedText || "(no matching stacks)"}

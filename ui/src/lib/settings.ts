@@ -10,6 +10,7 @@ import {
   type WorkerConfigInput,
 } from "../api";
 import { WorkerConfigSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { bytes, compactDuration } from "./format";
 
 export type TriState = "inherit" | "true" | "false";
 export type ArchKey = "amd64" | "arm64";
@@ -449,6 +450,55 @@ function differsTrimmed<T extends object, K extends keyof T>(a: T, b: T, keys: r
   return keys.some((k) => String(a[k]).trim() !== String(b[k]).trim());
 }
 
+/** The keys of T whose values are strings: the draft's form fields. */
+type StringKeys<T> = { [K in keyof T]: T[K] extends string ? K : never }[keyof T] & string;
+
+/** The draft's nested sections. */
+type DraftSection = "freshen" | "controller" | "vm" | "cladefsFuse" | "system";
+
+/** Where one form field lives in the draft: a top-level key, or a section and a key in it. */
+export type FieldPath =
+  | readonly [StringKeys<SettingsDraft>]
+  | { [S in DraftSection]: readonly [S, StringKeys<SettingsDraft[S]>] }[DraftSection];
+
+/** Where one per-arch artifact map lives in the draft. */
+export type ArtifactPath = readonly ["vm", "kernels" | "guestd"] | readonly ["system", "cladefsd" | "firecracker"];
+
+export function getField(d: SettingsDraft, p: FieldPath): string {
+  if (p.length === 1) return d[p[0]];
+  const section: Record<string, unknown> = d[p[0]];
+  return String(section[p[1]]);
+}
+
+/**
+ * The draft with one field set. Enum fields (default runtime, cache type)
+ * hold one of their spec's options, which the form alone offers.
+ */
+export function setField(d: SettingsDraft, p: FieldPath, value: string): SettingsDraft {
+  if (p.length === 1) return { ...d, [p[0]]: value };
+  return { ...d, [p[0]]: { ...d[p[0]], [p[1]]: value } };
+}
+
+export function getArtifacts(d: SettingsDraft, p: ArtifactPath): ArtifactMapDraft {
+  const section: Record<string, unknown> = d[p[0]];
+  return section[p[1]] as ArtifactMapDraft;
+}
+
+/** The draft with one architecture's artifact patched. */
+export function setArtifact(d: SettingsDraft, p: ArtifactPath, arch: ArchKey, patch: Partial<ArtifactDraft>): SettingsDraft {
+  const map = getArtifacts(d, p);
+  return { ...d, [p[0]]: { ...d[p[0]], [p[1]]: { ...map, [arch]: { ...map[arch], ...patch } } } };
+}
+
+/** Whether changing this field alone can restart the worker (see draftRequiresRestart). */
+export function fieldRequiresRestart(p: FieldPath): boolean {
+  if (p.length === 1) return p[0] === "slice" || p[0] === "unitPropertiesText";
+  const [section, key] = p;
+  if (section === "vm") return key === "enabled" || (VM_STRUCTURAL_KEYS as readonly string[]).includes(key);
+  if (section === "cladefsFuse") return key === "enabled" || (FUSE_STRUCTURAL_KEYS as readonly string[]).includes(key);
+  return false;
+}
+
 /** Which saved config (scope and its content signature) a settings draft was last reset to. */
 export interface DraftSync {
   scope: string;
@@ -503,39 +553,29 @@ export function parseWorkerConfigJson(raw: string): WorkerConfigInput {
   return msg;
 }
 
-export function formatDurationSeconds(sec: number): string {
-  if (!Number.isFinite(sec) || sec < 0) return "—";
-  if (sec === 0) return "disabled";
-  if (sec % 86400 === 0) return `${sec / 86400}d`;
-  if (sec % 3600 === 0) return `${sec / 3600}h`;
-  if (sec % 60 === 0) return `${sec / 60}m`;
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}m ${s}s`;
+/** A duration setting in words: 0 turns the thing off. */
+export function secondsLabel(sec: number): string {
+  return sec === 0 ? "disabled" : compactDuration(sec);
 }
 
+/** What a seconds field holds, or falls back to when left empty. */
 export function formatSecondsHint(raw: string, fallbackSeconds?: number): string {
   const s = raw.trim();
   if (!s) {
-    return fallbackSeconds !== undefined ? `default: ${formatDurationSeconds(fallbackSeconds)}` : "inherited";
+    return fallbackSeconds !== undefined ? `default: ${secondsLabel(fallbackSeconds)}` : "inherited";
   }
   const n = Number(s);
   if (!Number.isFinite(n) || n < 0) return "invalid";
-  return formatDurationSeconds(n);
+  return secondsLabel(n);
 }
 
+/** What a bytes field holds: "16 GiB", or "inherited" when left empty. */
 export function formatBytesHint(raw: string): string {
   const s = raw.trim();
   if (!s) return "inherited";
   if (!/^\d+$/.test(s)) return "invalid";
   const n = Number(s);
-  if (n === 0) return "0 (default)";
-  const gib = n / 1024 ** 3;
-  if (gib >= 1) return `${gib.toFixed(gib >= 10 ? 0 : 1)} GiB`;
-  const mib = n / 1024 ** 2;
-  if (mib >= 1) return `${mib.toFixed(0)} MiB`;
-  return `${n} B`;
+  return n === 0 ? "0 (default)" : bytes(n);
 }
 
 export function draftToCliCommand(scope: string, input: WorkerConfigInput): string {
