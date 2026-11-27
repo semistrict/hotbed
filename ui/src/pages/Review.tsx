@@ -305,7 +305,11 @@ function FindingCard({ r, f, now, delay }: { r: Review; f: Finding; now: number;
             title={f.decided ? `${actorSummary(f.decided)}${f.decided.reason ? `: ${f.decided.reason}` : ""}` : "The implementer has not decided"}
           >
             {decision.text}
-            {f.decided && <span className="ml-1 text-faint">({isUserActor(f.decided) ? "user" : f.decided.model || f.decided.session || "agent"})</span>}
+            {f.decided && (
+              <span className="ml-1 text-faint">
+                ({isUserActor(f.decided) ? "user" : f.decided.model || (f.decided.session ? <SessionLink id={f.decided.session} /> : "agent")})
+              </span>
+            )}
           </Badge>
         </header>
         {f.decided?.reason && (

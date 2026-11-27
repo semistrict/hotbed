@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { clients, type Node, type Session, type Snapshot } from "../api";
@@ -15,25 +16,37 @@ export function useSnapshot() {
   });
 }
 
+/** What useSession found. */
+export type SessionLookup =
+  | { state: "pending" }
+  | { state: "found"; s: Snapshot; session: Session; listed: boolean }
+  | { state: "missing" }
+  | { state: "failed"; error: unknown };
+
 /**
- * A session by id, live or ended at any age: the snapshot lists those live or
- * ended in the last day, and GetSession, which keeps every session, answers
- * for an older one. `pending` while either is still loading; then `session`
- * is undefined only for an id no session has.
+ * A session by id, live or ended at any age. The snapshot lists the newest
+ * (`listed`); GetSession, which keeps every session, answers for the rest,
+ * mostly ended ones, which no longer change. A rare live one past the
+ * snapshot's cap is asked again every few seconds. Only GetSession's NotFound
+ * makes a session `missing`; any other error is `failed`.
  */
-export function useSession(id: string): { s: Snapshot | undefined; session: Session | undefined; pending: boolean } {
+export function useSession(id: string): SessionLookup {
   const { data: s } = useSnapshot();
   const listed = s?.sessions.find((x) => x.id === id);
   const older = useQuery({
     queryKey: ["session", id],
     queryFn: () => clients.sessions.getSession({ id }),
     enabled: s !== undefined && listed === undefined && id !== "",
-    // Only an ended session falls out of the snapshot, and an ended session no longer changes.
-    staleTime: Infinity,
+    staleTime: (q) => (q.state.data?.session?.endedAt !== undefined ? Infinity : 0),
+    refetchInterval: (q) => (q.state.data !== undefined && q.state.data.session?.endedAt === undefined ? 3000 : false),
     retry: false,
   });
-  const session = listed ?? older.data?.session;
-  return { s, session, pending: s === undefined || (listed === undefined && id !== "" && older.isPending) };
+  if (s === undefined) return { state: "pending" };
+  if (listed) return { state: "found", s, session: listed, listed: true };
+  if (older.data?.session) return { state: "found", s, session: older.data.session, listed: false };
+  if (id === "") return { state: "missing" };
+  if (older.isError) return ConnectError.from(older.error).code === Code.NotFound ? { state: "missing" } : { state: "failed", error: older.error };
+  return { state: "pending" };
 }
 
 /** Retire an offline node so it leaves the cluster and cockpit while keeping its history. */

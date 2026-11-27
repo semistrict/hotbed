@@ -31,7 +31,7 @@ export function StampLine({
   if (st.subagent) title.push(`subagent: ${st.subagent}`);
   if (st.model) title.push(`model: ${st.model}`);
   return (
-    <span title={title.join(" · ")}>
+    <span>
       {verb !== undefined && (verb ? `${verb} by ` : "by ")}
       {actor &&
         (user ? (
@@ -47,7 +47,7 @@ export function StampLine({
         <> <span className="rounded bg-muted px-1 py-px font-mono text-[10.5px] text-foreground">{st.model}</span></>
       )}
       {actor && !user && st.subagent && <span className="font-mono text-[10.5px] text-muted-foreground"> ({st.subagent})</span>}
-      {st.host && <span className="text-faint"> on {st.host}</span>}, {ago(st.at, now)}
+      {st.host && <span className="text-faint"> on {st.host}</span>}, <span title={title.join(" · ")}>{ago(st.at, now)}</span>
     </span>
   );
 }

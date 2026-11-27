@@ -75,6 +75,11 @@ export function sessionCommands(s: Snapshot, sessionId: string): SessionCommand[
   return rows.sort((a, b) => b.at - a.at);
 }
 
+/** A session's commands as ListCommands gives them (from history), newest first. */
+export function commandRows(commands: Command[], now: number): SessionCommand[] {
+  return commands.map((c) => fromCommand(c, now)).sort((a, b) => b.at - a.at);
+}
+
 function fromCommand(c: Command, now: number): SessionCommand {
   const at = Number(c.startedAt ?? c.queuedAt);
   const end = c.endedAt !== undefined ? Number(c.endedAt) : now;

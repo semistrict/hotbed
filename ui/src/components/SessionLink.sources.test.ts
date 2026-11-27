@@ -12,14 +12,14 @@ describe("session links", () => {
   it("go through SessionLink", () => {
     expect(Object.keys(sources)).toContain("../pages/Board.tsx");
     const handMade = Object.entries(sources)
-      .filter(([path, text]) => !ALLOWED.has(path) && /to="\/sessions\/\$id"/.test(text))
+      .filter(([path, text]) => !ALLOWED.has(path) && /\bto(=|:\s*)\{?["'`]\/sessions\/\$id/.test(text))
       .map(([path]) => path);
     expect(handMade).toEqual([]);
   });
 
   it("are not gated on the snapshot listing the session", () => {
     const gated = Object.entries(sources)
-      .filter(([, text]) => /sessions\.(some|find)\(\(x\) => x\.id === [a-zA-Z.?]*session/.test(text))
+      .filter(([, text]) => /sessions\.(some|find)\(\(\w+\) => \w+\.id ===|new Set\([\w.?]*sessions\.map\(\(\w+\) => \w+\.id\)\)/.test(text))
       .map(([path]) => path);
     expect(gated).toEqual([]);
   });

@@ -41,9 +41,11 @@ export function SessionLink({ id, className = "", empty = <span className="font-
 
 /** The hover card's body: the session, asked for once shown. */
 export function SessionPreview({ id }: { id: string }) {
-  const { s, session, pending } = useSession(id);
-  if (pending || !s) return <p className="font-mono text-[11.5px] text-faint">{id}…</p>;
-  if (!session) return <p className="text-[12px] text-muted-foreground">No session is named {id}.</p>;
+  const found = useSession(id);
+  if (found.state === "pending") return <p className="font-mono text-[11.5px] text-faint">{id}…</p>;
+  if (found.state === "missing") return <p className="text-[12px] text-muted-foreground">No session is named {id}.</p>;
+  if (found.state === "failed") return <p className="font-mono text-[11.5px] text-critical">Cannot load {id}: {String(found.error)}</p>;
+  const { s, session } = found;
   const now = Number(s.now);
   return (
     <div className="space-y-2 text-[12px]">

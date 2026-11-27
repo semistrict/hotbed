@@ -1,6 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CommandState, type Session, type Snapshot } from "../api";
+import { clients, CommandState, type Session, type Snapshot } from "../api";
 import { CommandInline } from "../components/CommandBlock";
 import { FAILURE } from "../components/CommandTable";
 import { Crumbs } from "../components/Crumbs";
@@ -8,7 +10,7 @@ import { Card, Empty, StatTile } from "../components/Panel";
 import { BenchTag, KindTag, StateBadge } from "../components/StateBadges";
 import { nodeName, repoName, useSession } from "../lib/data";
 import { ago, duration, hhmmss, speedup } from "../lib/format";
-import { idleLeftMs, sessionCommands } from "../lib/sessions";
+import { commandRows, idleLeftMs, sessionCommands, type SessionCommand } from "../lib/sessions";
 import { filesChanged } from "../lib/workspaces";
 import { NotFound } from "./NotFound";
 import { PageTitle } from "../components/PageTitle";
@@ -19,15 +21,42 @@ import { WorkspaceStateLabel } from "./Workspace";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/sessions/$id" });
-  const { s, session, pending } = useSession(id);
-  if (pending || !s) return null;
-  if (!session) return <NotFound />;
-  return <SessionView s={s} session={session} />;
+  const found = useSession(id);
+  // The snapshot's commands are the last day's; an ended session it no longer
+  // lists has its commands in history (30 days), which ListCommands reads.
+  // Never for a live one: asking for its commands would keep it alive.
+  const fromHistory = found.state === "found" && !found.listed && found.session.endedAt !== undefined;
+  const history = useQuery({
+    queryKey: ["session-commands", id],
+    queryFn: () => clients.workspaces.listCommands({ sessionId: id, ended: true, limit: 0 }),
+    enabled: fromHistory,
+    staleTime: Infinity,
+    retry: false,
+  });
+  if (found.state === "pending") return null;
+  if (found.state === "missing") return <NotFound />;
+  if (found.state === "failed") {
+    return <p className="rise rounded-xl border border-border bg-card/70 px-3.5 py-2.5 font-mono text-[12px] text-critical">Cannot load session {id}: {String(found.error)}</p>;
+  }
+  if (!fromHistory) {
+    return <SessionView s={found.s} session={found.session} rows={sessionCommands(found.s, id)} commands={<>Every command the session ran, newest first: live ones, and those that ended in the last day</>} />;
+  }
+  if (history.isPending) return null;
+  if (history.isError) {
+    return <SessionView s={found.s} session={found.session} rows={[]} commands={<span className="text-critical">Cannot load its commands: {String(history.error)}</span>} />;
+  }
+  return (
+    <SessionView
+      s={found.s}
+      session={found.session}
+      rows={commandRows(history.data.commands, Number(found.s.now))}
+      commands={<>Every command the session ran, newest first, as history keeps them (30 days)</>}
+    />
+  );
 }
 
-function SessionView({ s, session }: { s: Snapshot; session: Session }) {
+function SessionView({ s, session, rows, commands }: { s: Snapshot; session: Session; rows: SessionCommand[]; commands: ReactNode }) {
   const now = Number(s.now);
-  const rows = sessionCommands(s, session.id);
   const failed = rows.filter((r) => r.state === CommandState.FAILED).length;
   const live = rows.filter((r) => r.live).length;
   const saved = rows.reduce((n, r) => n + (!r.live && r.coldSeconds !== null ? Math.max(0, r.coldSeconds - r.seconds) : 0), 0);
@@ -163,7 +192,7 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
         )}
       </Card>
 
-      <Card title="Commands" sub="Every command the session ran, newest first: live ones, and those that ended in the last day" delay={60}>
+      <Card title="Commands" sub={commands} delay={60}>
         {rows.length === 0 ? (
           <Empty>Nothing run yet.</Empty>
         ) : (
