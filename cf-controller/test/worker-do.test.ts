@@ -142,17 +142,17 @@ describe("WorkerDO per-org / per-worker SQLite storage", () => {
 		const ctrlStub = testEnv.CONTROLLER.getByName("default");
 		const ctrlSamples = await ctrlStub.adminQuerySql("SELECT COUNT(*) AS c FROM samples");
 		const ctrlEvents = await ctrlStub.adminQuerySql("SELECT COUNT(*) AS c FROM events");
-		expect(Number(ctrlSamples.rows[0].c)).toBe(0);
-		expect(Number(ctrlEvents.rows[0].c)).toBe(0);
+		expect(ctrlSamples.ok && Number(ctrlSamples.result.rows[0].c)).toBe(0);
+		expect(ctrlEvents.ok && Number(ctrlEvents.result.rows[0].c)).toBe(0);
 
 		// Verify WorkerDO holds all 3 tables (worker_logs, worker_samples, worker_events).
 		const wStub = testEnv.WORKER.getByName(workerDoName(joined.clusterId, "node-ubu1"));
 		const wLogs = await wStub.adminQuerySql("SELECT COUNT(*) AS c FROM worker_logs");
 		const wSamples = await wStub.adminQuerySql("SELECT COUNT(*) AS c FROM worker_samples");
 		const wEvents = await wStub.adminQuerySql("SELECT COUNT(*) AS c FROM worker_events");
-		expect(Number(wLogs.rows[0].c)).toBe(3);
-		expect(Number(wSamples.rows[0].c)).toBe(1);
-		expect(Number(wEvents.rows[0].c)).toBe(1);
+		expect(wLogs.ok && Number(wLogs.result.rows[0].c)).toBe(3);
+		expect(wSamples.ok && Number(wSamples.result.rows[0].c)).toBe(1);
+		expect(wEvents.ok && Number(wEvents.result.rows[0].c)).toBe(1);
 
 		// 4. GetDaemonLogs works directly from WorkerDO even with NO open worker tunnel!
 		// Default (UNSPECIFIED, includeInfo=false): returns WARN + ERROR only.
@@ -212,7 +212,6 @@ describe("WorkerDO per-org / per-worker SQLite storage", () => {
 		const scope: AdminOrgScope = {
 			controllerDoName: "default",
 			orgId: "",
-			isGlobalAdmin: true,
 		};
 
 		// Same-org WorkerDO resolves cleanly.

@@ -14,7 +14,7 @@ export default defineConfig({
 			TenantRegistryDO: exports.durableObject({ storage: "sqlite" }),
 			CommandDO: exports.durableObject({ storage: "sqlite" }),
 			WorkerDO: exports.durableObject({ storage: "sqlite" }),
-			AdminAgentDO: exports.durableObject({ storage: "sqlite" }),
+			AdminAgentDO: exports.durableObject({ state: "deleted" }),
 		},
 		env: {
 			CONTROLLER: bindings.durableObject({
@@ -33,11 +33,6 @@ export default defineConfig({
 				worker: "hotbed-controller",
 				exportName: "WorkerDO",
 			}),
-			ADMIN_AGENT: bindings.durableObject({
-				worker: "hotbed-controller",
-				exportName: "AdminAgentDO",
-			}),
-			AI: bindings.ai({ dev: { remote: true } }),
 			ASSETS: bindings.assets(),
 			OWNER_TOKEN: bindings.secret(),
 			JOIN_TOKEN: bindings.secret(),
@@ -57,9 +52,6 @@ export default defineConfig({
 			UPDATES_REPO: bindings.text("semistrict/hotbed"),
 			// Optional Cloudflare Access vars:
 			//   CF_ACCESS_AUD, CF_ACCESS_TEAM_DOMAIN
-			// Optional Admin Agent secrets (Workers AI binding works out of the box):
-			//   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID (for account-wide DO listing & Workers Observability)
-			//   ANTHROPIC_API_KEY, OPENAI_API_KEY, ADMIN_AGENT_MODEL (optional model provider overrides)
 			// Optional R2 bucket binding for caching /builds/{build}/{asset} (separate from hotbed-cladefs):
 			//   BUILDS_BUCKET: bindings.r2({ bucketName: "hotbed-builds" }),
 		},

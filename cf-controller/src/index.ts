@@ -1,4 +1,3 @@
-import { AdminAgentDO } from "./admin-agent-do.ts";
 import { handleAdminAgentRoute } from "./admin-agent-routes.ts";
 import { stripInternalAuthHeaders } from "./auth.ts";
 import { CommandDO } from "./command-do.ts";
@@ -16,7 +15,7 @@ import {
 	withSetCookie,
 } from "./workos-routes.ts";
 
-export { AdminAgentDO, CommandDO, ControllerDO, TenantRegistryDO, WorkerDO };
+export { CommandDO, ControllerDO, TenantRegistryDO, WorkerDO };
 
 const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/admin/", "/board/attachments/"];
 
@@ -121,14 +120,10 @@ export default {
 			if (gcRes) return gcRes;
 		}
 
-		// 2.6. Admin Agent (Cloudflare Agents SDK WebSocket/HTTP + direct DO SQL/schema endpoints).
-		if (
-			url.pathname === "/agents/admin-agent" ||
-			url.pathname.startsWith("/agents/admin-agent/") ||
-			url.pathname.startsWith("/api/admin-agent/")
-		) {
-			const agentRes = await handleAdminAgentRoute(request, url, env);
-			if (agentRes) return agentRes;
+		// 2.6. Admin Explorer (org-scoped read-only DO SQL/schema, health, and tenant GC routes).
+		if (url.pathname.startsWith("/api/admin-agent/")) {
+			const adminRes = await handleAdminAgentRoute(request, url, env);
+			if (adminRes) return adminRes;
 		}
 
 		// 3. Controller API, worker WebSocket tunnel, build downloads, admin endpoints, /healthz.

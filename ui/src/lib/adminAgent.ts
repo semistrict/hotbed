@@ -1,33 +1,19 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { fetchJson } from "./http";
 
-export type DoBindingName = "CONTROLLER" | "TENANT_REGISTRY" | "COMMAND" | "WORKER" | "ADMIN_AGENT";
-
-export interface AdminModelOption {
-  id: string;
-  label: string;
-  provider: "workers-ai" | "anthropic" | "openai";
-}
+export type DoBindingName = "CONTROLLER" | "COMMAND" | "WORKER";
 
 export interface AdminOrgScopeInfo {
   controllerDoName: string;
   orgId: string | null;
   clusterId: string | null;
   cladefsTenantId: number | null;
-  isGlobalAdmin: boolean;
 }
 
 export interface AdminAgentStatus {
   ok: boolean;
   scope: AdminOrgScopeInfo;
-  aiConfigured: boolean;
-  workersAiBound: boolean;
-  anthropicConfigured: boolean;
-  openaiConfigured: boolean;
-  cloudflareApiConfigured: boolean;
   gcWorkerConfigured: boolean;
-  defaultModel: string;
-  models: AdminModelOption[];
   bindings: DoBindingName[];
   controllers: Array<{ name: string; orgKey: string; tenantId: string | null }>;
   workers?: Array<{ nodeId: string; hostname: string; doName: string; controller: string }>;
@@ -122,45 +108,4 @@ export function useRunDoSql() {
         body: JSON.stringify(input),
       }),
   });
-}
-
-export interface AdminThreadEntry {
-  id: string;
-  label: string;
-  createdAt: number;
-}
-
-const THREADS_STORAGE_KEY_PREFIX = "hotbed-admin-agent-threads:";
-
-export function loadAdminThreads(scopeKey = "default"): AdminThreadEntry[] {
-  try {
-    const raw = localStorage.getItem(`${THREADS_STORAGE_KEY_PREFIX}${scopeKey}`);
-    if (!raw) return [{ id: "main", label: "Main thread", createdAt: Date.now() }];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return [{ id: "main", label: "Main thread", createdAt: Date.now() }];
-    }
-    return parsed.filter(
-      (x): x is AdminThreadEntry =>
-        Boolean(x) &&
-        typeof x === "object" &&
-        typeof (x as AdminThreadEntry).id === "string" &&
-        typeof (x as AdminThreadEntry).label === "string",
-    );
-  } catch {
-    return [{ id: "main", label: "Main thread", createdAt: Date.now() }];
-  }
-}
-
-export function saveAdminThreads(scopeKey: string, threads: AdminThreadEntry[]): void {
-  try {
-    localStorage.setItem(`${THREADS_STORAGE_KEY_PREFIX}${scopeKey}`, JSON.stringify(threads.slice(0, 20)));
-  } catch {
-    // Ignore private-window storage failures.
-  }
-}
-
-export function newThreadId(): string {
-  const rand = Math.random().toString(36).slice(2, 8);
-  return `chat-${Date.now().toString(36)}-${rand}`;
 }

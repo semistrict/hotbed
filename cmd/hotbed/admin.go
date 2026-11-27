@@ -20,9 +20,6 @@ type adminCmd struct {
 	SQL      adminSQLCmd      `cmd:"" name:"sql" help:"Run a read-only SQLite query (SELECT / WITH / EXPLAIN / read-only PRAGMA) on an org-scoped Durable Object."`
 	Health   adminHealthCmd   `cmd:"" help:"Fetch live health for this organization's Controller Durable Object."`
 	GC       adminGCCmd       `cmd:"" name:"gc" help:"Inspect CladeFS R2 storage usage and GC dry-run/live status strictly for this organization's tenant ID."`
-	CFDOs    adminCFDOsCmd    `cmd:"" name:"cf-dos" help:"List Cloudflare Durable Object namespaces or 64-hex object IDs via the Cloudflare Account REST API (cluster-owner only)."`
-	CFLogs   adminCFLogsCmd   `cmd:"" name:"cf-logs" help:"Query Cloudflare Workers Observability telemetry events/invocations/calculations (cluster-owner only)."`
-	CFGet    adminCFGetCmd    `cmd:"" name:"cf-get" help:"Make a read-only GET request to the Cloudflare Account REST API (/accounts/{id}/<path>; cluster-owner only)."`
 }
 
 // ---- admin discover ----
@@ -37,7 +34,6 @@ type adminOrgScope struct {
 	OrgID            *string `json:"orgId"`
 	ClusterID        *string `json:"clusterId"`
 	CladeFSTenantID  *int64  `json:"cladefsTenantId"`
-	IsGlobalAdmin    bool    `json:"isGlobalAdmin"`
 }
 
 type adminControllerEntry struct {
@@ -52,26 +48,13 @@ type adminRecentCommand struct {
 	Controller string `json:"controller"`
 }
 
-type adminModelOption struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Provider string `json:"provider"`
-}
-
 type adminDiscoverResult struct {
-	OK                      bool                   `json:"ok"`
-	Scope                   adminOrgScope          `json:"scope"`
-	AIConfigured            bool                   `json:"aiConfigured"`
-	WorkersAIBound          bool                   `json:"workersAiBound"`
-	AnthropicConfigured     bool                   `json:"anthropicConfigured"`
-	OpenAIConfigured        bool                   `json:"openaiConfigured"`
-	CloudflareAPIConfigured bool                   `json:"cloudflareApiConfigured"`
-	GCWorkerConfigured      bool                   `json:"gcWorkerConfigured"`
-	DefaultModel            string                 `json:"defaultModel"`
-	Models                  []adminModelOption     `json:"models"`
-	Bindings                []string               `json:"bindings"`
-	Controllers             []adminControllerEntry `json:"controllers"`
-	RecentCommands          []adminRecentCommand   `json:"recentCommands"`
+	OK                 bool                   `json:"ok"`
+	Scope              adminOrgScope          `json:"scope"`
+	GCWorkerConfigured bool                   `json:"gcWorkerConfigured"`
+	Bindings           []string               `json:"bindings"`
+	Controllers        []adminControllerEntry `json:"controllers"`
+	RecentCommands     []adminRecentCommand   `json:"recentCommands"`
 }
 
 func (c *adminDiscoverCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -94,8 +77,8 @@ func (c *adminDiscoverCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 type adminSchemaCmd struct {
 	controllerClient
-	Binding string `short:"b" help:"Durable Object binding: CONTROLLER, COMMAND, ADMIN_AGENT, or TENANT_REGISTRY (defaults to CONTROLLER, or COMMAND with --command)."`
-	Name    string `help:"Durable Object logical name (e.g. default, org:<id>, cmd:<clusterId>:<cmdId>, admin:<ctrl>:<thread>)."`
+	Binding string `short:"b" help:"Durable Object binding: CONTROLLER, COMMAND, or WORKER (defaults to CONTROLLER, or COMMAND with --command)."`
+	Name    string `help:"Durable Object logical name (e.g. default, org:<id>, cmd:<clusterId>:<cmdId>)."`
 	ID      string `help:"64-character hex Cloudflare Durable Object ID."`
 	Command string `help:"Shorthand: inspect the Command Durable Object for this command ID within your org."`
 }
@@ -171,7 +154,7 @@ func (c *adminSchemaCmd) Exec(ctx context.Context, d deps) (any, error) {
 type adminSQLCmd struct {
 	controllerClient
 	Query   string   `arg:"" help:"Read-only SQLite query (pass '-' to read from stdin)."`
-	Binding string   `short:"b" help:"Durable Object binding: CONTROLLER, COMMAND, ADMIN_AGENT, or TENANT_REGISTRY (defaults to CONTROLLER, or COMMAND with --command)."`
+	Binding string   `short:"b" help:"Durable Object binding: CONTROLLER, COMMAND, or WORKER (defaults to CONTROLLER, or COMMAND with --command)."`
 	Name    string   `help:"Durable Object logical name."`
 	ID      string   `help:"64-character hex Cloudflare Durable Object ID."`
 	Command string   `help:"Shorthand: query the Command Durable Object for this command ID within your org."`
@@ -325,131 +308,6 @@ func (c *adminGCCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return out, nil
 }
 
-// ---- admin cf-dos ----
-
-type adminCFDOsCmd struct {
-	controllerClient
-	NamespaceID string `name:"namespace-id" help:"If set, list 64-hex object IDs in this namespace; otherwise list namespaces."`
-	Script      string `default:"hotbed-controller" help:"Filter namespaces by Worker script name (use '*' for all scripts)."`
-	Limit       int    `help:"Maximum objects to return (1-1000)."`
-	Cursor      string `help:"Pagination cursor from a previous call."`
-}
-
-type adminCFDOsResult struct {
-	OK          bool             `json:"ok"`
-	Status      int              `json:"status,omitempty"`
-	Error       string           `json:"error,omitempty"`
-	Namespaces  []map[string]any `json:"namespaces,omitempty"`
-	Objects     []map[string]any `json:"objects,omitempty"`
-	NamespaceID string           `json:"namespaceId,omitempty"`
-	ResultInfo  map[string]any   `json:"resultInfo,omitempty"`
-}
-
-func (c *adminCFDOsCmd) Exec(ctx context.Context, d deps) (any, error) {
-	q := url.Values{}
-	if ns := strings.TrimSpace(c.NamespaceID); ns != "" {
-		q.Set("namespaceId", ns)
-	}
-	if script := strings.TrimSpace(c.Script); script != "" {
-		q.Set("script", script)
-	}
-	if c.Limit > 0 {
-		q.Set("limit", strconv.Itoa(c.Limit))
-	}
-	if cur := strings.TrimSpace(c.Cursor); cur != "" {
-		q.Set("cursor", cur)
-	}
-	path := "/api/admin-agent/cf/do-objects"
-	if encoded := q.Encode(); encoded != "" {
-		path += "?" + encoded
-	}
-	var out adminCFDOsResult
-	if err := c.controllerJSON(ctx, d, http.MethodGet, path, nil, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// ---- admin cf-logs ----
-
-type adminCFLogsCmd struct {
-	controllerClient
-	View    string `default:"events" enum:"events,invocations,calculations" help:"Telemetry view: events, invocations, or calculations."`
-	Script  string `default:"hotbed-controller" help:"Worker script name to query."`
-	Minutes int    `default:"60" help:"Lookback window in minutes (1-10080)."`
-	Limit   int    `default:"50" help:"Maximum records to return (1-200)."`
-	Search  string `help:"Full-text substring filter across telemetry events."`
-	Level   string `help:"Log level filter: debug, info, warn, or error."`
-}
-
-type adminCFRawResult struct {
-	OK     bool           `json:"ok"`
-	Status int            `json:"status,omitempty"`
-	Error  string         `json:"error,omitempty"`
-	Data   any            `json:"data,omitempty"`
-	Result any            `json:"result,omitempty"`
-	Extra  map[string]any `json:"-"`
-}
-
-func (c *adminCFLogsCmd) Exec(ctx context.Context, d deps) (any, error) {
-	payload := map[string]any{
-		"view":        c.View,
-		"scriptName":  c.Script,
-		"minutesBack": c.Minutes,
-		"limit":       c.Limit,
-	}
-	if s := strings.TrimSpace(c.Search); s != "" {
-		payload["search"] = s
-	}
-	if lvl := strings.TrimSpace(c.Level); lvl != "" {
-		payload["level"] = lvl
-	}
-	var out map[string]any
-	if err := c.controllerJSON(ctx, d, http.MethodPost, "/api/admin-agent/cf/observability", payload, &out); err != nil {
-		return nil, err
-	}
-	return adminCFJSONResult{Title: "Cloudflare Workers Observability", Body: out}, nil
-}
-
-// ---- admin cf-get ----
-
-type adminCFGetCmd struct {
-	controllerClient
-	Path  string   `arg:"" help:"Path relative to /accounts/{account_id}/ (e.g. workers/scripts, r2/buckets)."`
-	Query []string `short:"q" name:"query" help:"Optional query parameter in key=value form. Repeatable."`
-}
-
-type adminCFJSONResult struct {
-	Title string         `json:"-"`
-	Body  map[string]any `json:"body"`
-}
-
-func (r adminCFJSONResult) MarshalJSON() ([]byte, error) {
-	return json.Marshal(r.Body)
-}
-
-func (c *adminCFGetCmd) Exec(ctx context.Context, d deps) (any, error) {
-	payload := map[string]any{
-		"path": strings.TrimSpace(c.Path),
-	}
-	if len(c.Query) > 0 {
-		qm := make(map[string]any, len(c.Query))
-		for _, pair := range c.Query {
-			k, v, ok := strings.Cut(pair, "=")
-			if !ok || strings.TrimSpace(k) == "" {
-				return nil, api.Errorf(api.CodeInvalidArgs, "invalid --query %q (expected key=value)", pair)
-			}
-			qm[strings.TrimSpace(k)] = v
-		}
-		payload["query"] = qm
-	}
-	var out map[string]any
-	if err := c.controllerJSON(ctx, d, http.MethodPost, "/api/admin-agent/cf/get", payload, &out); err != nil {
-		return nil, err
-	}
-	return adminCFJSONResult{Title: "Cloudflare API GET " + strings.TrimSpace(c.Path), Body: out}, nil
-}
-
 // ---- Plain-text formatting for hotbed admin ----
 
 func formatAdminReport(data any) (string, bool) {
@@ -464,10 +322,6 @@ func formatAdminReport(data any) (string, bool) {
 		return formatAdminHealth(v), true
 	case adminGCResult:
 		return formatAdminGC(v), true
-	case adminCFDOsResult:
-		return formatAdminCFDOs(v), true
-	case adminCFJSONResult:
-		return formatAdminPrettyJSON(v.Body), true
 	default:
 		return "", false
 	}
@@ -479,9 +333,6 @@ func formatAdminDiscover(r adminDiscoverResult) string {
 	if r.Scope.OrgID != nil && *r.Scope.OrgID != "" {
 		scopeLabel = fmt.Sprintf("%s (%s)", *r.Scope.OrgID, r.Scope.ControllerDOName)
 	}
-	if r.Scope.IsGlobalAdmin {
-		scopeLabel += " [global admin]"
-	}
 	fmt.Fprintf(&b, "scope:    %s\n", scopeLabel)
 	if r.Scope.ClusterID != nil && *r.Scope.ClusterID != "" {
 		fmt.Fprintf(&b, "cluster:  %s\n", *r.Scope.ClusterID)
@@ -490,7 +341,7 @@ func formatAdminDiscover(r adminDiscoverResult) string {
 		fmt.Fprintf(&b, "tenant:   %d\n", *r.Scope.CladeFSTenantID)
 	}
 	fmt.Fprintf(&b, "bindings: %s\n", strings.Join(r.Bindings, ", "))
-	fmt.Fprintf(&b, "gc:       %v  cf-api: %v  ai: %v\n", r.GCWorkerConfigured, r.CloudflareAPIConfigured, r.AIConfigured)
+	fmt.Fprintf(&b, "gc:       %v\n", r.GCWorkerConfigured)
 	if len(r.RecentCommands) > 0 {
 		b.WriteString("\nRecent Command Durable Objects:\n")
 		tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
@@ -548,13 +399,35 @@ func formatAdminSchema(r adminSchemaResult) string {
 	return b.String()
 }
 
+// sanitizeTerminalCell escapes ASCII and C1 control characters so untrusted
+// SQLite values cannot inject ANSI/OSC terminal escape sequences.
+func sanitizeTerminalCell(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteByte(' ')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func formatSQLCell(v any) string {
 	if v == nil {
 		return "NULL"
 	}
 	switch x := v.(type) {
 	case string:
-		s := strings.ReplaceAll(strings.ReplaceAll(x, "\n", `\n`), "\t", " ")
+		s := sanitizeTerminalCell(x)
 		if len(s) > 80 {
 			return s[:77] + "..."
 		}
@@ -569,9 +442,9 @@ func formatSQLCell(v any) string {
 	default:
 		b, err := json.Marshal(x)
 		if err != nil {
-			return fmt.Sprint(x)
+			return sanitizeTerminalCell(fmt.Sprint(x))
 		}
-		s := string(b)
+		s := sanitizeTerminalCell(string(b))
 		if len(s) > 80 {
 			return s[:77] + "..."
 		}
@@ -631,12 +504,16 @@ func formatAdminHealth(r adminHealthResult) string {
 
 func formatAdminGC(r adminGCResult) string {
 	if r.Result != nil {
-		return formatAdminPrettyJSON(map[string]any{
+		b, err := json.MarshalIndent(map[string]any{
 			"ok":       r.OK,
 			"tenantId": r.TenantID,
 			"cell":     r.Cell,
 			"result":   r.Result,
-		})
+		}, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("%v\n", r.Result)
+		}
+		return string(b) + "\n"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "tenant=%s  ok=%v", r.TenantID, r.OK)
@@ -676,40 +553,4 @@ func formatAdminGC(r adminGCResult) string {
 		}
 	}
 	return b.String()
-}
-
-func formatAdminCFDOs(r adminCFDOsResult) string {
-	if !r.OK && r.Error != "" {
-		return fmt.Sprintf("error: %s\n", r.Error)
-	}
-	var b strings.Builder
-	tw := tabwriter.NewWriter(&b, 0, 2, 2, ' ', 0)
-	if len(r.Namespaces) > 0 {
-		fmt.Fprintln(tw, "ID\tNAME\tCLASS\tSCRIPT")
-		for _, ns := range r.Namespaces {
-			fmt.Fprintf(tw, "%v\t%v\t%v\t%v\n", ns["id"], ns["name"], ns["class"], ns["script"])
-		}
-		_ = tw.Flush()
-		return b.String()
-	}
-	if len(r.Objects) > 0 {
-		fmt.Fprintln(tw, "ID\tHAS_STORED_DATA")
-		for _, obj := range r.Objects {
-			fmt.Fprintf(tw, "%v\t%v\n", obj["id"], obj["hasStoredData"])
-		}
-		_ = tw.Flush()
-		if cur, ok := r.ResultInfo["cursor"].(string); ok && cur != "" {
-			fmt.Fprintf(&b, "[next --cursor %s]\n", cur)
-		}
-		return b.String()
-	}
-	return "(no durable objects returned)\n"
-}
-
-func formatAdminPrettyJSON(v any) string {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("%v\n", v)
-	}
-	return string(b) + "\n"
 }

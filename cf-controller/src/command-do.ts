@@ -13,10 +13,10 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { extractLogLines, type TimedOutputChunk } from "./settle.ts";
 import {
-	executeReadOnlySql,
+	executeReadOnlySqlRpc,
 	inspectDoSchema,
 	type DoSchemaInfo,
-	type DoSqlResult,
+	type DoSqlRpcResult,
 	type SqlParamValue,
 } from "./do-sql.ts";
 import { num, str } from "./sql-values.ts";
@@ -503,8 +503,8 @@ export class CommandDO extends DurableObject<Env> {
 		query: string,
 		params: SqlParamValue[] = [],
 		opts?: { maxRows?: number },
-	): DoSqlResult {
-		return executeReadOnlySql(this.ctx.storage.sql, query, params, opts);
+	): DoSqlRpcResult {
+		return executeReadOnlySqlRpc(this.ctx.storage.sql, query, params, opts);
 	}
 
 	/**

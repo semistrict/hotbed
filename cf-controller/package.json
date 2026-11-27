@@ -13,16 +13,9 @@
 		"typecheck": "cf workers types && vp check --no-fmt --no-lint"
 	},
 	"dependencies": {
-		"@ai-sdk/anthropic": "^4.0.110",
-		"@ai-sdk/openai": "^4.0.125",
 		"@bufbuild/protobuf": "^2.17.0",
-		"@cloudflare/ai-chat": "^0.12.3",
 		"@connectrpc/connect": "^2.3.0",
-		"@json-render/core": "^0.23.2",
-		"agents": "^0.34.1",
-		"ai": "^7.0.183",
-		"drizzle-orm": "^0.45.4",
-		"zod": "^4.6.7"
+		"drizzle-orm": "^0.45.4"
 	},
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^2.0.0-rc.0",

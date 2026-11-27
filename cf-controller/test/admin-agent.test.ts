@@ -1,24 +1,12 @@
 import { env } from "cloudflare:test";
-import { pipeJsonRender } from "@json-render/core";
 import { describe, expect, it } from "vitest";
-import { buildAdminAgentSystemPrompt } from "../src/admin-agent-catalog.ts";
-import {
-	createAdminAgentTools,
-	filterGcUsageForTenant,
-	listAvailableAdminModels,
-} from "../src/admin-agent-do.ts";
 import { handleAdminAgentRoute } from "../src/admin-agent-routes.ts";
-import {
-	cloudflareAccountGet,
-	listCfDoNamespaces,
-	listCfDoObjects,
-	queryCfObservability,
-	type AdminOrgScope,
-	type CfFetch,
-} from "../src/admin-cf-api.ts";
+import { encodeCrockfordBase32Short, filterGcUsageForTenant } from "../src/admin-cf-api.ts";
+import { INTERNAL_AUTH_HEADER, INTERNAL_ORG_HEADER, type CallerIdentity } from "../src/auth.ts";
 import { commandDoName } from "../src/command-do.ts";
 import type { ControllerEnv } from "../src/controller-do.ts";
 import { validateReadOnlySql } from "../src/do-sql.ts";
+import { TenantRegistryDO } from "../src/tenant-registry-do.ts";
 
 const OWNER_AUTH = { Authorization: "Bearer test-owner-secret" };
 
@@ -27,6 +15,40 @@ function testEnv(overrides?: Partial<ControllerEnv>): ControllerEnv {
 		...(env as unknown as ControllerEnv),
 		...overrides,
 	};
+}
+
+async function makeOrgToken(
+	e: ControllerEnv,
+	orgId: string,
+	email: string,
+	orgRole: "admin" | "owner" | "member",
+): Promise<string> {
+	const doName = `org:${orgId}`;
+	const stub = e.CONTROLLER.getByName(doName);
+	const caller: CallerIdentity = {
+		role: "owner",
+		nodeId: `workos:user_${orgId}_${orgRole}`,
+		hostname: email,
+		login: email,
+		userId: `user_${orgId}_${orgRole}`,
+		orgId,
+		orgRole,
+		authMethod: "workos-jwt",
+	};
+	const mintReq = new Request("https://hotbed.test/admin/api-tokens", {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			[INTERNAL_AUTH_HEADER]: JSON.stringify(caller),
+			[INTERNAL_ORG_HEADER]: orgId,
+		},
+		body: JSON.stringify({ name: `${orgId}-${orgRole}-token` }),
+	});
+	const res = await stub.handleHttpRequest(mintReq);
+	expect(res.status).toBe(201);
+	const data = (await res.json()) as { token: string };
+	expect(data.token).toMatch(new RegExp(`^hbu_${orgId}\\.`));
+	return data.token;
 }
 
 describe("validateReadOnlySql", () => {
@@ -46,14 +68,20 @@ describe("validateReadOnlySql", () => {
 		expect(() => validateReadOnlySql("PRAGMA page_count")).not.toThrow();
 	});
 
-	it("rejects write statements, PRAGMA assignments, and multi-statement smuggling", () => {
+	it("rejects write statements, PRAGMA assignments/function setters, recursive CTEs, blob DoS, denied tables, and multi-statement smuggling", () => {
 		expect(() => validateReadOnlySql("")).toThrow();
-		expect(() => validateReadOnlySql("INSERT INTO nodes VALUES ('x')")).toThrow(/read-only/i);
-		expect(() => validateReadOnlySql("UPDATE nodes SET hostname = 'x'")).toThrow(/read-only/i);
-		expect(() => validateReadOnlySql("DELETE FROM nodes")).toThrow(/read-only/i);
-		expect(() => validateReadOnlySql("DROP TABLE nodes")).toThrow(/read-only/i);
-		expect(() => validateReadOnlySql("VACUUM")).toThrow(/read-only/i);
+		expect(() => validateReadOnlySql("INSERT INTO nodes VALUES ('x')")).toThrow(/not permitted/i);
+		expect(() => validateReadOnlySql("UPDATE nodes SET hostname = 'x'")).toThrow(/not permitted/i);
+		expect(() => validateReadOnlySql("DELETE FROM nodes")).toThrow(/not permitted/i);
+		expect(() => validateReadOnlySql("DROP TABLE nodes")).toThrow(/not permitted/i);
+		expect(() => validateReadOnlySql("VACUUM")).toThrow(/not permitted/i);
 		expect(() => validateReadOnlySql("PRAGMA user_version = 99")).toThrow(/read-only/i);
+		expect(() => validateReadOnlySql("PRAGMA foreign_keys(OFF)")).toThrow(/allowlist/i);
+		expect(() => validateReadOnlySql("PRAGMA journal_mode(WAL)")).toThrow(/allowlist/i);
+		expect(() => validateReadOnlySql("PRAGMA journal_mode(DELETE)")).toThrow(/not permitted/i);
+		expect(() => validateReadOnlySql("PRAGMA page_count(1)")).toThrow(/takes no arguments/i);
+		expect(() => validateReadOnlySql("PRAGMA integrity_check")).toThrow(/allowlist/i);
+		expect(() => validateReadOnlySql("PRAGMA quick_check")).toThrow(/allowlist/i);
 		expect(() => validateReadOnlySql("PRAGMA writable_schema")).toThrow(/allowlist/i);
 		expect(() => validateReadOnlySql("SELECT 1; SELECT 2")).toThrow(/single SQL statement/i);
 		expect(() => validateReadOnlySql("SELECT 1; DROP TABLE nodes")).toThrow(
@@ -61,52 +89,61 @@ describe("validateReadOnlySql", () => {
 		);
 		expect(() =>
 			validateReadOnlySql("WITH x AS (SELECT 1) DELETE FROM nodes WHERE id IN (SELECT * FROM x)"),
-		).toThrow(/read-only/i);
+		).toThrow(/not permitted/i);
+		expect(() =>
+			validateReadOnlySql(
+				"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT x FROM c",
+			),
+		).toThrow(/RECURSIVE/i);
+		expect(() => validateReadOnlySql("SELECT randomblob(1000000)")).toThrow(/RANDOMBLOB/i);
+		expect(() => validateReadOnlySql("SELECT zeroblob(1000000)")).toThrow(/ZEROBLOB/i);
+		const denied = new Set(["git_credentials", "signup_codes", "kv_meta"]);
+		expect(() =>
+			validateReadOnlySql("SELECT * FROM git_credentials", { deniedTables: denied }),
+		).toThrow(/restricted|sensitive/i);
+		expect(() =>
+			validateReadOnlySql('SELECT * FROM "GIT_CREDENTIALS"', { deniedTables: denied }),
+		).toThrow(/restricted|sensitive/i);
+		expect(() =>
+			validateReadOnlySql("PRAGMA table_info('git_credentials')", { deniedTables: denied }),
+		).toThrow(/restricted|sensitive/i);
 	});
 });
 
 describe("Durable Object SQL & schema RPCs", () => {
-	it("runs read-only SQL and schema inspection on ControllerDO, TenantRegistryDO, and CommandDO (by name and by hex ID)", async () => {
+	it("runs read-only SQL and schema inspection on ControllerDO and CommandDO without exposing TenantRegistryDO", async () => {
 		const e = testEnv();
 
-		// 1. TenantRegistryDO (other test files share the "global" DO under isolate:false,
-		// so tenant 0 may already belong to an earlier test org)
-		const regStub = e.TENANT_REGISTRY!.getByName("global");
-		const assigned = await regStub.assignTenant("org_admin_test", { isDefault: true });
-		expect(Number.isInteger(Number(assigned))).toBe(true);
-		expect(Number(assigned)).toBeGreaterThanOrEqual(0);
-
-		const regSchema = await regStub.adminInspectSchema();
-		expect(regSchema.tables.some((t) => t.name === "org_tenants")).toBe(true);
-		const regSql = await regStub.adminQuerySql(
-			"SELECT org_key, tenant_id FROM org_tenants WHERE org_key = ?",
-			["org_admin_test"],
-		);
-		expect(regSql.rowCount).toBe(1);
-		expect(regSql.rows[0]).toMatchObject({
-			org_key: "org_admin_test",
-			tenant_id: Number(assigned),
-		});
-
-		// 2. ControllerDO (default org)
+		// 1. ControllerDO (default org) — sensitive secret tables are hidden & blocked
 		const ctrlStub = e.CONTROLLER.getByName("default");
 		const ctrlSchema = await ctrlStub.adminInspectSchema();
 		expect(ctrlSchema.tables.some((t) => t.name === "nodes")).toBe(true);
+		expect(ctrlSchema.tables.some((t) => t.name === "git_credentials")).toBe(false);
+		expect(ctrlSchema.tables.some((t) => t.name === "signup_codes")).toBe(false);
+		expect(ctrlSchema.tables.some((t) => t.name === "kv_meta")).toBe(false);
 		expect(ctrlSchema.clusterId).toBeTruthy();
 
-		const ctrlSql = await ctrlStub.adminQuerySql(
-			"SELECT key, value FROM kv_meta WHERE key = 'cluster_id'",
-		);
-		expect(ctrlSql.rowCount).toBe(1);
-		expect(ctrlSql.rows[0].value).toBe(ctrlSchema.clusterId);
+		const ctrlSql = await ctrlStub.adminQuerySql("SELECT name FROM projects LIMIT 10");
+		expect(ctrlSql.ok).toBe(true);
+		if (ctrlSql.ok) {
+			expect(ctrlSql.result.columns).toEqual(["name"]);
+		}
 
-		// 3. CommandDO: inspecting a nonexistent command must NOT materialize empty tables
+		for (const sensitiveTable of ["git_credentials", "signup_codes", "kv_meta"]) {
+			const denied = await ctrlStub.adminQuerySql(`SELECT * FROM ${sensitiveTable}`);
+			expect(denied.ok).toBe(false);
+			if (!denied.ok) {
+				expect(denied.error).toMatch(/sensitive/i);
+			}
+		}
+
+		// 2. CommandDO: inspecting a nonexistent command must NOT materialize empty tables
 		const emptyCmdName = commandDoName(ctrlSchema.clusterId, "cmd-nonexistent-inspect");
 		const emptyCmdStub = e.COMMAND.getByName(emptyCmdName);
 		const emptySchema = await emptyCmdStub.adminInspectSchema();
 		expect(emptySchema.tables.filter((t) => !t.internal)).toEqual([]);
 
-		// Populate a real CommandDO and query it by org-scoped name via REST route
+		// Populate a real CommandDO and query it by org-scoped name
 		const populatedName = commandDoName(ctrlSchema.clusterId, "cmd-populated-1");
 		const cmdStub = e.COMMAND.getByName(populatedName);
 		await cmdStub.saveDiagnostics({
@@ -118,478 +155,323 @@ describe("Durable Object SQL & schema RPCs", () => {
 		const cmdSql = await cmdStub.adminQuerySql(
 			"SELECT seq, node_id, created_at FROM command_diagnostics",
 		);
-		expect(cmdSql.rowCount).toBe(1);
-		expect(cmdSql.rows[0]).toMatchObject({
-			seq: 1,
-			node_id: "node-1",
-			created_at: 1_700_000_000_000,
-		});
+		expect(cmdSql.ok).toBe(true);
+		if (cmdSql.ok) {
+			expect(cmdSql.result.rowCount).toBe(1);
+			expect(cmdSql.result.rows[0]).toMatchObject({ seq: 1, node_id: "node-1" });
+		}
 
-		const routeRes = await handleAdminAgentRoute(
+		// 3. TenantRegistryDO must NOT expose adminQuerySql or adminInspectSchema RPCs
+		expect("adminQuerySql" in TenantRegistryDO.prototype).toBe(false);
+		expect("adminInspectSchema" in TenantRegistryDO.prototype).toBe(false);
+	});
+});
+
+describe("Per-organization tenant isolation (strict for ALL orgs, including default)", () => {
+	it("denies TENANT_REGISTRY and cross-org access even to the default/owner organization", async () => {
+		const e = testEnv();
+
+		// Status only exposes CONTROLLER and COMMAND (never TENANT_REGISTRY or ADMIN_AGENT)
+		const statusRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/status", { headers: OWNER_AUTH }),
+			new URL("https://hotbed.test/api/admin-agent/status"),
+			e,
+		);
+		expect(statusRes?.status).toBe(200);
+		const status = (await statusRes!.json()) as { ok: boolean; bindings: string[] };
+		expect(status.ok).toBe(true);
+		expect(status.bindings).toEqual(["CONTROLLER", "COMMAND", "WORKER"]);
+
+		// TENANT_REGISTRY schema & SQL are strictly denied (403) even for default owner
+		const regSchemaRes = await handleAdminAgentRoute(
+			new Request(
+				"https://hotbed.test/api/admin-agent/schema?binding=TENANT_REGISTRY&name=global",
+				{
+					headers: OWNER_AUTH,
+				},
+			),
+			new URL("https://hotbed.test/api/admin-agent/schema?binding=TENANT_REGISTRY&name=global"),
+			e,
+		);
+		expect(regSchemaRes?.status).toBe(403);
+
+		const regSqlRes = await handleAdminAgentRoute(
 			new Request("https://hotbed.test/api/admin-agent/sql", {
 				method: "POST",
 				headers: { ...OWNER_AUTH, "Content-Type": "application/json" },
 				body: JSON.stringify({
-					binding: "COMMAND",
-					name: populatedName,
-					sql: "SELECT COUNT(*) AS n FROM command_diagnostics",
+					binding: "TENANT_REGISTRY",
+					name: "global",
+					sql: "SELECT * FROM org_tenants",
 				}),
 			}),
 			new URL("https://hotbed.test/api/admin-agent/sql"),
 			e,
 		);
-		expect(routeRes?.status).toBe(200);
-		const routeBody = (await routeRes!.json()) as {
-			rows: Array<{ n: number }>;
-			resolvedBy: string;
-		};
-		expect(routeBody.resolvedBy).toBe("name");
-		expect(routeBody.rows[0].n).toBe(1);
+		expect(regSqlRes?.status).toBe(403);
+
+		// Removed /api/admin-agent/cf/* and /agents/admin-agent/* routes return 404 / null
+		const cfRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/cf/do-objects", { headers: OWNER_AUTH }),
+			new URL("https://hotbed.test/api/admin-agent/cf/do-objects"),
+			e,
+		);
+		expect(cfRes?.status).toBe(404);
+
+		const removedAgentRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/agents/admin-agent/main/get-messages", {
+				headers: OWNER_AUTH,
+			}),
+			new URL("https://hotbed.test/agents/admin-agent/main/get-messages"),
+			e,
+		);
+		expect(removedAgentRes).toBeNull();
 	});
-});
 
-describe("Per-organization tenant isolation", () => {
-	it("strictly confines each organization's Admin Agent to its own ControllerDO, CommandDOs, AdminAgentDOs, and CladeFS tenant", async () => {
-		const e = testEnv({
-			CLOUDFLARE_ACCOUNT_ID: "acct_123",
-			CLOUDFLARE_API_TOKEN: "cf-tok-secret",
-		});
+	it("confines each org admin strictly to that org's ControllerDO, CommandDOs, and CladeFS tenant", async () => {
+		const e = testEnv();
+		const alphaToken = await makeOrgToken(e, "org_alpha", "alice@alpha.test", "admin");
+		const betaToken = await makeOrgToken(e, "org_beta", "bob@beta.test", "admin");
+		const memberToken = await makeOrgToken(e, "org_alpha", "eve@alpha.test", "member");
+		const alphaHeaders = { Authorization: `Bearer ${alphaToken}` };
+		const betaHeaders = { Authorization: `Bearer ${betaToken}` };
+		const memberHeaders = { Authorization: `Bearer ${memberToken}` };
 
-		const alphaHeaders = {
-			...OWNER_AUTH,
-			"X-Hotbed-Org-Id": "org_alpha",
-			"Content-Type": "application/json",
-		};
-		const betaHeaders = {
-			...OWNER_AUTH,
-			"X-Hotbed-Org-Id": "org_beta",
-			"Content-Type": "application/json",
-		};
+		// Non-admin org member is denied (403)
+		const memberRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/status", { headers: memberHeaders }),
+			new URL("https://hotbed.test/api/admin-agent/status"),
+			e,
+		);
+		expect(memberRes?.status).toBe(403);
 
-		// Initialize both orgs' ControllerDOs and seed a CommandDO in org_beta
-		const alphaCtrl = e.CONTROLLER.getByName("org:org_alpha");
-		const betaCtrl = e.CONTROLLER.getByName("org:org_beta");
-		const [alphaHealth, betaHealth] = await Promise.all([
-			alphaCtrl.getHealth(),
-			betaCtrl.getHealth(),
-		]);
+		const alphaHealth = await e.CONTROLLER.getByName("org:org_alpha").getHealth();
+		const betaHealth = await e.CONTROLLER.getByName("org:org_beta").getHealth();
+		expect(alphaHealth.clusterId).toBeTruthy();
+		expect(betaHealth.clusterId).toBeTruthy();
 		expect(alphaHealth.clusterId).not.toBe(betaHealth.clusterId);
 
 		const alphaCmdName = commandDoName(alphaHealth.clusterId, "cmd-alpha-1");
-		const betaCmdName = commandDoName(betaHealth.clusterId, "cmd-beta-secret");
+		const betaCmdName = commandDoName(betaHealth.clusterId, "cmd-beta-1");
 		await e.COMMAND.getByName(alphaCmdName).saveDiagnostics({
-			nodeId: "node-a",
+			nodeId: "node-alpha",
 			seq: 1,
 			createdAtMs: 1_700_000_000_000,
 			doc: JSON.stringify({ commandId: "cmd-alpha-1" }),
 		});
 		await e.COMMAND.getByName(betaCmdName).saveDiagnostics({
-			nodeId: "node-b",
+			nodeId: "node-beta",
 			seq: 1,
 			createdAtMs: 1_700_000_000_000,
-			doc: JSON.stringify({ commandId: "cmd-beta-secret" }),
+			doc: JSON.stringify({ commandId: "cmd-beta-1" }),
 		});
 
-		// 1. org_alpha status only lists org_alpha's bindings (no TENANT_REGISTRY, no account-wide CF API)
-		const statusRes = await handleAdminAgentRoute(
+		// 1. Org alpha status sees ONLY org_alpha's ControllerDO
+		const alphaStatusRes = await handleAdminAgentRoute(
 			new Request("https://hotbed.test/api/admin-agent/status", { headers: alphaHeaders }),
 			new URL("https://hotbed.test/api/admin-agent/status"),
 			e,
 		);
-		expect(statusRes?.status).toBe(200);
-		const statusBody = (await statusRes!.json()) as {
-			scope: { controllerDoName: string; orgId: string; isGlobalAdmin: boolean };
+		expect(alphaStatusRes?.status).toBe(200);
+		const alphaStatus = (await alphaStatusRes!.json()) as {
+			scope: { controllerDoName: string; orgId: string };
 			bindings: string[];
-			cloudflareApiConfigured: boolean;
 			controllers: Array<{ name: string }>;
 		};
-		expect(statusBody.scope).toMatchObject({
-			controllerDoName: "org:org_alpha",
-			orgId: "org_alpha",
-			isGlobalAdmin: false,
-		});
-		expect(statusBody.bindings).not.toContain("TENANT_REGISTRY");
-		expect(statusBody.cloudflareApiConfigured).toBe(false);
-		expect(statusBody.controllers.map((c) => c.name)).toEqual(["org:org_alpha"]);
+		expect(alphaStatus.scope.controllerDoName).toBe("org:org_alpha");
+		expect(alphaStatus.scope.orgId).toBe("org_alpha");
+		expect(alphaStatus.bindings).toEqual(["CONTROLLER", "COMMAND", "WORKER"]);
+		expect(alphaStatus.controllers.map((c) => c.name)).toEqual(["org:org_alpha"]);
 
-		// 2. org_alpha CAN query its own ControllerDO and its own CommandDO
-		const okCtrlRes = await handleAdminAgentRoute(
+		// 2. Org alpha can query its OWN ControllerDO & CommandDO (by name & commandId shorthand)
+		const ownCtrlRes = await handleAdminAgentRoute(
 			new Request("https://hotbed.test/api/admin-agent/sql", {
 				method: "POST",
-				headers: alphaHeaders,
+				headers: { ...alphaHeaders, "Content-Type": "application/json" },
 				body: JSON.stringify({
 					binding: "CONTROLLER",
-					name: "org:org_alpha",
-					sql: "SELECT value FROM kv_meta WHERE key = 'cluster_id'",
+					sql: "SELECT COUNT(*) AS n FROM projects",
 				}),
 			}),
 			new URL("https://hotbed.test/api/admin-agent/sql"),
 			e,
 		);
-		expect(okCtrlRes?.status).toBe(200);
-		expect(((await okCtrlRes!.json()) as { rows: Array<{ value: string }> }).rows[0].value).toBe(
-			alphaHealth.clusterId,
-		);
+		expect(ownCtrlRes?.status).toBe(200);
+		const ownCtrl = (await ownCtrlRes!.json()) as { target: string; rows: Array<{ n: number }> };
+		expect(ownCtrl.target).toBe("CONTROLLER(org:org_alpha)");
+		expect(typeof ownCtrl.rows[0].n).toBe("number");
 
-		const okCmdRes = await handleAdminAgentRoute(
+		const ownCmdShorthand = await handleAdminAgentRoute(
 			new Request("https://hotbed.test/api/admin-agent/sql", {
 				method: "POST",
-				headers: alphaHeaders,
+				headers: { ...alphaHeaders, "Content-Type": "application/json" },
 				body: JSON.stringify({
-					binding: "COMMAND",
-					name: alphaCmdName,
-					sql: "SELECT node_id FROM command_diagnostics",
+					commandId: "cmd-alpha-1",
+					sql: "SELECT seq, node_id FROM command_diagnostics",
 				}),
 			}),
 			new URL("https://hotbed.test/api/admin-agent/sql"),
 			e,
 		);
-		expect(okCmdRes?.status).toBe(200);
+		expect(ownCmdShorthand?.status).toBe(200);
+		const ownCmdBody = (await ownCmdShorthand!.json()) as { target: string; rowCount: number };
+		expect(ownCmdBody.target).toBe(`COMMAND(${alphaCmdName})`);
+		expect(ownCmdBody.rowCount).toBe(1);
 
-		// 3. org_alpha is 403-BLOCKED from org_beta's ControllerDO (by name AND by 64-hex ID) and "default"
-		const betaCtrlHexId = e.CONTROLLER.idFromName("org:org_beta").toString();
-		const betaCmdHexId = e.COMMAND.idFromName(betaCmdName).toString();
-		const blockedPayloads = [
-			{ binding: "CONTROLLER", name: "org:org_beta", sql: "SELECT 1" },
-			{ binding: "CONTROLLER", name: "default", sql: "SELECT 1" },
-			{ binding: "CONTROLLER", id: betaCtrlHexId, sql: "SELECT 1" },
-			{ binding: "COMMAND", name: betaCmdName, sql: "SELECT 1" },
-			{ binding: "COMMAND", id: betaCmdHexId, sql: "SELECT 1" },
-			{ binding: "ADMIN_AGENT", name: "admin:org:org_beta:main", sql: "SELECT 1" },
-			{ binding: "TENANT_REGISTRY", name: "global", sql: "SELECT * FROM org_tenants" },
-		];
-		for (const payload of blockedPayloads) {
+		// 3. Org alpha is BLOCKED (403) from org_beta's ControllerDO (by name & 64-hex ID) and "default"
+		for (const forbidden of [
+			{ binding: "CONTROLLER", name: "org:org_beta" },
+			{ binding: "CONTROLLER", name: "default" },
+			{
+				binding: "CONTROLLER",
+				id: e.CONTROLLER.idFromName("org:org_beta").toString(),
+			},
+		]) {
 			const res = await handleAdminAgentRoute(
 				new Request("https://hotbed.test/api/admin-agent/sql", {
 					method: "POST",
-					headers: alphaHeaders,
-					body: JSON.stringify(payload),
+					headers: { ...alphaHeaders, "Content-Type": "application/json" },
+					body: JSON.stringify({ ...forbidden, sql: "SELECT 1" }),
 				}),
 				new URL("https://hotbed.test/api/admin-agent/sql"),
 				e,
 			);
-			expect(res?.status, `expected 403 for ${JSON.stringify(payload)}`).toBe(403);
+			expect(res?.status).toBe(403);
 		}
 
-		// 4. Org-scoped tools omit account-wide Cloudflare REST API tools
-		const alphaScope: AdminOrgScope = {
-			controllerDoName: "org:org_alpha",
-			orgId: "org_alpha",
-			isGlobalAdmin: false,
-		};
-		const alphaTools = createAdminAgentTools(e, alphaScope);
-		expect(alphaTools.list_cf_do_objects).toBeUndefined();
-		expect(alphaTools.query_cf_observability).toBeUndefined();
-		expect(alphaTools.cf_api_get).toBeUndefined();
-
-		// 5. AdminAgentDO threads are physically isolated per org and refuse cross-org rebinding
-		const alphaAgentRes = await handleAdminAgentRoute(
-			new Request("https://hotbed.test/agents/admin-agent/shared-name/get-messages", {
-				headers: alphaHeaders,
-			}),
-			new URL("https://hotbed.test/agents/admin-agent/shared-name/get-messages"),
-			e,
-		);
-		expect(alphaAgentRes?.status).toBe(200);
-		const betaAgentRes = await handleAdminAgentRoute(
-			new Request("https://hotbed.test/agents/admin-agent/shared-name/get-messages", {
-				headers: betaHeaders,
-			}),
-			new URL("https://hotbed.test/agents/admin-agent/shared-name/get-messages"),
-			e,
-		);
-		expect(betaAgentRes?.status).toBe(200);
-
-		const alphaAgentStub = e.ADMIN_AGENT!.getByName("admin:org:org_alpha:shared-name");
-		const rebind = await alphaAgentStub.bindScope({
-			controllerDoName: "org:org_beta",
-			orgId: "org_beta",
-			isGlobalAdmin: false,
-		});
-		expect(rebind.ok).toBe(false);
-		if (!rebind.ok) {
-			expect(rebind.status).toBe(403);
-			expect(rebind.message).toMatch(/permanently bound/i);
-		}
-
-		// 6. CladeFS GC usage filter strips every other tenant's cells
-		const filtered = filterGcUsageForTenant(
-			{
-				cells: 2,
-				measuredCells: 2,
-				totalObjects: 300,
-				totalBytes: 3000,
-				usage: [
-					{ tenant: "1", cell: "1/a", measuredUnixMs: 100, objects: 100, bytes: 1000 },
-					{ tenant: "2", cell: "2/b", measuredUnixMs: 200, objects: 200, bytes: 2000 },
-				],
-			},
-			"1",
-		) as {
-			cells: number;
-			totalObjects: number;
-			totalBytes: number;
-			usage: Array<{ tenant: string }>;
-		};
-		expect(filtered.cells).toBe(1);
-		expect(filtered.totalObjects).toBe(100);
-		expect(filtered.totalBytes).toBe(1000);
-		expect(filtered.usage.map((u) => u.tenant)).toEqual(["1"]);
-
-		// 7. Account-wide /api/admin-agent/cf/* routes are denied (403) for non-global org admins
-		for (const [method, path, body] of [
-			["GET", "/api/admin-agent/cf/do-objects", undefined],
-			["POST", "/api/admin-agent/cf/observability", JSON.stringify({ view: "events" })],
-			["POST", "/api/admin-agent/cf/get", JSON.stringify({ path: "workers/scripts" })],
-		] as const) {
-			const cfRes = await handleAdminAgentRoute(
-				new Request(`https://hotbed.test${path}`, {
-					method,
-					headers: { ...alphaHeaders, ...(body ? { "Content-Type": "application/json" } : {}) },
-					body,
+		// 4. Org alpha is BLOCKED (403) from org_beta's CommandDO (by name, commandId, and 64-hex ID)
+		for (const forbidden of [
+			{ binding: "COMMAND", name: betaCmdName },
+			{ binding: "COMMAND", commandId: betaCmdName },
+			{ binding: "COMMAND", id: e.COMMAND.idFromName(betaCmdName).toString() },
+		]) {
+			const res = await handleAdminAgentRoute(
+				new Request("https://hotbed.test/api/admin-agent/sql", {
+					method: "POST",
+					headers: { ...alphaHeaders, "Content-Type": "application/json" },
+					body: JSON.stringify({ ...forbidden, sql: "SELECT * FROM command_meta" }),
 				}),
-				new URL(`https://hotbed.test${path}`),
+				new URL("https://hotbed.test/api/admin-agent/sql"),
 				e,
 			);
-			expect(cfRes?.status).toBe(403);
-			const cfBody = (await cfRes!.json()) as { code: string; message: string };
-			expect(cfBody.code).toBe("permission_denied");
+			expect(res?.status).toBe(403);
 		}
 
-		// 8. Org-scoped /api/admin-agent/health and commandId shorthand work strictly within org_alpha
+		// 5. Org alpha /health returns org_alpha's health, org beta returns org_beta's
 		const alphaHealthRes = await handleAdminAgentRoute(
 			new Request("https://hotbed.test/api/admin-agent/health", { headers: alphaHeaders }),
 			new URL("https://hotbed.test/api/admin-agent/health"),
 			e,
 		);
 		expect(alphaHealthRes?.status).toBe(200);
-		const alphaHealthBody = (await alphaHealthRes!.json()) as { clusterId: string };
-		expect(alphaHealthBody.clusterId).toBe(alphaHealth.clusterId);
+		expect(((await alphaHealthRes!.json()) as { clusterId: string }).clusterId).toBe(
+			alphaHealth.clusterId,
+		);
 
-		const alphaCmdShorthand = await handleAdminAgentRoute(
+		const betaHealthRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/health", { headers: betaHeaders }),
+			new URL("https://hotbed.test/api/admin-agent/health"),
+			e,
+		);
+		expect(betaHealthRes?.status).toBe(200);
+		expect(((await betaHealthRes!.json()) as { clusterId: string }).clusterId).toBe(
+			betaHealth.clusterId,
+		);
+
+		// 6. CladeFS GC tenant ID uses Crockford base32 Short (10 -> "a", 32 -> "10")
+		//    so tenant 10 NEVER collides with tenant 32 ("10" in base32).
+		expect(encodeCrockfordBase32Short(0)).toBe("0");
+		expect(encodeCrockfordBase32Short(9)).toBe("9");
+		expect(encodeCrockfordBase32Short(10)).toBe("a");
+		expect(encodeCrockfordBase32Short(31)).toBe("z");
+		expect(encodeCrockfordBase32Short(32)).toBe("10");
+
+		const filtered = filterGcUsageForTenant(
+			{
+				cells: 3,
+				measuredCells: 3,
+				totalObjects: 600,
+				totalBytes: 6000,
+				usage: [
+					{ tenant: "a", cell: "a/cell-t10", measuredUnixMs: 100, objects: 100, bytes: 1000 },
+					{ tenant: "10", cell: "10/cell-t32", measuredUnixMs: 200, objects: 200, bytes: 2000 },
+					{
+						tenant: "000000000000a",
+						cell: "a/padded",
+						measuredUnixMs: 300,
+						objects: 300,
+						bytes: 3000,
+					},
+				],
+			},
+			encodeCrockfordBase32Short(10),
+		) as {
+			cells: number;
+			totalObjects: number;
+			totalBytes: number;
+			usage: Array<{ cell: string }>;
+		};
+		expect(filtered.cells).toBe(2);
+		expect(filtered.totalObjects).toBe(400);
+		expect(filtered.totalBytes).toBe(4000);
+		expect(filtered.usage.map((u) => u.cell)).toEqual(["a/cell-t10", "a/padded"]);
+	});
+
+	it("rejects unauthenticated requests with 401, write SQL and non-numeric maxRows with 400", async () => {
+		const e = testEnv();
+		const unauthRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/status"),
+			new URL("https://hotbed.test/api/admin-agent/status"),
+			e,
+		);
+		expect(unauthRes?.status).toBe(401);
+
+		const writeRes = await handleAdminAgentRoute(
 			new Request("https://hotbed.test/api/admin-agent/sql", {
 				method: "POST",
-				headers: { ...alphaHeaders, "Content-Type": "application/json" },
+				headers: { ...OWNER_AUTH, "Content-Type": "application/json" },
+				body: JSON.stringify({ binding: "CONTROLLER", sql: "DELETE FROM nodes" }),
+			}),
+			new URL("https://hotbed.test/api/admin-agent/sql"),
+			e,
+		);
+		expect(writeRes?.status).toBe(400);
+
+		const badMaxRowsRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/sql", {
+				method: "POST",
+				headers: { ...OWNER_AUTH, "Content-Type": "application/json" },
+				body: JSON.stringify({ binding: "CONTROLLER", sql: "SELECT 1", maxRows: "x" }),
+			}),
+			new URL("https://hotbed.test/api/admin-agent/sql"),
+			e,
+		);
+		expect(badMaxRowsRes?.status).toBe(400);
+
+		const secretTableRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/sql", {
+				method: "POST",
+				headers: { ...OWNER_AUTH, "Content-Type": "application/json" },
+				body: JSON.stringify({ binding: "CONTROLLER", sql: "SELECT * FROM git_credentials" }),
+			}),
+			new URL("https://hotbed.test/api/admin-agent/sql"),
+			e,
+		);
+		expect(secretTableRes?.status).toBe(400);
+
+		const syntaxErrRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/sql", {
+				method: "POST",
+				headers: { ...OWNER_AUTH, "Content-Type": "application/json" },
 				body: JSON.stringify({
-					commandId: "cmd-alpha-1",
-					sql: "SELECT key, value FROM command_meta",
+					binding: "CONTROLLER",
+					sql: "SELECT * FROM definitely_nonexistent_table",
 				}),
 			}),
 			new URL("https://hotbed.test/api/admin-agent/sql"),
 			e,
 		);
-		expect(alphaCmdShorthand?.status).toBe(200);
-		const alphaCmdBody = (await alphaCmdShorthand!.json()) as { target: string; rowCount: number };
-		expect(alphaCmdBody.target).toBe(`COMMAND(cmd:${alphaHealth.clusterId}:cmd-alpha-1)`);
-		expect(alphaCmdBody.rowCount).toBe(1);
-	});
-});
-
-describe("handleAdminAgentRoute & AdminAgentDO", () => {
-	it("rejects unauthenticated requests fail-closed with 401", async () => {
-		const req = new Request("https://hotbed.test/api/admin-agent/status");
-		const res = await handleAdminAgentRoute(req, new URL(req.url), testEnv());
-		expect(res?.status).toBe(401);
-
-		const agentReq = new Request("https://hotbed.test/agents/admin-agent/main/get-messages");
-		const agentRes = await handleAdminAgentRoute(agentReq, new URL(agentReq.url), testEnv());
-		expect(agentRes?.status).toBe(401);
-	});
-
-	it("serves /api/admin-agent/status, /schema, /sql, and /agents/admin-agent/:thread/get-messages for authenticated owners", async () => {
-		const e = testEnv();
-
-		const statusReq = new Request("https://hotbed.test/api/admin-agent/status", {
-			headers: OWNER_AUTH,
-		});
-		const statusRes = await handleAdminAgentRoute(statusReq, new URL(statusReq.url), e);
-		expect(statusRes?.status).toBe(200);
-		const status = (await statusRes!.json()) as {
-			ok: boolean;
-			bindings: string[];
-			controllers: Array<{ name: string }>;
-		};
-		expect(status.ok).toBe(true);
-		expect(status.bindings).toContain("CONTROLLER");
-		expect(status.controllers.some((c) => c.name === "default")).toBe(true);
-
-		const schemaReq = new Request(
-			"https://hotbed.test/api/admin-agent/schema?binding=CONTROLLER&name=default",
-			{ headers: OWNER_AUTH },
-		);
-		const schemaRes = await handleAdminAgentRoute(schemaReq, new URL(schemaReq.url), e);
-		expect(schemaRes?.status).toBe(200);
-		const schemaBody = (await schemaRes!.json()) as { tables: Array<{ name: string }> };
-		expect(schemaBody.tables.some((t) => t.name === "projects")).toBe(true);
-
-		const writeRejectReq = new Request("https://hotbed.test/api/admin-agent/sql", {
-			method: "POST",
-			headers: { ...OWNER_AUTH, "Content-Type": "application/json" },
-			body: JSON.stringify({
-				binding: "CONTROLLER",
-				name: "default",
-				sql: "DELETE FROM nodes",
-			}),
-		});
-		const writeRejectRes = await handleAdminAgentRoute(
-			writeRejectReq,
-			new URL(writeRejectReq.url),
-			e,
-		);
-		expect(writeRejectRes?.status).toBe(400);
-
-		const msgUrl = new URL("https://hotbed.test/agents/admin-agent/test-thread-1/get-messages");
-		const msgRes = await handleAdminAgentRoute(
-			new Request(msgUrl.toString(), { headers: OWNER_AUTH }),
-			msgUrl,
-			e,
-		);
-		expect(msgRes?.status).toBe(200);
-		expect(await msgRes!.json()).toEqual([]);
-	});
-
-	it("executes AdminAgent tools and Cloudflare REST API helpers cleanly", async () => {
-		const e = testEnv({
-			CLOUDFLARE_ACCOUNT_ID: "acct_123",
-			CLOUDFLARE_API_TOKEN: "cf-tok-secret",
-		});
-		const tools = createAdminAgentTools(e, {
-			controllerDoName: "default",
-			orgId: "",
-			isGlobalAdmin: true,
-		});
-
-		const sqlTool = tools.run_do_sql as {
-			execute: (input: Record<string, unknown>, opts: unknown) => Promise<Record<string, unknown>>;
-		};
-		const sqlOut = await sqlTool.execute(
-			{
-				binding: "CONTROLLER",
-				name: "default",
-				sql: "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name LIMIT 5",
-			},
-			{},
-		);
-		expect(sqlOut.error).toBeUndefined();
-		expect(Number(sqlOut.rowCount)).toBeGreaterThan(0);
-
-		const calls: Array<{ url: string; method: string; auth: string | null }> = [];
-		const mockFetch: CfFetch = async (input, init) => {
-			const h = new Headers(init?.headers);
-			calls.push({ url: input, method: init?.method ?? "GET", auth: h.get("Authorization") });
-			if (input.includes("/durable_objects/namespaces/ns_1/objects")) {
-				return Response.json({
-					success: true,
-					result: [{ id: "a".repeat(64), hasStoredData: true }],
-				});
-			}
-			if (input.includes("/durable_objects/namespaces")) {
-				return Response.json({
-					success: true,
-					result: [
-						{
-							id: "ns_1",
-							name: "hotbed-controller_ControllerDO",
-							script: "hotbed-controller",
-							class: "ControllerDO",
-							use_sqlite: true,
-						},
-						{
-							id: "ns_other",
-							name: "other_DO",
-							script: "other",
-							class: "OtherDO",
-							use_sqlite: true,
-						},
-					],
-				});
-			}
-			if (input.includes("/observability/telemetry/query")) {
-				return Response.json({ success: true, result: { events: { events: [] } } });
-			}
-			return Response.json({ success: true, result: { ok: true } });
-		};
-
-		const ns = await listCfDoNamespaces(e, { script: "hotbed-controller", fetchImpl: mockFetch });
-		expect(ns.ok).toBe(true);
-		expect(ns.result).toHaveLength(1);
-		expect(ns.result![0].class).toBe("ControllerDO");
-
-		const objs = await listCfDoObjects(e, "ns_1", { limit: 10, fetchImpl: mockFetch });
-		expect(objs.ok).toBe(true);
-		expect(objs.result).toHaveLength(1);
-
-		const obs = await queryCfObservability(e, { view: "events", minutesBack: 30 }, mockFetch);
-		expect(obs.ok).toBe(true);
-
-		const generic = await cloudflareAccountGet(e, "workers/scripts", { fetchImpl: mockFetch });
-		expect(generic.ok).toBe(true);
-		expect(calls.every((c) => c.auth === "Bearer cf-tok-secret")).toBe(true);
-	});
-
-	it("builds json-render system prompt and transforms streamed spec fences into data-spec parts", async () => {
-		const prompt = buildAdminAgentSystemPrompt({
-			controllerDoName: "org:org_alpha",
-			orgId: "org_alpha",
-			isGlobalAdmin: false,
-			cloudflareApiConfigured: false,
-			gcWorkerConfigured: true,
-		});
-		expect(prompt).toContain("DataTable");
-		expect(prompt).toContain("SqlBlock");
-		expect(prompt).toContain("BarList");
-		expect(prompt).toContain("org_alpha");
-		expect(prompt).toContain("Strict Organization Isolation");
-
-		const modelInfo = listAvailableAdminModels(
-			testEnv({ ANTHROPIC_API_KEY: "sk-ant-test", OPENAI_API_KEY: "sk-test" }),
-		);
-		expect(modelInfo.models.some((m) => m.provider === "anthropic")).toBe(true);
-		expect(modelInfo.models.some((m) => m.provider === "openai")).toBe(true);
-
-		const inputChunks = [
-			{ type: "text-start", id: "t1" },
-			{
-				type: "text-delta",
-				id: "t1",
-				delta:
-					'Summary text.\n```spec\n{"op":"add","path":"/root","value":"m1"}\n{"op":"add","path":"/elements/m1","value":{"type":"Metric","props":{"label":"Nodes","value":3},"children":[]}}\n```\n',
-			},
-			{ type: "text-end", id: "t1" },
-		];
-		const src = new ReadableStream({
-			start(controller) {
-				for (const c of inputChunks) controller.enqueue(c);
-				controller.close();
-			},
-		});
-		const out: Array<Record<string, unknown>> = [];
-		const reader = pipeJsonRender(src).getReader();
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			out.push(value as Record<string, unknown>);
-		}
-		expect(out.some((c) => c.type === "data-spec")).toBe(true);
-		const joinedText = out
-			.filter((c) => c.type === "text-delta")
-			.map((c) => (typeof c.delta === "string" ? c.delta : ""))
-			.join("");
-		expect(joinedText).toContain("Summary text.");
-	});
-
-	it("serves /health, /gc (503 when unbound), and /cf/* (config error for global owner)", async () => {
-		const e = testEnv();
-
-		const healthRes = await handleAdminAgentRoute(
-			new Request("https://hotbed.test/api/admin-agent/health", { headers: OWNER_AUTH }),
-			new URL("https://hotbed.test/api/admin-agent/health"),
-			e,
-		);
-		expect(healthRes?.status).toBe(200);
-		const health = (await healthRes!.json()) as { ok: boolean; clusterId: string };
-		expect(health.ok).toBe(true);
-		expect(health.clusterId).toBeTruthy();
+		expect(syntaxErrRes?.status).toBe(400);
 
 		const gcRes = await handleAdminAgentRoute(
 			new Request("https://hotbed.test/api/admin-agent/gc?action=status", { headers: OWNER_AUTH }),
@@ -597,15 +479,5 @@ describe("handleAdminAgentRoute & AdminAgentDO", () => {
 			e,
 		);
 		expect(gcRes?.status).toBe(503);
-
-		// Global admin reaches Cloudflare REST routes (fails with 400 missing secret rather than 403)
-		const cfRes = await handleAdminAgentRoute(
-			new Request("https://hotbed.test/api/admin-agent/cf/do-objects", { headers: OWNER_AUTH }),
-			new URL("https://hotbed.test/api/admin-agent/cf/do-objects"),
-			e,
-		);
-		expect(cfRes?.status).toBe(400);
-		const cfBody = (await cfRes!.json()) as { message: string };
-		expect(cfBody.message).toMatch(/CLOUDFLARE_API_TOKEN/);
 	});
 });

@@ -1,6 +1,5 @@
-// Read-only SQL execution and schema inspection helpers shared across all
-// SQLite-backed Durable Objects (ControllerDO, TenantRegistryDO, CommandDO,
-// AdminAgentDO).
+// Read-only SQL execution and schema inspection helpers shared across
+// org-scoped SQLite-backed Durable Objects (ControllerDO and CommandDO).
 
 export type SqlParamValue = string | number | boolean | null;
 export type SqlCellValue = string | number | boolean | null;
@@ -15,6 +14,18 @@ export interface DoSqlResult {
 	durationMs: number;
 	databaseSizeBytes: number;
 }
+
+export type DoSqlRpcResult = { ok: true; result: DoSqlResult } | { ok: false; error: string };
+
+/**
+ * ControllerDO tables holding plaintext secrets or active auth handoffs that
+ * must never be exposed via Admin Explorer SQL or schema inspection.
+ */
+export const CONTROLLER_ADMIN_DENIED_TABLES: ReadonlySet<string> = new Set([
+	"git_credentials",
+	"signup_codes",
+	"kv_meta",
+]);
 
 export interface DoTableColumn {
 	cid: number;
@@ -52,7 +63,18 @@ export const HARD_MAX_SQL_ROWS = 500;
 const MAX_CELL_STRING_CHARS = 8192;
 const MAX_BLOB_PREVIEW_BYTES = 32;
 
-const ALLOWED_READONLY_PRAGMAS = new Set([
+// Zero-argument read-only PRAGMAs (no `(...)` argument form permitted).
+const ZERO_ARG_READONLY_PRAGMAS = new Set([
+	"database_list",
+	"page_count",
+	"page_size",
+	"freelist_count",
+	"compile_options",
+	"encoding",
+]);
+
+// Table/index introspection PRAGMAs that may take a single parenthesized name.
+const TABLE_INTROSPECTION_PRAGMAS = new Set([
 	"table_info",
 	"table_xinfo",
 	"table_list",
@@ -60,21 +82,9 @@ const ALLOWED_READONLY_PRAGMAS = new Set([
 	"index_info",
 	"index_xinfo",
 	"foreign_key_list",
-	"database_list",
-	"page_count",
-	"page_size",
-	"freelist_count",
-	"schema_version",
-	"user_version",
-	"compile_options",
-	"quick_check",
-	"integrity_check",
-	"journal_mode",
-	"foreign_keys",
-	"encoding",
 ]);
 
-const FORBIDDEN_WRITE_KEYWORDS = new Set([
+const FORBIDDEN_KEYWORDS = new Set([
 	"INSERT",
 	"UPDATE",
 	"DELETE",
@@ -91,6 +101,10 @@ const FORBIDDEN_WRITE_KEYWORDS = new Set([
 	"ROLLBACK",
 	"SAVEPOINT",
 	"RELEASE",
+	"RECURSIVE",
+	"RANDOMBLOB",
+	"ZEROBLOB",
+	"LOAD_EXTENSION",
 ]);
 
 interface SqlToken {
@@ -232,10 +246,16 @@ function tokenizeSql(input: string): SqlToken[] {
 }
 
 /**
- * Validates that a SQL query is a single read-only statement.
- * Throws a descriptive Error if the query is empty, multi-statement, or could mutate state.
+ * Validates that a SQL query is a single read-only statement and does not
+ * reference any denied sensitive tables.
+ * Throws a descriptive Error if the query is empty, multi-statement, could
+ * mutate state, could exhaust CPU/memory via recursive CTEs / huge blobs, or
+ * accesses a restricted table.
  */
-export function validateReadOnlySql(rawQuery: string): string {
+export function validateReadOnlySql(
+	rawQuery: string,
+	opts?: { deniedTables?: ReadonlySet<string> },
+): string {
 	const query = rawQuery.trim();
 	if (!query) {
 		throw new Error("SQL query must not be empty");
@@ -255,12 +275,22 @@ export function validateReadOnlySql(rawQuery: string): string {
 		throw new Error("SQL query must contain a statement");
 	}
 
-	// Check for any forbidden mutating keyword anywhere in the statement.
+	// Check for any forbidden keyword or denied sensitive table anywhere in the statement.
+	// Checking every word/ident token is sound because SQLite does not support dynamic table names.
+	const denied = opts?.deniedTables;
 	for (const tok of body) {
-		if (tok.kind === "word" && FORBIDDEN_WRITE_KEYWORDS.has(tok.value.toUpperCase())) {
+		if (tok.kind === "word" && FORBIDDEN_KEYWORDS.has(tok.value.toUpperCase())) {
 			throw new Error(
-				`write or transaction keyword "${tok.value.toUpperCase()}" is not permitted; admin SQL is read-only`,
+				`keyword "${tok.value.toUpperCase()}" is not permitted; admin SQL is strictly read-only and bounded`,
 			);
+		}
+		if (denied && (tok.kind === "word" || tok.kind === "ident")) {
+			const lower = tok.value.toLowerCase();
+			if (denied.has(lower)) {
+				throw new Error(
+					`table "${lower}" holds sensitive credentials or auth state and cannot be queried via admin SQL`,
+				);
+			}
 		}
 	}
 
@@ -291,12 +321,39 @@ export function validateReadOnlySql(rawQuery: string): string {
 			throw new Error("invalid PRAGMA syntax");
 		}
 		const pragmaName = pragmaTok.value.toLowerCase();
-		if (!ALLOWED_READONLY_PRAGMAS.has(pragmaName)) {
-			throw new Error(
-				`PRAGMA "${pragmaName}" is not in the read-only allowlist (${[...ALLOWED_READONLY_PRAGMAS].join(", ")})`,
-			);
+		const rest = body.slice(nameIdx + 1);
+
+		if (ZERO_ARG_READONLY_PRAGMAS.has(pragmaName)) {
+			if (rest.length > 0) {
+				throw new Error(
+					`PRAGMA "${pragmaName}" takes no arguments in read-only mode (function-call setter syntax is not permitted)`,
+				);
+			}
+			return query;
 		}
-		return query;
+		if (TABLE_INTROSPECTION_PRAGMAS.has(pragmaName)) {
+			// Permit either `PRAGMA table_list` (no args) or `PRAGMA table_info('tbl')` (single arg).
+			if (rest.length === 0) return query;
+			if (
+				rest.length === 3 &&
+				rest[0].kind === "symbol" &&
+				rest[0].value === "(" &&
+				(rest[1].kind === "string" || rest[1].kind === "word" || rest[1].kind === "ident") &&
+				rest[2].kind === "symbol" &&
+				rest[2].value === ")"
+			) {
+				if (denied && denied.has(rest[1].value.toLowerCase())) {
+					throw new Error(
+						`table "${rest[1].value.toLowerCase()}" holds sensitive credentials or auth state and cannot be inspected via admin SQL`,
+					);
+				}
+				return query;
+			}
+			throw new Error(`PRAGMA "${pragmaName}" only accepts a single table/index name argument`);
+		}
+		throw new Error(
+			`PRAGMA "${pragmaName}" is not in the read-only allowlist (${[...ZERO_ARG_READONLY_PRAGMAS, ...TABLE_INTROSPECTION_PRAGMAS].join(", ")})`,
+		);
 	}
 
 	throw new Error(
@@ -335,11 +392,14 @@ export function executeReadOnlySql(
 	sql: SqlStorage,
 	rawQuery: string,
 	rawParams: SqlParamValue[] = [],
-	opts?: { maxRows?: number },
+	opts?: { maxRows?: number; deniedTables?: ReadonlySet<string> },
 ): DoSqlResult {
-	const query = validateReadOnlySql(rawQuery);
-	const requestedMax = opts?.maxRows ?? DEFAULT_MAX_SQL_ROWS;
-	const maxRows = Math.max(1, Math.min(HARD_MAX_SQL_ROWS, Math.floor(requestedMax)));
+	const query = validateReadOnlySql(rawQuery, { deniedTables: opts?.deniedTables });
+	const requestedMax = Number(opts?.maxRows);
+	const maxRows =
+		Number.isFinite(requestedMax) && requestedMax > 0
+			? Math.max(1, Math.min(HARD_MAX_SQL_ROWS, Math.floor(requestedMax)))
+			: DEFAULT_MAX_SQL_ROWS;
 	const params = rawParams.map(normalizeSqlParam);
 
 	const started = Date.now();
@@ -360,6 +420,10 @@ export function executeReadOnlySql(
 		rows.push(formatted);
 	}
 
+	if (cursor.rowsWritten > 0) {
+		throw new Error("query unexpectedly wrote rows; admin SQL is strictly read-only");
+	}
+
 	return {
 		columns,
 		rows,
@@ -370,6 +434,23 @@ export function executeReadOnlySql(
 		durationMs: Date.now() - started,
 		databaseSizeBytes: sql.databaseSize,
 	};
+}
+
+/**
+ * RPC-safe wrapper around `executeReadOnlySql` that returns structured errors
+ * instead of throwing uncaught exceptions across the Durable Object RPC boundary.
+ */
+export function executeReadOnlySqlRpc(
+	sql: SqlStorage,
+	rawQuery: string,
+	rawParams: SqlParamValue[] = [],
+	opts?: { maxRows?: number; deniedTables?: ReadonlySet<string> },
+): DoSqlRpcResult {
+	try {
+		return { ok: true, result: executeReadOnlySql(sql, rawQuery, rawParams, opts) };
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
 }
 
 function quoteIdent(name: string): string {
@@ -383,7 +464,9 @@ function quoteIdent(name: string): string {
 export async function inspectDoSchema(
 	sql: SqlStorage,
 	storage: DurableObjectStorage,
+	opts?: { deniedTables?: ReadonlySet<string> },
 ): Promise<DoSchemaInfo> {
+	const denied = opts?.deniedTables;
 	const alarmAtMs = await storage.getAlarm();
 	const masterRows = sql
 		.exec<{ type: string; name: string; tbl_name: string; sql: string | null }>(
@@ -399,7 +482,7 @@ export async function inspectDoSchema(
 
 	for (const row of masterRows) {
 		if (row.type === "index") {
-			if (row.sql) {
+			if (row.sql && !(denied && denied.has(String(row.tbl_name).toLowerCase()))) {
 				indexes.push({
 					name: String(row.name),
 					tableName: String(row.tbl_name),
@@ -410,6 +493,9 @@ export async function inspectDoSchema(
 		}
 
 		const name = String(row.name);
+		if (denied && denied.has(name.toLowerCase())) {
+			continue;
+		}
 		const tableType = row.type === "view" ? "view" : "table";
 		const internal = name.startsWith("_cf_") || name.startsWith("sqlite_");
 
@@ -439,13 +525,16 @@ export async function inspectDoSchema(
 		}
 
 		let rowCount: number | null = null;
-		try {
-			const countRows = sql
-				.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${quoteIdent(name)}`)
-				.toArray();
-			rowCount = countRows.length > 0 ? Number(countRows[0].n) : 0;
-		} catch {
-			rowCount = null;
+		// Skip COUNT(*) on internal tables and views (views may run arbitrary joins).
+		if (!internal && tableType === "table") {
+			try {
+				const countRows = sql
+					.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${quoteIdent(name)}`)
+					.toArray();
+				rowCount = countRows.length > 0 ? Number(countRows[0].n) : 0;
+			} catch {
+				rowCount = null;
+			}
 		}
 
 		tables.push({

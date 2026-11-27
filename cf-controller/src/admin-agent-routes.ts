@@ -1,26 +1,20 @@
 // Edge authentication and per-organization routing for the Hotbed Admin Explorer:
-//   - /agents/admin-agent/:threadId/*  -> Org-isolated Agents SDK WebSocket & HTTP transport
-//   - /api/admin-agent/status          -> Model, scope & capability status + org's DOs
-//   - /api/admin-agent/sql             -> Org-scoped direct read-only SQL
-//   - /api/admin-agent/schema          -> Org-scoped direct schema inspection
-//   - /api/admin-agent/health          -> Org ControllerDO live health
-//   - /api/admin-agent/gc              -> Tenant-scoped CladeFS R2 usage / GC inspection
-//   - /api/admin-agent/cf/do-objects   -> Cluster-owner Cloudflare DO namespace/object listing
-//   - /api/admin-agent/cf/observability -> Cluster-owner Workers Observability query
-//   - /api/admin-agent/cf/get          -> Cluster-owner read-only Cloudflare REST API GET
+//   - /api/admin-agent/status -> Org scope, allowed DO bindings, and recent CommandDOs
+//   - /api/admin-agent/schema -> Org-scoped read-only SQLite schema inspection
+//   - /api/admin-agent/sql    -> Org-scoped read-only SQLite query execution
+//   - /api/admin-agent/health -> Org ControllerDO live health
+//   - /api/admin-agent/gc     -> Tenant-scoped CladeFS R2 usage / GC inspection
+//
+// Security invariant: EVERY organization (including the default organization)
+// is strictly confined to its own ControllerDO, its own CommandDOs
+// (`cmd:<clusterId>:*`), and its own CladeFS tenant R2 usage. Global
+// TenantRegistryDO and account-wide Cloudflare APIs are never exposed here.
 
-import { getAgentByName } from "agents";
-import { isOrgAdminCaller } from "./auth.ts";
-import { inspectGcForScope, listAvailableAdminModels } from "./admin-agent-do.ts";
+import { getBearerToken, isOrgAdminCaller, type CallerIdentity } from "./auth.ts";
 import {
-	adminAgentDoName,
 	AdminScopeError,
 	allowedBindingsForScope,
-	cloudflareAccountGet,
-	getCloudflareApiConfig,
-	listCfDoNamespaces,
-	listCfDoObjects,
-	queryCfObservability,
+	inspectGcForScope,
 	resolveScopedInspectableDo,
 	type AdminOrgScope,
 	type DoBindingName,
@@ -28,20 +22,17 @@ import {
 import { commandDoName } from "./command-do.ts";
 import { workerDoName } from "./worker-do.ts";
 import type { ControllerEnv } from "./controller-do.ts";
-import { validateReadOnlySql, type SqlParamValue } from "./do-sql.ts";
-import { isWorkOSEnabled } from "./workos.ts";
+import {
+	CONTROLLER_ADMIN_DENIED_TABLES,
+	validateReadOnlySql,
+	type SqlParamValue,
+} from "./do-sql.ts";
+import { parseOrgScopedToken } from "./workos.ts";
 import { edgeCaller, resolveEdgeRouting, withSetCookie } from "./workos-routes.ts";
 
-const THREAD_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
-const VALID_BINDINGS = new Set<DoBindingName>([
-	"CONTROLLER",
-	"TENANT_REGISTRY",
-	"COMMAND",
-	"WORKER",
-	"ADMIN_AGENT",
-]);
+const VALID_BINDINGS = new Set<DoBindingName>(["CONTROLLER", "COMMAND", "WORKER"]);
 
-async function authorizeAdminAgentRequest(
+async function authorizeAdminRequest(
 	request: Request,
 	url: URL,
 	env: ControllerEnv,
@@ -68,7 +59,44 @@ async function authorizeAdminAgentRequest(
 			};
 		}
 
-		const caller = await edgeCaller(request, env, routing, { allowTopLevelNavigate: false });
+		let caller: CallerIdentity;
+		const bearer = getBearerToken(request);
+		const scoped = !routing.caller && bearer ? parseOrgScopedToken(bearer) : null;
+		if (scoped && scoped.kind === "api") {
+			const info = await env.CONTROLLER.getByName(routing.doName).checkApiToken({
+				bearer,
+				orgId: routing.orgId,
+				isDefaultDo: routing.doName === "default",
+			});
+			if (!info.ok) {
+				return {
+					ok: false,
+					response: withSetCookie(
+						Response.json(
+							{
+								code: errorCodeForStatus(info.status),
+								message: info.error.message || "authentication required",
+							},
+							{ status: info.status },
+						),
+						setCookie,
+					),
+				};
+			}
+			caller = {
+				role: "owner",
+				nodeId: info.userId ? `api:${info.userId}` : `api:${info.login}`,
+				hostname: info.login,
+				login: info.login,
+				userId: info.userId ?? "",
+				orgId: info.orgId || routing.orgId,
+				orgRole: info.orgRole ?? "",
+				authMethod: "api-token",
+			};
+		} else {
+			caller = await edgeCaller(request, env, routing, { allowTopLevelNavigate: false });
+		}
+
 		if (!isOrgAdminCaller(caller)) {
 			return {
 				ok: false,
@@ -85,10 +113,6 @@ async function authorizeAdminAgentRequest(
 			};
 		}
 
-		const isGlobalAdmin = !isWorkOSEnabled(env)
-			? routing.doName === "default"
-			: Boolean(routing.globalAdmin && routing.doName === "default");
-
 		return {
 			ok: true,
 			setCookie,
@@ -96,7 +120,6 @@ async function authorizeAdminAgentRequest(
 			scope: {
 				controllerDoName: routing.doName,
 				orgId: routing.orgId || caller.orgId,
-				isGlobalAdmin,
 			},
 		};
 	} catch (err) {
@@ -126,7 +149,7 @@ async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope, comm
 		clusterId = health.clusterId;
 		cladefsTenantId = health.cladefsTenantId ?? null;
 		if (clusterId) {
-			const [cmdRows, nodeRows] = await Promise.all([
+			const [cmdRpc, nodeRpc] = await Promise.all([
 				stub.adminQuerySql("SELECT id FROM commands ORDER BY created_at DESC LIMIT ?", [limit], {
 					maxRows: limit,
 				}),
@@ -136,25 +159,29 @@ async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope, comm
 					{ maxRows: 100 },
 				),
 			]);
-			for (const r of cmdRows.rows) {
-				const id = String(r.id ?? "");
-				if (id) {
-					recentCommands.push({
-						commandId: id,
-						doName: commandDoName(clusterId, id),
-						controller: ctrlName,
-					});
+			if (cmdRpc.ok) {
+				for (const r of cmdRpc.result.rows) {
+					const id = String(r.id ?? "");
+					if (id) {
+						recentCommands.push({
+							commandId: id,
+							doName: commandDoName(clusterId, id),
+							controller: ctrlName,
+						});
+					}
 				}
 			}
-			for (const r of nodeRows.rows) {
-				const id = String(r.id ?? "");
-				if (id) {
-					workers.push({
-						nodeId: id,
-						hostname: String(r.hostname ?? ""),
-						doName: workerDoName(clusterId, id),
-						controller: ctrlName,
-					});
+			if (nodeRpc.ok) {
+				for (const r of nodeRpc.result.rows) {
+					const id = String(r.id ?? "");
+					if (id) {
+						workers.push({
+							nodeId: id,
+							hostname: String(r.hostname ?? ""),
+							doName: workerDoName(clusterId, id),
+							controller: ctrlName,
+						});
+					}
 				}
 			}
 		}
@@ -211,70 +238,48 @@ function errorCodeForStatus(status: number): string {
 	}
 }
 
+function rejectDisallowedBinding(binding: string): { status: number; message: string } {
+	if (binding === "TENANT_REGISTRY") {
+		return {
+			status: 403,
+			message:
+				"access denied: TenantRegistryDO is global across organizations and is never accessible from Admin Explorer",
+		};
+	}
+	if (binding === "ADMIN_AGENT") {
+		return {
+			status: 403,
+			message: "access denied: AdminAgentDO has been removed",
+		};
+	}
+	return { status: 400, message: `invalid binding "${binding}"` };
+}
+
 /**
- * Handles `/agents/admin-agent/*` (org-isolated Cloudflare Agents SDK WebSocket + HTTP)
- * and `/api/admin-agent/*` (org-scoped status, direct read-only SQL, schema inspection).
+ * Handles `/api/admin-agent/*` (org-scoped status, direct read-only SQL,
+ * schema inspection, controller health, and tenant-scoped CladeFS GC).
  */
 export async function handleAdminAgentRoute(
 	request: Request,
 	url: URL,
 	env: ControllerEnv,
 ): Promise<Response | null> {
-	const isAgentsPath =
-		url.pathname === "/agents/admin-agent" || url.pathname.startsWith("/agents/admin-agent/");
-	const isApiPath = url.pathname.startsWith("/api/admin-agent/");
-	if (!isAgentsPath && !isApiPath) return null;
+	if (!url.pathname.startsWith("/api/admin-agent/")) return null;
 
-	const auth = await authorizeAdminAgentRequest(request, url, env);
+	const auth = await authorizeAdminRequest(request, url, env);
 	if (!auth.ok) return auth.response;
 	const { scope } = auth;
 
 	const reply = (body: unknown, status = 200) =>
 		withSetCookie(Response.json(body, { status }), auth.setCookie);
-
-	if (isAgentsPath) {
-		if (!env.ADMIN_AGENT) {
-			return reply({ message: "AdminAgentDO binding is not configured" }, 503);
-		}
-		// URL form: /agents/admin-agent/<threadId>[/<subpath>]
-		const rest = url.pathname.slice("/agents/admin-agent".length).replace(/^\/+/, "");
-		const slashIdx = rest.indexOf("/");
-		const rawThread = (slashIdx === -1 ? rest : rest.slice(0, slashIdx)) || "main";
-		const threadId = decodeURIComponent(rawThread);
-		if (!THREAD_ID_RE.test(threadId)) {
-			return reply(
-				{
-					message: "invalid thread id (must be 1-64 alphanumeric, dot, dash, or underscore chars)",
-				},
-				400,
-			);
-		}
-
-		// Physically isolate every organization's chat threads in its own DO namespace.
-		const doInstanceName = adminAgentDoName(scope.controllerDoName, threadId);
-		const stub = await getAgentByName(env.ADMIN_AGENT, doInstanceName);
-		const bound = await stub.bindScope(scope);
-		if (!bound.ok) {
-			return reply({ message: bound.message }, bound.status);
-		}
-
-		const headers = new Headers(request.headers);
-		headers.set("x-partykit-room", doInstanceName);
-		headers.set("x-partykit-namespace", "admin-agent");
-		const fwd = new Request(request, { headers });
-		const res = await stub.fetch(fwd);
-		return withSetCookie(res, auth.setCookie);
-	}
-
-	// ---- /api/admin-agent/* REST helpers ----
-	const sub = url.pathname.slice("/api/admin-agent".length);
 	const fail = (message: string, status: number) =>
 		reply({ code: errorCodeForStatus(status), message }, status);
+
+	const sub = url.pathname.slice("/api/admin-agent".length);
 
 	if (request.method === "GET" && sub === "/status") {
 		const rawLimit = Number(url.searchParams.get("limit") ?? "10");
 		const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 10;
-		const { defaultModel, models } = listAvailableAdminModels(env);
 		const targets = await discoverOrgTargets(env, scope, limit);
 		return reply({
 			ok: true,
@@ -283,19 +288,11 @@ export async function handleAdminAgentRoute(
 				orgId: scope.orgId || null,
 				clusterId: targets.clusterId || null,
 				cladefsTenantId: targets.cladefsTenantId,
-				isGlobalAdmin: scope.isGlobalAdmin,
 			},
-			aiConfigured: models.length > 0,
-			workersAiBound: Boolean(env.AI),
-			anthropicConfigured: Boolean((env.ANTHROPIC_API_KEY ?? "").trim()),
-			openaiConfigured: Boolean((env.OPENAI_API_KEY ?? "").trim()),
-			cloudflareApiConfigured: scope.isGlobalAdmin && Boolean(getCloudflareApiConfig(env)),
 			gcWorkerConfigured: Boolean(
 				(env.GC_WORKER || (env.GC_WORKER_URL ?? "").trim()) && (env.GC_TOKEN ?? "").trim(),
 			),
-			defaultModel,
-			models,
-			bindings: allowedBindingsForScope(scope),
+			bindings: allowedBindingsForScope(),
 			controllers: targets.controllers,
 			recentCommands: targets.recentCommands,
 		});
@@ -343,7 +340,8 @@ export async function handleAdminAgentRoute(
 			.trim()
 			.toUpperCase();
 		if (!VALID_BINDINGS.has(binding as DoBindingName)) {
-			return fail(`invalid binding "${binding}"`, 400);
+			const rej = rejectDisallowedBinding(binding);
+			return fail(rej.message, rej.status);
 		}
 		let name = url.searchParams.get("name") ?? undefined;
 		const id = url.searchParams.get("id") ?? undefined;
@@ -394,10 +392,18 @@ export async function handleAdminAgentRoute(
 		const commandId = (body.commandId ?? "").trim();
 		const binding = (body.binding ?? (commandId ? "COMMAND" : "CONTROLLER")).trim().toUpperCase();
 		if (!VALID_BINDINGS.has(binding as DoBindingName)) {
-			return fail(`invalid binding "${binding}"`, 400);
+			const rej = rejectDisallowedBinding(binding);
+			return fail(rej.message, rej.status);
+		}
+		if (body.maxRows !== undefined) {
+			if (typeof body.maxRows !== "number" || !Number.isInteger(body.maxRows) || body.maxRows < 1) {
+				return fail("`maxRows` must be a positive integer", 400);
+			}
 		}
 		try {
-			validateReadOnlySql(body.sql);
+			validateReadOnlySql(body.sql, {
+				deniedTables: binding === "CONTROLLER" ? CONTROLLER_ADMIN_DENIED_TABLES : undefined,
+			});
 			let name = body.name;
 			if (commandId) {
 				if (binding !== "COMMAND") {
@@ -413,108 +419,25 @@ export async function handleAdminAgentRoute(
 				name,
 				id: body.id,
 			});
-			const result = await target.stub.adminQuerySql(body.sql, body.params ?? [], {
+			const rpcResult = await target.stub.adminQuerySql(body.sql, body.params ?? [], {
 				maxRows: body.maxRows,
 			});
+			if (!rpcResult.ok) {
+				return fail(rpcResult.error, 400);
+			}
 			return reply({
 				target: target.label,
 				binding,
 				resolvedBy: target.resolvedBy,
 				value: target.value,
 				sql: body.sql,
-				...result,
+				...rpcResult.result,
 			});
 		} catch (err) {
 			return fail(
 				err instanceof Error ? err.message : String(err),
 				err instanceof AdminScopeError ? 403 : 400,
 			);
-		}
-	}
-
-	// ---- Account-wide Cloudflare REST API routes (cluster-owner / global admin only) ----
-	if (sub.startsWith("/cf/")) {
-		if (!scope.isGlobalAdmin) {
-			return fail(
-				"access denied: Cloudflare account API tools are restricted to cluster-owner / default-organization admins",
-				403,
-			);
-		}
-
-		if (request.method === "GET" && sub === "/cf/do-objects") {
-			const namespaceId = (url.searchParams.get("namespaceId") ?? "").trim();
-			const script = url.searchParams.get("script") ?? undefined;
-			const rawLimit = url.searchParams.get("limit");
-			const limit = rawLimit ? Number(rawLimit) : undefined;
-			const cursor = url.searchParams.get("cursor") ?? undefined;
-			try {
-				if (namespaceId) {
-					const res = await listCfDoObjects(env, namespaceId, {
-						limit: Number.isFinite(limit) ? limit : undefined,
-						cursor,
-					});
-					return reply(res);
-				}
-				const res = await listCfDoNamespaces(env, {
-					script: script === "*" ? undefined : (script ?? "hotbed-controller"),
-				});
-				return reply(res);
-			} catch (err) {
-				return fail(err instanceof Error ? err.message : String(err), 400);
-			}
-		}
-
-		if (request.method === "POST" && sub === "/cf/observability") {
-			const body = (await request.json().catch(() => null)) as {
-				view?: "events" | "invocations" | "calculations";
-				scriptName?: string;
-				minutesBack?: number;
-				limit?: number;
-				search?: string;
-				level?: "debug" | "info" | "warn" | "error";
-			} | null;
-			try {
-				const res = await queryCfObservability(env, {
-					view: body?.view ?? "events",
-					scriptName: body?.scriptName,
-					minutesBack: body?.minutesBack,
-					limit: body?.limit,
-					search: body?.search,
-					level: body?.level,
-				});
-				return reply(res);
-			} catch (err) {
-				return fail(err instanceof Error ? err.message : String(err), 400);
-			}
-		}
-
-		if (sub === "/cf/get" && (request.method === "POST" || request.method === "GET")) {
-			let apiPath = "";
-			let query: Record<string, string | number | boolean> | undefined;
-			if (request.method === "POST") {
-				const body = (await request.json().catch(() => null)) as {
-					path?: string;
-					query?: Record<string, string | number | boolean>;
-				} | null;
-				apiPath = (body?.path ?? "").trim();
-				query = body?.query;
-			} else {
-				apiPath = (url.searchParams.get("path") ?? "").trim();
-				const q: Record<string, string> = {};
-				for (const [k, v] of url.searchParams.entries()) {
-					if (k !== "path") q[k] = v;
-				}
-				if (Object.keys(q).length > 0) query = q;
-			}
-			if (!apiPath) {
-				return fail("`path` is required", 400);
-			}
-			try {
-				const res = await cloudflareAccountGet(env, apiPath, { query });
-				return reply(res);
-			} catch (err) {
-				return fail(err instanceof Error ? err.message : String(err), 400);
-			}
 		}
 	}
 

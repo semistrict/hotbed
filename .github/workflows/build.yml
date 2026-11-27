@@ -12,13 +12,10 @@ on:
 permissions:
   contents: write
 
-# Builds publish in the order they were pushed, every push its own run: GitHub keeps one pending
-# run a group by default, a newer push replacing (cancelling) it, so a push's run was often
-# cancelled before it began; `queue: max` holds up to 100 pending runs, run one after another.
-concurrency:
-  group: build
-  cancel-in-progress: false
-  queue: max
+# Tests run concurrently across pushes so Cloudflare Worker/UI deploys are never
+# stuck behind an earlier push's 10-minute test-macos run. Only the stateful
+# publish/deploy jobs serialize via job-level concurrency groups, each guarded
+# against rolling back past a newer live commit or release build number.
 
 jobs:
   test-linux:
@@ -184,12 +181,35 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs: [test-linux, test-linux-root, test-macos, test-cf-controller]
+    concurrency:
+      group: release
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      published: ${{ steps.check.outputs.published }}
     steps:
+      - name: Check release monotonicity
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh release view --json tagName --jq '.tagName' 2>/dev/null || true)
+          LATEST="${TAG#build-}"
+          if [ -n "$LATEST" ] && [ "$LATEST" != "$TAG" ] && [ "$LATEST" -ge "${{ github.run_number }}" ]; then
+            echo "Skipping release: newer build-${LATEST} is already published (this run is ${{ github.run_number }})"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "published=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.check.outputs.published == 'true'
       - uses: actions/setup-go@v5
+        if: steps.check.outputs.published == 'true'
         with:
           go-version-file: go.mod
       - name: Build
+        if: steps.check.outputs.published == 'true'
         run: |
           mkdir out
           for p in linux/amd64 linux/arm64 darwin/arm64; do
@@ -206,6 +226,7 @@ jobs:
           done
           (cd out && sha256sum hotbed-* > SHA256SUMS)
       - name: Publish
+        if: steps.check.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -215,6 +236,7 @@ jobs:
           gh release list --limit 200 --json tagName --jq '.[20:][].tagName' |
             xargs -r -n1 gh release delete --cleanup-tag --yes
       - name: Upload release checksums
+        if: steps.check.outputs.published == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: release-sha256sums
@@ -224,23 +246,58 @@ jobs:
   deploy-cf-controller:
     runs-on: ubuntu-latest
     needs: [test-cf-controller]
+    concurrency:
+      group: deploy-cf-controller
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install cf CLI
+        run: npm install -g cf@1.0.0-rc.4
+      - name: Guard against rolling back past a newer live deployment (fail-closed)
+        id: guard
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          LIVE_VID=$(cf workers deployments list --worker hotbed-controller | jq -r '.deployments[0].versions[0].version_id')
+          test -n "$LIVE_VID" && test "$LIVE_VID" != "null"
+          LIVE_MSG=$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/hotbed-controller/versions/${LIVE_VID}" \
+            | jq -r '.result.annotations["workers/message"] // ""')
+          LIVE_SHA=$(printf '%s' "$LIVE_MSG" | grep -oE '[0-9a-f]{40}' | head -n1 || true)
+          if [ -z "$LIVE_SHA" ]; then
+            echo "Could not determine live commit SHA from active deployment ${LIVE_VID} (message: ${LIVE_MSG}); failing closed" >&2
+            exit 1
+          fi
+          if [ "$LIVE_SHA" != "${{ github.sha }}" ]; then
+            git fetch origin main --quiet
+            if git merge-base --is-ancestor "${{ github.sha }}" "$LIVE_SHA" 2>/dev/null; then
+              echo "Skipping deploy: newer commit ${LIVE_SHA} is already live (this run is ${{ github.sha }})"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
       - name: Build UI assets
+        if: steps.guard.outputs.skip != 'true'
         run: |
           pnpm -C ui install --frozen-lockfile
           pnpm -C ui build
-      - name: Install cf-controller dependencies and cf CLI
-        run: |
-          pnpm -C cf-controller install --frozen-lockfile
-          npm install -g cf@1.0.0-rc.4
+      - name: Install cf-controller dependencies
+        if: steps.guard.outputs.skip != 'true'
+        run: pnpm -C cf-controller install --frozen-lockfile
       - name: Fetch latest published release metadata
+        if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -252,6 +309,7 @@ jobs:
           gh release download "$TAG" -p SHA256SUMS -O cf-controller/.release-meta/SHA256SUMS
           echo "HOTBED_BUILD_NUMBER=${BUILD_NUM}" >> "$GITHUB_ENV"
       - name: Deploy Worker
+        if: steps.guard.outputs.skip != 'true'
         working-directory: cf-controller
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -273,37 +331,85 @@ jobs:
   deploy-cf-controller-release:
     runs-on: ubuntu-latest
     needs: [deploy-cf-controller, release]
+    if: needs.release.outputs.published == 'true'
+    concurrency:
+      group: deploy-cf-controller
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: release-sha256sums
-          path: cf-controller/.release-meta
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install cf CLI
+        run: npm install -g cf@1.0.0-rc.4
+      - name: Guard release build number and preserve newer live Worker code (fail-closed)
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh release view --json tagName --jq '.tagName')
+          LATEST_BUILD="${TAG#build-}"
+          test -n "$LATEST_BUILD" && [ "$LATEST_BUILD" != "$TAG" ]
+          if [ "$LATEST_BUILD" -gt "${{ github.run_number }}" ]; then
+            echo "Skipping release announcement: newer build-${LATEST_BUILD} is already published (this run is ${{ github.run_number }})"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          LIVE_VID=$(cf workers deployments list --worker hotbed-controller | jq -r '.deployments[0].versions[0].version_id')
+          test -n "$LIVE_VID" && test "$LIVE_VID" != "null"
+          LIVE_MSG=$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/hotbed-controller/versions/${LIVE_VID}" \
+            | jq -r '.result.annotations["workers/message"] // ""')
+          LIVE_SHA=$(printf '%s' "$LIVE_MSG" | grep -oE '[0-9a-f]{40}' | head -n1 || true)
+          if [ -z "$LIVE_SHA" ]; then
+            echo "Could not determine live commit SHA from active deployment ${LIVE_VID} (message: ${LIVE_MSG}); failing closed" >&2
+            exit 1
+          fi
+          DEPLOY_SHA="${{ github.sha }}"
+          if [ "$LIVE_SHA" != "${{ github.sha }}" ]; then
+            git fetch origin main --quiet
+            if git merge-base --is-ancestor "${{ github.sha }}" "$LIVE_SHA" 2>/dev/null; then
+              echo "Newer Worker commit ${LIVE_SHA} is already live; checking it out so announcing build-${{ github.run_number }} never rolls back Worker/DB schema"
+              git checkout --detach "$LIVE_SHA"
+              DEPLOY_SHA="$LIVE_SHA"
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "sha=${DEPLOY_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        if: steps.target.outputs.skip != 'true'
+        with:
+          name: release-sha256sums
+          path: cf-controller/.release-meta
       - name: Build UI assets
+        if: steps.target.outputs.skip != 'true'
         run: |
           pnpm -C ui install --frozen-lockfile
           pnpm -C ui build
-      - name: Install cf-controller dependencies and cf CLI
-        run: |
-          pnpm -C cf-controller install --frozen-lockfile
-          npm install -g cf@1.0.0-rc.4
+      - name: Install cf-controller dependencies
+        if: steps.target.outputs.skip != 'true'
+        run: pnpm -C cf-controller install --frozen-lockfile
       - name: Deploy Worker with new binary release metadata
+        if: steps.target.outputs.skip != 'true'
         working-directory: cf-controller
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           HOTBED_BUILD_NUMBER: ${{ github.run_number }}
-          HOTBED_GIT_COMMIT: ${{ github.sha }}
+          HOTBED_GIT_COMMIT: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
           export HOTBED_BUILD_SHA256SUMS="$(cat .release-meta/SHA256SUMS)"
-          cf deploy --force --tag "build-${{ github.run_number }}" --message "build-${{ github.run_number }} (${{ github.sha }})"
+          cf deploy --force --tag "build-${{ github.run_number }}" --message "build-${{ github.run_number }} (${{ steps.target.outputs.sha }})"
           VID=$(cf workers deployments list --worker hotbed-controller | jq -r '.deployments[0].versions[0].version_id')
           test -n "$VID" && test "$VID" != "null"
           cf workers deployments create \

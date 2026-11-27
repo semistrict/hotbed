@@ -3,7 +3,6 @@ import { drizzle, type DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlit
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import migrations from "../drizzle/migrations.js";
 import { handleAdminRoute } from "./admin-routes.ts";
-import type { AdminAgentDO } from "./admin-agent-do.ts";
 import {
 	authenticateRequest,
 	INTERNAL_DEFAULT_DO_HEADER,
@@ -20,10 +19,11 @@ import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./con
 import { ControllerContext } from "./context.ts";
 import * as dbSchema from "./db/schema.ts";
 import {
-	executeReadOnlySql,
+	CONTROLLER_ADMIN_DENIED_TABLES,
+	executeReadOnlySqlRpc,
 	inspectDoSchema,
 	type DoSchemaInfo,
-	type DoSqlResult,
+	type DoSqlRpcResult,
 	type SqlParamValue,
 } from "./do-sql.ts";
 import { decodePathSegment } from "./encoding.ts";
@@ -70,13 +70,6 @@ export interface ControllerEnv extends AuthEnv, BuildsEnv {
 	TENANT_REGISTRY?: DurableObjectNamespace<TenantRegistryDO>;
 	COMMAND: DurableObjectNamespace<CommandDO>;
 	WORKER: DurableObjectNamespace<WorkerDO>;
-	ADMIN_AGENT?: DurableObjectNamespace<AdminAgentDO>;
-	AI?: Ai;
-	ANTHROPIC_API_KEY?: string;
-	OPENAI_API_KEY?: string;
-	ADMIN_AGENT_MODEL?: string;
-	CLOUDFLARE_API_TOKEN?: string;
-	CLOUDFLARE_ACCOUNT_ID?: string;
 	CLUSTER_ID?: string;
 	CONTROLLER_NAME?: string;
 	ALLOW_LOCAL_REPOS?: string;
@@ -716,20 +709,29 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		}
 	}
 
-	/** Read-only SQL query executed via typed Workers RPC by the Admin Agent. */
+	/**
+	 * Read-only SQL query executed via typed Workers RPC by Admin Explorer.
+	 * Restricts tables holding plaintext secrets or active auth handoffs
+	 * (`git_credentials`, `signup_codes`, `kv_meta`).
+	 */
 	adminQuerySql(
 		query: string,
 		params: SqlParamValue[] = [],
 		opts?: { maxRows?: number },
-	): DoSqlResult {
-		return executeReadOnlySql(this.ctx.storage.sql, query, params, opts);
+	): DoSqlRpcResult {
+		return executeReadOnlySqlRpc(this.ctx.storage.sql, query, params, {
+			...opts,
+			deniedTables: CONTROLLER_ADMIN_DENIED_TABLES,
+		});
 	}
 
-	/** Schema & metadata inspection executed via typed Workers RPC by the Admin Agent. */
+	/** Schema & metadata inspection executed via typed Workers RPC by Admin Explorer. */
 	async adminInspectSchema(): Promise<
 		DoSchemaInfo & { clusterId: string; orgId: string; cladefsTenantId: string | null }
 	> {
-		const schema = await inspectDoSchema(this.ctx.storage.sql, this.ctx.storage);
+		const schema = await inspectDoSchema(this.ctx.storage.sql, this.ctx.storage, {
+			deniedTables: CONTROLLER_ADMIN_DENIED_TABLES,
+		});
 		return {
 			...schema,
 			clusterId: this.ctrl.clusterId,

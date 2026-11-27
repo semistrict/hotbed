@@ -1,30 +1,64 @@
-// Cloudflare REST API v4 client (read-only) and org-scoped Durable Object
-// target resolver for the Hotbed Admin Agent.
+// Org-scoped Durable Object target resolver and tenant-scoped CladeFS GC
+// inspector for the Hotbed Admin Explorer (UI SQL Explorer + `hotbed admin` CLI).
 //
-// Security invariant: every organization's Admin Agent is strictly confined to
-// THAT organization's Durable Objects (its own ControllerDO, CommandDOs under
-// its own clusterId, and its own AdminAgentDO threads). Non-default orgs never
-// get access to TenantRegistryDO or account-wide Cloudflare REST APIs.
+// Security invariant: EVERY organization (including the default organization)
+// is strictly confined to THAT organization's own ControllerDO, its own
+// CommandDOs (`cmd:<clusterId>:*`), and its own CladeFS tenant R2 usage.
+// Global multi-tenant objects (TenantRegistryDO) and account-wide Cloudflare
+// APIs are NEVER accessible here.
 
-import type { AdminAgentDO } from "./admin-agent-do.ts";
-import { commandDoName, type CommandDO } from "./command-do.ts";
+import { commandDoName } from "./command-do.ts";
 import type { ControllerDO, ControllerEnv } from "./controller-do.ts";
-import type { DoSchemaInfo, DoSqlResult, SqlParamValue } from "./do-sql.ts";
-import type { TenantRegistryDO } from "./tenant-registry-do.ts";
+import type { DoSchemaInfo, DoSqlRpcResult, SqlParamValue } from "./do-sql.ts";
 import { workerDoName, type WorkerDO } from "./worker-do.ts";
 
-const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 const HEX_DO_ID_RE = /^[0-9a-f]{64}$/i;
+const GC_CELL_SEGMENT_RE = /^[0-9a-hjkmnp-tv-z]{1,16}$/i;
+const CROCKFORD_DIGITS = "0123456789abcdefghjkmnpqrstvwxyz";
 
-export type DoBindingName = "CONTROLLER" | "TENANT_REGISTRY" | "COMMAND" | "WORKER" | "ADMIN_AGENT";
+/**
+ * Encodes a non-negative uint64 CladeFS tenant ID as lowercase unpadded
+ * Crockford base32 (`base32_id::Short` in cladefs-gc, matching `Base32ID`
+ * in `internal/cladefs/client.go`). Example: 0 -> "0", 10 -> "a", 32 -> "10".
+ */
+export function encodeCrockfordBase32Short(id: number | bigint): string {
+	let n = typeof id === "bigint" ? id : BigInt(Math.trunc(id));
+	if (n < 0n) {
+		throw new Error(`invalid negative CladeFS tenant ID: ${id}`);
+	}
+	if (n === 0n) return "0";
+	let out = "";
+	while (n > 0n) {
+		out = CROCKFORD_DIGITS[Number(n % 32n)] + out;
+		n /= 32n;
+	}
+	return out;
+}
+
+/**
+ * Normalizes a Crockford base32 tenant string (padded or unpadded, case-
+ * insensitive, supporting i/l -> 1 and o -> 0) to its canonical Short form.
+ */
+export function normalizeCrockfordBase32Short(raw: string): string | null {
+	const cleaned = raw.trim().toLowerCase();
+	if (!cleaned) return null;
+	let normalized = "";
+	for (const ch of cleaned) {
+		const mapped = ch === "i" || ch === "l" ? "1" : ch === "o" ? "0" : ch;
+		if (!CROCKFORD_DIGITS.includes(mapped)) return null;
+		normalized += mapped;
+	}
+	const stripped = normalized.replace(/^0+/, "");
+	return stripped || "0";
+}
+
+export type DoBindingName = "CONTROLLER" | "COMMAND" | "WORKER";
 
 export interface AdminOrgScope {
 	/** Logical ControllerDO name for this organization ("default" or "org:<org_id>"). */
 	controllerDoName: string;
 	/** WorkOS organization ID, or "" for single-tenant/default mode. */
 	orgId: string;
-	/** Whether the caller is a cluster-level/default-org admin. */
-	isGlobalAdmin: boolean;
 }
 
 export class AdminScopeError extends Error {
@@ -48,32 +82,14 @@ export interface AdminInspectableStub {
 		query: string,
 		params?: SqlParamValue[],
 		opts?: { maxRows?: number },
-	): Promise<DoSqlResult>;
+	): Promise<DoSqlRpcResult>;
 	adminInspectSchema(): Promise<
 		DoSchemaInfo & { clusterId?: string; orgId?: string; cladefsTenantId?: string | null }
 	>;
 }
 
-export interface CloudflareApiConfig {
-	accountId: string;
-	apiToken: string;
-}
-
-export function getCloudflareApiConfig(env: ControllerEnv): CloudflareApiConfig | null {
-	const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
-	const apiToken = (env.CLOUDFLARE_API_TOKEN ?? "").trim();
-	if (!accountId || !apiToken) return null;
-	return { accountId, apiToken };
-}
-
-export function adminAgentDoName(controllerDoName: string, threadId: string): string {
-	return `admin:${controllerDoName}:${threadId}`;
-}
-
-export function allowedBindingsForScope(scope: AdminOrgScope): DoBindingName[] {
-	return scope.isGlobalAdmin
-		? ["CONTROLLER", "COMMAND", "WORKER", "ADMIN_AGENT", "TENANT_REGISTRY"]
-		: ["CONTROLLER", "COMMAND", "WORKER", "ADMIN_AGENT"];
+export function allowedBindingsForScope(): DoBindingName[] {
+	return ["CONTROLLER", "COMMAND", "WORKER"];
 }
 
 function assertValidHexId(rawId: string): string {
@@ -96,7 +112,7 @@ async function verifyCommandHexIdBelongsToOrg(
 	clusterId: string,
 	hexId: string,
 ): Promise<boolean> {
-	const [cmdRows, histRows] = await Promise.all([
+	const [cmdRpc, histRpc] = await Promise.all([
 		controllerStub.adminQuerySql("SELECT id FROM commands ORDER BY created_at DESC LIMIT 500", [], {
 			maxRows: 500,
 		}),
@@ -104,8 +120,10 @@ async function verifyCommandHexIdBelongsToOrg(
 			maxRows: 500,
 		}),
 	]);
+	const cmdRows = cmdRpc.ok ? cmdRpc.result.rows : [];
+	const histRows = histRpc.ok ? histRpc.result.rows : [];
 	const seen = new Set<string>();
-	for (const row of [...cmdRows.rows, ...histRows.rows]) {
+	for (const row of [...cmdRows, ...histRows]) {
 		const cmdId = String(row.id ?? "");
 		if (!cmdId || seen.has(cmdId)) continue;
 		seen.add(cmdId);
@@ -123,10 +141,11 @@ async function verifyWorkerHexIdBelongsToOrg(
 	clusterId: string,
 	hexId: string,
 ): Promise<boolean> {
-	const nodeRows = await controllerStub.adminQuerySql("SELECT id FROM nodes LIMIT 500", [], {
+	const nodeRpc = await controllerStub.adminQuerySql("SELECT id FROM nodes LIMIT 500", [], {
 		maxRows: 500,
 	});
-	for (const row of nodeRows.rows) {
+	const nodeRows = nodeRpc.ok ? nodeRpc.result.rows : [];
+	for (const row of nodeRows) {
 		const nodeId = String(row.id ?? "");
 		if (!nodeId) continue;
 		const candidate = env.WORKER.idFromName(workerDoName(clusterId, nodeId))
@@ -140,7 +159,7 @@ async function verifyWorkerHexIdBelongsToOrg(
 /**
  * Resolves a Durable Object target strictly within the caller's organization
  * scope. Throws AdminScopeError (403) if the target belongs to another org or
- * is outside the caller's allowed bindings.
+ * is a global multi-tenant Durable Object.
  */
 export async function resolveScopedInspectableDo(
 	env: ControllerEnv,
@@ -182,7 +201,7 @@ export async function resolveScopedInspectableDo(
 			const resolvedName = rawName || expectedName;
 			if (resolvedName !== expectedName) {
 				throw new AdminScopeError(
-					`access denied: this organization's Admin Agent may only query ControllerDO "${expectedName}", not "${resolvedName}"`,
+					`access denied: this organization's Admin Explorer may only query ControllerDO "${expectedName}", not "${resolvedName}"`,
 				);
 			}
 			return {
@@ -274,312 +293,186 @@ export async function resolveScopedInspectableDo(
 				value: rawName,
 			};
 		}
-
-		case "ADMIN_AGENT": {
-			if (!env.ADMIN_AGENT) {
-				throw new Error("Durable Object binding ADMIN_AGENT is not bound in this environment");
-			}
-			const prefix = `admin:${scope.controllerDoName}:`;
-			if (rawId) {
-				throw new AdminScopeError(
-					`address AdminAgentDO by its organization-scoped name ("${prefix}<thread>") rather than a raw hex ID`,
-				);
-			}
-			const resolvedName = rawName || `${prefix}main`;
-			if (!resolvedName.startsWith(prefix) || resolvedName.length <= prefix.length) {
-				throw new AdminScopeError(
-					`access denied: AdminAgentDO name "${resolvedName}" is outside this organization's namespace ("${prefix}*")`,
-				);
-			}
-			return {
-				stub: env.ADMIN_AGENT.getByName(resolvedName) as unknown as AdminInspectableStub,
-				label: `ADMIN_AGENT(${resolvedName})`,
-				resolvedBy: "name",
-				value: resolvedName,
-			};
-		}
-
-		case "TENANT_REGISTRY": {
-			if (!scope.isGlobalAdmin) {
-				throw new AdminScopeError(
-					"access denied: TenantRegistryDO is global across organizations and is not accessible to organization-scoped Admin Agents",
-				);
-			}
-			if (!env.TENANT_REGISTRY) {
-				throw new Error("Durable Object binding TENANT_REGISTRY is not bound in this environment");
-			}
-			if (rawId) {
-				const hexId = assertValidHexId(rawId);
-				const expectedHex = env.TENANT_REGISTRY.idFromName("global").toString().toLowerCase();
-				if (hexId !== expectedHex) {
-					throw new AdminScopeError("TenantRegistryDO only permits the global singleton object");
-				}
-				return {
-					stub: env.TENANT_REGISTRY.get(
-						env.TENANT_REGISTRY.idFromString(hexId),
-					) as unknown as AdminInspectableStub,
-					label: `TENANT_REGISTRY(id:${hexId.slice(0, 12)}…)`,
-					resolvedBy: "id",
-					value: hexId,
-				};
-			}
-			const resolvedName = rawName || "global";
-			if (resolvedName !== "global") {
-				throw new AdminScopeError('TenantRegistryDO only permits the "global" singleton');
-			}
-			return {
-				stub: env.TENANT_REGISTRY.getByName("global") as unknown as AdminInspectableStub,
-				label: "TENANT_REGISTRY(global)",
-				resolvedBy: "name",
-				value: "global",
-			};
-		}
-
 		default:
-			throw new Error(`unknown Durable Object binding "${String(target.binding)}"`);
+			throw new AdminScopeError(
+				`access denied: Durable Object binding "${String(target.binding)}" is not accessible from Admin Explorer`,
+			);
 	}
 }
 
-// Suppress unused type-only import lint when referencing AdminAgentDO / CommandDO / WorkerDO / TenantRegistryDO.
-export type _ScopedDoClasses =
-	| ControllerDO
-	| TenantRegistryDO
-	| CommandDO
-	| WorkerDO
-	| AdminAgentDO;
+// Suppress unused type-only import lint when referencing WorkerDO / ControllerDO.
+export type _ScopedDoClasses = ControllerDO | WorkerDO;
 
-// ---- Cloudflare REST API v4 (optional, cluster-owner/default-org admins only) ----
-
-interface CfApiEnvelope<T> {
-	success?: boolean;
-	result?: T;
-	result_info?: Record<string, unknown>;
-	errors?: Array<{ code?: number; message?: string }>;
-	messages?: Array<{ code?: number; message?: string }>;
-}
-
-export interface CfApiFetchResult<T = unknown> {
-	ok: boolean;
-	status: number;
-	result?: T;
-	resultInfo?: Record<string, unknown>;
-	error?: string;
-}
-
-export type CfFetch = (input: string, init?: RequestInit) => Promise<Response>;
-
-const SAFE_CF_ACCOUNT_PATH_RE = /^[a-zA-Z0-9_./:-]+$/;
-
-function requireCfApi(env: ControllerEnv): CloudflareApiConfig {
-	const cfg = getCloudflareApiConfig(env);
-	if (!cfg) {
-		throw new Error(
-			"Cloudflare REST API credentials are not configured on this Worker. Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN secrets (`cf workers secrets update --worker hotbed-controller --name CLOUDFLARE_API_TOKEN --type secret_text`). In-cluster Durable Object SQL and schema inspection still work without them.",
-		);
-	}
-	return cfg;
-}
-
-async function cfApiRequest<T>(
-	cfg: CloudflareApiConfig,
-	method: "GET" | "POST",
-	accountRelativePath: string,
-	opts?: {
-		query?: Record<string, string | number | boolean | undefined>;
-		body?: unknown;
-		fetchImpl?: CfFetch;
-	},
-): Promise<CfApiFetchResult<T>> {
-	const cleaned = accountRelativePath.replace(/^\/+/, "");
-	if (!cleaned || cleaned.includes("..") || !SAFE_CF_ACCOUNT_PATH_RE.test(cleaned)) {
-		throw new Error(`invalid Cloudflare API path "${accountRelativePath}"`);
-	}
-
-	const url = new URL(`${CF_API_BASE}/accounts/${encodeURIComponent(cfg.accountId)}/${cleaned}`);
-	if (opts?.query) {
-		for (const [k, v] of Object.entries(opts.query)) {
-			if (v !== undefined && v !== "") {
-				url.searchParams.set(k, String(v));
-			}
-		}
-	}
-
-	const doFetch = opts?.fetchImpl ?? ((input, init) => fetch(input, init));
-	const res = await doFetch(url.toString(), {
-		method,
-		headers: {
-			Authorization: `Bearer ${cfg.apiToken}`,
-			Accept: "application/json",
-			...(opts?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-		},
-		body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
-	});
-
-	const text = await res.text();
-	let parsed: CfApiEnvelope<T> | null = null;
-	try {
-		parsed = text ? (JSON.parse(text) as CfApiEnvelope<T>) : null;
-	} catch {
-		parsed = null;
-	}
-
-	if (!res.ok || (parsed && parsed.success === false)) {
-		const errMsg =
-			parsed?.errors
-				?.map((e) => (e.code ? `[${e.code}] ${e.message}` : e.message))
-				.filter(Boolean)
-				.join("; ") ||
-			text.slice(0, 500) ||
-			`Cloudflare API returned HTTP ${res.status}`;
-		return { ok: false, status: res.status, error: errMsg };
-	}
-
-	return {
-		ok: true,
-		status: res.status,
-		result: parsed?.result,
-		resultInfo: parsed?.result_info,
-	};
-}
-
-export interface CfDoNamespace {
-	id: string;
-	name: string;
-	script: string;
-	class: string;
-	use_sqlite?: boolean;
-}
-
-export interface CfDoObjectSummary {
-	id: string;
-	hasStoredData: boolean;
-}
-
-export async function listCfDoNamespaces(
-	env: ControllerEnv,
-	opts?: { script?: string; fetchImpl?: CfFetch },
-): Promise<CfApiFetchResult<CfDoNamespace[]>> {
-	const cfg = requireCfApi(env);
-	const res = await cfApiRequest<CfDoNamespace[]>(
-		cfg,
-		"GET",
-		"workers/durable_objects/namespaces",
-		{
-			query: { per_page: 100 },
-			fetchImpl: opts?.fetchImpl,
-		},
-	);
-	if (!res.ok || !res.result) return res;
-	const filter = (opts?.script ?? "").trim();
-	const filtered = filter
-		? res.result.filter((ns) => ns.script === filter || ns.name.startsWith(`${filter}_`))
-		: res.result;
-	return { ...res, result: filtered };
-}
-
-export async function listCfDoObjects(
-	env: ControllerEnv,
-	namespaceId: string,
-	opts?: { limit?: number; cursor?: string; fetchImpl?: CfFetch },
-): Promise<CfApiFetchResult<CfDoObjectSummary[]>> {
-	const cfg = requireCfApi(env);
-	const id = namespaceId.trim();
-	if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-		throw new Error(`invalid Durable Object namespace ID "${namespaceId}"`);
-	}
-	const limit = Math.max(1, Math.min(1000, Math.floor(opts?.limit ?? 100)));
-	return cfApiRequest<CfDoObjectSummary[]>(
-		cfg,
-		"GET",
-		`workers/durable_objects/namespaces/${encodeURIComponent(id)}/objects`,
-		{
-			query: { limit, cursor: opts?.cursor },
-			fetchImpl: opts?.fetchImpl,
-		},
-	);
-}
-
-export async function cloudflareAccountGet(
+async function callGcWorkerAdmin(
 	env: ControllerEnv,
 	path: string,
-	opts?: { query?: Record<string, string | number | boolean | undefined>; fetchImpl?: CfFetch },
-): Promise<CfApiFetchResult<unknown>> {
-	const cfg = requireCfApi(env);
-	return cfApiRequest<unknown>(cfg, "GET", path, opts);
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+	const token = (env.GC_TOKEN ?? "").trim();
+	const workerUrl = (env.GC_WORKER_URL ?? "").trim();
+	const hasBinding = Boolean(env.GC_WORKER && typeof env.GC_WORKER.fetch === "function");
+	if ((!hasBinding && !workerUrl) || !token) {
+		return {
+			ok: false,
+			status: 503,
+			body: { error: "CladeFS GC worker is not configured on this controller" },
+		};
+	}
+	const baseUrl = hasBinding ? "https://cladefs-gc.internal" : workerUrl.replace(/\/+$/, "");
+	const headers: Record<string, string> = { Accept: "application/json" };
+	if (path !== "/healthz") {
+		headers.Authorization = `Bearer ${token}`;
+	}
+	const res = hasBinding
+		? await env.GC_WORKER!.fetch(`${baseUrl}${path}`, { method: "GET", headers })
+		: await fetch(`${baseUrl}${path}`, { method: "GET", headers });
+	const text = await res.text();
+	let body: unknown = {};
+	try {
+		body = text ? JSON.parse(text) : {};
+	} catch {
+		body = { raw: text };
+	}
+	return { ok: res.ok, status: res.status, body };
 }
 
-export interface CfObservabilityQueryInput {
-	view: "events" | "invocations" | "calculations";
-	scriptName?: string;
-	minutesBack?: number;
-	limit?: number;
-	search?: string;
-	level?: string;
-	filters?: Array<{
-		key: string;
-		operation: string;
-		type: "string" | "number" | "boolean";
-		value?: string | number | boolean;
-	}>;
-	calculations?: Array<{ operator: string; key?: string; keyType?: string; alias?: string }>;
-	groupBys?: Array<{ type: "string" | "number" | "boolean"; value: string }>;
+interface GcUsageCell {
+	tenant?: string | number;
+	cell?: string;
+	measuredUnixMs?: number | null;
+	objects?: number | null;
+	bytes?: number | null;
+	kinds?: Record<string, unknown> | null;
 }
 
-export async function queryCfObservability(
-	env: ControllerEnv,
-	input: CfObservabilityQueryInput,
-	fetchImpl?: CfFetch,
-): Promise<CfApiFetchResult<unknown>> {
-	const cfg = requireCfApi(env);
-	const nowMs = Date.now();
-	const minutesBack = Math.max(1, Math.min(7 * 24 * 60, Math.floor(input.minutesBack ?? 60)));
-	const fromMs = nowMs - minutesBack * 60_000;
-	const scriptName = (input.scriptName ?? "hotbed-controller").trim();
-
-	const filters: Array<Record<string, unknown>> = [];
-	if (scriptName) {
-		filters.push({
-			key: "$metadata.service",
-			operation: "eq",
-			type: "string",
-			value: scriptName,
-		});
+/**
+ * Filters a cladefs-gc `/usage` payload to ONLY cells belonging to `tenantB32`
+ * (Crockford base32 Short tenant ID), recomputing summary counts so an org
+ * never sees another org's R2 storage.
+ */
+export function filterGcUsageForTenant(usageBody: unknown, tenantB32: string): unknown {
+	if (!usageBody || typeof usageBody !== "object") return usageBody;
+	const canonicalTarget = normalizeCrockfordBase32Short(tenantB32);
+	if (!canonicalTarget) {
+		return {
+			...(usageBody as Record<string, unknown>),
+			tenantFilter: tenantB32,
+			cells: 0,
+			measuredCells: 0,
+			totalObjects: 0,
+			totalBytes: 0,
+			usage: [],
+		};
 	}
-	if (input.level) {
-		filters.push({
-			key: "$metadata.level",
-			operation: "eq",
-			type: "string",
-			value: input.level,
-		});
-	}
-	for (const f of input.filters ?? []) {
-		filters.push({
-			key: f.key,
-			operation: f.operation,
-			type: f.type,
-			...(f.value !== undefined ? { value: f.value } : {}),
-		});
-	}
-
-	const parameters: Record<string, unknown> = {
-		datasets: ["cloudflare-workers"],
-		filters,
-		...(input.search ? { needle: { value: input.search, matchCase: false } } : {}),
-		...(input.calculations ? { calculations: input.calculations } : {}),
-		...(input.groupBys ? { groupBys: input.groupBys } : {}),
-	};
-
-	const body = {
-		queryId: `hotbed-admin-${Date.now()}`,
-		timeframe: { from: fromMs, to: nowMs },
-		view: input.view,
-		limit: Math.max(1, Math.min(200, Math.floor(input.limit ?? 50))),
-		parameters,
-	};
-
-	return cfApiRequest<unknown>(cfg, "POST", "workers/observability/telemetry/query", {
-		body,
-		fetchImpl,
+	const data = usageBody as { usage?: unknown[] } & Record<string, unknown>;
+	const all = Array.isArray(data.usage) ? (data.usage as GcUsageCell[]) : [];
+	const scoped = all.filter((u) => {
+		const raw = u.tenant === undefined || u.tenant === null ? "" : String(u.tenant);
+		return normalizeCrockfordBase32Short(raw) === canonicalTarget;
 	});
+	let measuredCells = 0;
+	let totalObjects = 0;
+	let totalBytes = 0;
+	for (const u of scoped) {
+		if (u.measuredUnixMs !== null && u.measuredUnixMs !== undefined) measuredCells++;
+		if (typeof u.objects === "number") totalObjects += u.objects;
+		if (typeof u.bytes === "number") totalBytes += u.bytes;
+	}
+	return {
+		...data,
+		tenantFilter: canonicalTarget,
+		cells: scoped.length,
+		measuredCells,
+		totalObjects,
+		totalBytes,
+		usage: scoped,
+	};
+}
+
+export async function inspectGcForScope(
+	env: ControllerEnv,
+	scope: AdminOrgScope,
+	input: { action: "status" | "dry_run_cell" | "live_cell"; cell?: string },
+): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+	const token = (env.GC_TOKEN ?? "").trim();
+	const workerUrl = (env.GC_WORKER_URL ?? "").trim();
+	const hasBinding = Boolean(env.GC_WORKER && typeof env.GC_WORKER.fetch === "function");
+	if ((!hasBinding && !workerUrl) || !token) {
+		return {
+			ok: false,
+			status: 503,
+			body: {
+				ok: false,
+				error: "CladeFS GC worker is not configured on this controller",
+			},
+		};
+	}
+
+	const health = await env.CONTROLLER.getByName(scope.controllerDoName).getHealth();
+	const tenantNumeric =
+		health.cladefsTenantId !== undefined && health.cladefsTenantId !== null
+			? health.cladefsTenantId
+			: null;
+	if (tenantNumeric === null) {
+		return {
+			ok: false,
+			status: 400,
+			body: {
+				ok: false,
+				error: "this organization does not have a CladeFS tenant ID assigned yet",
+			},
+		};
+	}
+	const tenantB32 = encodeCrockfordBase32Short(tenantNumeric);
+
+	if (input.action === "status") {
+		const [gcHealth, usage] = await Promise.all([
+			callGcWorkerAdmin(env, "/healthz"),
+			callGcWorkerAdmin(env, "/usage"),
+		]);
+		const ok = gcHealth.ok && usage.ok;
+		return {
+			ok,
+			status: ok ? 200 : !gcHealth.ok ? gcHealth.status : usage.status,
+			body: {
+				ok,
+				tenantId: tenantB32,
+				tenantNumericId: tenantNumeric,
+				health: gcHealth.body,
+				usage: usage.ok ? filterGcUsageForTenant(usage.body, tenantB32) : usage.body,
+			},
+		};
+	}
+
+	const cell = (input.cell ?? "").trim();
+	if (!cell) {
+		return {
+			ok: false,
+			status: 400,
+			body: { ok: false, error: "cell is required for cell inspection" },
+		};
+	}
+	if (!GC_CELL_SEGMENT_RE.test(cell)) {
+		return {
+			ok: false,
+			status: 400,
+			body: { ok: false, error: `invalid cell identifier "${cell}"` },
+		};
+	}
+	const path =
+		input.action === "dry_run_cell"
+			? `/dry-run/${encodeURIComponent(tenantB32)}/${encodeURIComponent(cell)}`
+			: `/live/${encodeURIComponent(tenantB32)}/${encodeURIComponent(cell)}`;
+	const res = await callGcWorkerAdmin(env, path);
+	return {
+		ok: res.ok,
+		status: res.status,
+		body: {
+			ok: res.ok,
+			status: res.status,
+			tenantId: tenantB32,
+			tenantNumericId: tenantNumeric,
+			cell,
+			result: res.body,
+		},
+	};
 }

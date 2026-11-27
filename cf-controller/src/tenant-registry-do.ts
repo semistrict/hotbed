@@ -1,11 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import {
-	executeReadOnlySql,
-	inspectDoSchema,
-	type DoSchemaInfo,
-	type DoSqlResult,
-	type SqlParamValue,
-} from "./do-sql.ts";
 import { num, str } from "./sql-values.ts";
 
 export interface TenantAssignment {
@@ -126,19 +119,5 @@ export class TenantRegistryDO extends DurableObject<Env> {
 				tenantId: String(num(r.tenant_id)),
 				createdAt: num(r.created_at),
 			}));
-	}
-
-	/** Read-only SQL query executed via typed Workers RPC by the Admin Agent. */
-	adminQuerySql(
-		query: string,
-		params: SqlParamValue[] = [],
-		opts?: { maxRows?: number },
-	): DoSqlResult {
-		return executeReadOnlySql(this.sql, query, params, opts);
-	}
-
-	/** Schema inspection executed via typed Workers RPC by the Admin Agent. */
-	adminInspectSchema(): Promise<DoSchemaInfo> {
-		return inspectDoSchema(this.sql, this.ctx.storage);
 	}
 }

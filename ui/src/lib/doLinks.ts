@@ -29,7 +29,7 @@ export function useDoLinkContext(): DoLinkContextValue | null {
 }
 
 const HEX_DO_ID_RE = /^[0-9a-f]{64}$/i;
-const VALID_BINDINGS = new Set<DoBindingName>(["CONTROLLER", "TENANT_REGISTRY", "COMMAND", "WORKER", "ADMIN_AGENT"]);
+const VALID_BINDINGS = new Set<DoBindingName>(["CONTROLLER", "COMMAND", "WORKER"]);
 
 function parseBindingName(raw: unknown): DoBindingName | null {
   if (typeof raw !== "string") return null;
@@ -44,7 +44,6 @@ function parseBindingName(raw: unknown): DoBindingName | null {
  */
 export function extractSingleFromTable(sql: string | undefined): string | null {
   if (!sql) return null;
-  // Strip SQL comments and string literals before matching table names.
   const cleaned = sql
     .replace(/--[^\n]*/g, " ")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
@@ -84,13 +83,6 @@ function isTargetAllowedInScope(
         return target.name.startsWith(prefix) && target.name.length > prefix.length;
       }
       return Boolean(target.id && HEX_DO_ID_RE.test(target.id));
-    case "ADMIN_AGENT": {
-      if (!target.name) return false;
-      const prefix = `admin:${scope.controllerDoName}:`;
-      return target.name.startsWith(prefix) && target.name.length > prefix.length;
-    }
-    case "TENANT_REGISTRY":
-      return scope.isGlobalAdmin && (!target.name || target.name === "global");
   }
 }
 
@@ -110,31 +102,6 @@ function acceptTarget(candidate: DoTargetRef | null, ctx: DoLinkResolutionContex
   return candidate;
 }
 
-function inferTargetFromExplicitName(val: string, rowBinding: DoBindingName | null): DoTargetRef | null {
-  if (val.startsWith("cmd:") && val.split(":").length >= 3) {
-    return { binding: "COMMAND", name: val };
-  }
-  if (val.startsWith("worker:") && val.split(":").length >= 3) {
-    return { binding: "WORKER", name: val };
-  }
-  if (val.startsWith("admin:") && val.split(":").length >= 3) {
-    return { binding: "ADMIN_AGENT", name: val };
-  }
-  if (val.startsWith("org:") && val.length > 4) {
-    return { binding: "CONTROLLER", name: val };
-  }
-  if (rowBinding) {
-    return { binding: rowBinding, name: val };
-  }
-  if (val === "global") {
-    return { binding: "TENANT_REGISTRY", name: "global" };
-  }
-  if (val === "default") {
-    return { binding: "CONTROLLER", name: "default" };
-  }
-  return null;
-}
-
 function commandTarget(rawCommandId: string, clusterId: string | null | undefined): DoTargetRef | null {
   const val = rawCommandId.trim();
   if (!val) return null;
@@ -149,9 +116,9 @@ function commandTarget(rawCommandId: string, clusterId: string | null | undefine
 }
 
 /**
- * Resolves a SQL table cell or KeyValue item into a clickable Cloudflare
- * Durable Object target when the column/value represents another Durable Object
- * accessible within the active organization's scope.
+ * Resolves a SQL table cell into a clickable Cloudflare Durable Object target
+ * when the column/value represents another Durable Object accessible within
+ * the active organization's scope.
  */
 export function resolveCellDoLink(
   value: unknown,
@@ -171,35 +138,30 @@ export function resolveCellDoLink(
   if (val.startsWith("cmd:") && val.split(":").length >= 3) {
     return acceptTarget({ binding: "COMMAND", name: val }, ctx);
   }
-  if (val.startsWith("admin:") && val.split(":").length >= 3) {
-    return acceptTarget({ binding: "ADMIN_AGENT", name: val }, ctx);
+  if (val.startsWith("worker:") && val.split(":").length >= 3) {
+    return acceptTarget({ binding: "WORKER", name: val }, ctx);
   }
   if (val.startsWith("org:") && val.length > 4 && !/\s/.test(val)) {
     return acceptTarget({ binding: "CONTROLLER", name: val }, ctx);
   }
 
-  // 2. Explicit command ID columns (e.g. schedule_runs.command_id or Agent Chat tables).
+  // 2. Explicit command ID columns (e.g. schedule_runs.command_id).
   if (col === "command_id" || col === "commandid") {
     return acceptTarget(commandTarget(val, clusterId), ctx);
   }
 
-  // 3. Explicit ControllerDO name columns (e.g. admin_agent_scope.controller_do_name).
+  // 3. Explicit ControllerDO name columns.
   if (col === "controller_do_name" || col === "controllerdoname" || col === "controller_name" || col === "controller") {
     return acceptTarget({ binding: "CONTROLLER", name: val }, ctx);
   }
 
-  // 4. TenantRegistryDO.org_tenants.org_key -> ControllerDO name ("default" or "org:<key>").
-  if (col === "org_key" || col === "orgkey") {
-    const ctrlName = val === "default" || val.startsWith("org:") ? val : `org:${val}`;
-    return acceptTarget({ binding: "CONTROLLER", name: ctrlName }, ctx);
-  }
-
-  // 5. Generic DO name columns (e.g. discover_durable_objects / Agent Chat tables).
+  // 4. Generic DO name columns.
   if (col === "do_name" || col === "doname" || col === "object_name" || col === "objectname") {
-    return acceptTarget(inferTargetFromExplicitName(val, rowBinding), ctx);
+    if (rowBinding) return acceptTarget({ binding: rowBinding, name: val }, ctx);
+    if (val === "default") return acceptTarget({ binding: "CONTROLLER", name: "default" }, ctx);
   }
 
-  // 6. 64-character hex Cloudflare Durable Object ID columns.
+  // 5. 64-character hex Cloudflare Durable Object ID columns.
   if (
     HEX_DO_ID_RE.test(val) &&
     (col === "do_id" ||
@@ -221,7 +183,7 @@ export function resolveCellDoLink(
     return acceptTarget({ binding, id: val.toLowerCase() }, ctx);
   }
 
-  // 7. ControllerDO table-aware references:
+  // 6. ControllerDO table-aware references:
   //    - commands.id and history.id -> CommandDO
   //    - events.ref_id when ref_type = 'command' -> CommandDO
   if (ctx.currentBinding === "CONTROLLER") {

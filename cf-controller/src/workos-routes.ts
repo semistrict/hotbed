@@ -242,7 +242,10 @@ export function edgeCaller(
 	opts: { allowTopLevelNavigate: boolean },
 ): Promise<CallerIdentity> {
 	if (routing.caller) return Promise.resolve(routing.caller);
-	return authenticateRequest(request, env, NOOP_TOKEN_LOOKUP, opts);
+	return authenticateRequest(request, env, NOOP_TOKEN_LOOKUP, {
+		...opts,
+		orgId: routing.orgId || undefined,
+	});
 }
 
 export function attachInternalAuth(request: Request, routing: EdgeAuthResult): Request {
