@@ -97,9 +97,9 @@ func (e *Engine) vmBlockerLocked(c *command, w *workspace) string {
 		return fmt.Sprintf("waiting for its workspace: command %s runs in its VM", other.cmd().Id)
 	}
 	if !w.vmUsed {
-		if e.shellOpenLocked(w.ws().Id) && vmSize(c) != (unit.VMSize{}) {
-			// Booting it at c's size would take the shell's VM from under it.
-			return "waiting for its workspace: a shell is open in its VM, and it asks a VM of its own size"
+		if e.shellOpenLocked(w.ws().Id) && e.vmBoot(c) != (unit.VMBoot{}) {
+			// Booting it as c asks would take the shell's VM from under it.
+			return "waiting for its workspace: a shell is open in its VM, and it asks a VM of its own (its size, or a measurement's)"
 		}
 		return ""
 	}
@@ -224,21 +224,8 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 	b := e.cladefs()
 	fuse := b != nil && b.Kind() == runtime.KindCladefs
 	vms := (b != nil && b.Kind() == runtime.KindVM) || e.cfg.Runtime != nil
-	if req.GetPlacement().GetBench() {
-		if rt == runtime.KindVM {
-			return "", api.Errorf(api.CodeInvalidArgs, "--bench requires cladefs runtime, not vm")
-		}
-		if rt != "" && rt != runtime.KindCladefs {
-			return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm or cladefs)", rt)
-		}
-		if fuse {
-			return runtime.KindCladefs, nil
-		}
-		if vms {
-			return "", api.Errorf(api.CodePlatformNotSupported, "--bench requires cladefs runtime, which is not enabled on this worker")
-		}
-		return runtime.KindCladefs, nil
-	}
+	// A measurement runs in either: a VM's boots in the measurement's slice
+	// (Engine.vmBoot), a host command's unit runs there.
 	if rt == "" {
 		if b != nil {
 			return b.DefaultRuntime(), nil

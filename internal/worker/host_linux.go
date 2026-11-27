@@ -83,14 +83,19 @@ func prepareHost(ctx context.Context, h hostPrep) error {
 	}
 	// Other work's writes to the volumes are kept quiet beside a
 	// measurement too: capped on a block device (btrfs's), held back on a
-	// ZFS pool, which no cap reaches. A worker that keeps no volumes (a VM
-	// worker's) has none to quiet.
+	// ZFS pool or the VMs' disks, which no cap reaches. A worker that keeps
+	// no volumes (a VM worker's) has none of its own to quiet.
 	switch s := h.store.(type) {
 	case storage.Pooled:
 		benchOpts.Pool = s.Dataset()
 	case storage.NoVolumes:
 	default:
 		benchOpts.StoreDisk = s.Path("")
+	}
+	// A VM's writes go through cladefsd, which no cap reaches either: held
+	// back too, as its guest says what it wrote.
+	if h.ecfg.VM != nil {
+		benchOpts.Writes, benchOpts.WritesTo = h.ecfg.VM.VolumeWrites, "the VMs' disks"
 	}
 	if h.cfg.Bench != nil {
 		iso, err := bench.New(*h.cfg.Bench, benchOpts)

@@ -27,10 +27,13 @@ import (
 //     given back once no measurement runs: after it ends, and after a worker
 //     restart that finds none running.
 //   - It never swaps, is never parked, and runs at the default nice.
-//   - Where the node's volumes are on a ZFS pool, which no cgroup's IO cap
-//     reaches, the commands of volumes writing to it past the measurement's
-//     bound are held (parked) from just before it starts until it ends,
-//     and other volumes' queued commands wait for it to end.
+//   - Where the node's volumes are on a ZFS pool, or commands run in VMs
+//     (whose disks cladefsd writes), which no cgroup's IO cap reaches, the
+//     commands of volumes writing there past the measurement's bound are
+//     held (parked) from just before it starts until it ends, and other
+//     volumes' queued commands wait for it to end.
+//   - A measurement in a VM boots its VM in the measurement's slice, its
+//     vCPUs pinned to the measurement CPUs (Engine.vmBoot).
 //   - Its isolation is checked while it runs and as it ends: a measurement
 //     whose isolation was lost (its disks' quiet too) fails, whatever its
 //     status.
@@ -58,13 +61,18 @@ type Isolator interface {
 	// volume own, or nil while it does.
 	Held(own string) error
 	// Sample reads what others have written to the disks a measurement
-	// uses; the engine calls it every step.
-	Sample()
-	// Pool is the ZFS dataset the node's volumes are under, whose writers
-	// the engine holds back while a measurement runs; "" for none.
-	Pool() string
+	// uses; the engine calls it every step, saying whether a measurement
+	// waits or runs (measuring), without which it asks nothing costly.
+	Sample(measuring bool)
+	// Ready says whether the samples name who writes where a measurement
+	// holds writers back, so one may start.
+	Ready() bool
+	// Quieted is where the engine holds writers back while a measurement
+	// runs, which no cap reaches (a ZFS pool, the VMs' disks); "" for
+	// nowhere.
+	Quieted() string
 	// Loud is the volumes other than own the engine must hold back for the
-	// pool to stay quiet, heaviest first.
+	// places Quieted names to stay quiet, heaviest first.
 	Loud(own string) []bench.Writer
 }
 
@@ -81,6 +89,17 @@ func (e *Engine) sliceOf(c *command) string {
 		return e.cfg.Bench.Slice()
 	}
 	return e.cfg.Slice
+}
+
+// benchPending says whether a measurement waits or runs. Call with e.mu
+// held.
+func (e *Engine) benchPending() bool {
+	for _, c := range e.commands {
+		if s := c.cmd().State; c.cmd().Bench && (s == queued || s == running || s == parked) {
+			return true
+		}
+	}
+	return false
 }
 
 // measuring is the measurement running now, if one is. Call with e.mu held.
@@ -116,6 +135,9 @@ func (e *Engine) benchBlocker(ahead *command) string {
 	}
 	if ahead != nil {
 		return fmt.Sprintf("waiting for measurement %s, queued before it", ahead.cmd().Id)
+	}
+	if !e.cfg.Bench.Ready() {
+		return fmt.Sprintf("waiting to see who writes to %s, to hold them back beside it", e.cfg.Bench.Quieted())
 	}
 	return ""
 }
@@ -191,48 +213,50 @@ func isBenchSliceGone(err error, slice string) bool {
 }
 
 // quietBlocker says why c, not a measurement, waits for the one running:
-// it would write to a pool no cap holds, beside it. Call with e.mu held.
+// it would write where no cap holds it (a ZFS pool, the VMs' disks), beside
+// it. Call with e.mu held.
 func (e *Engine) quietBlocker(c *command) string {
-	if e.cfg.Bench == nil || e.cfg.Bench.Pool() == "" {
+	if e.cfg.Bench == nil || e.cfg.Bench.Quieted() == "" {
 		return ""
 	}
 	m := e.measuring()
 	if m == nil || m.rec.Volume == c.rec.Volume {
 		return ""
 	}
-	return fmt.Sprintf("waiting for measurement %s to finish: it keeps %s quiet, which no cap can do on ZFS", m.cmd().Id, e.cfg.Bench.Pool())
+	return fmt.Sprintf("waiting for measurement %s to finish: it keeps %s quiet, which no cap can do", m.cmd().Id, e.cfg.Bench.Quieted())
 }
 
-// holdLoud holds the commands of the volumes writing to the pool past the
-// bound beside measurement m (about to start, or running), until no
-// measurement runs: frozen, not pushed to swap, as they'll be back soon.
+// holdLoud holds the commands of the volumes writing past the bound beside
+// measurement m (about to start, or running), where no cap holds them,
+// until no measurement runs: frozen, not pushed to swap, as they'll be back
+// soon. One in a VM is frozen in its guest, its VM running on.
 func (e *Engine) holdLoud(ctx context.Context, m *command) {
 	iso := e.cfg.Bench
-	if iso == nil || iso.Pool() == "" {
+	if iso == nil || iso.Quieted() == "" {
 		return
 	}
 	loud := iso.Loud(m.rec.Volume)
 	if len(loud) == 0 {
 		return
 	}
-	rates := map[string]float64{}
+	writers := map[string]bench.Writer{}
 	for _, w := range loud {
-		rates[w.Volume] = w.Rate
+		writers[w.Volume] = w
 	}
 	e.mu.Lock()
 	var victims []*command
 	for _, c := range e.commands {
-		if _, ok := rates[c.rec.Volume]; ok && c.cmd().State == running && !c.cmd().Bench && !c.stopping && !c.deactivating {
+		if _, ok := writers[c.rec.Volume]; ok && c.cmd().State == running && !c.cmd().Bench && !c.stopping && !c.deactivating {
 			victims = append(victims, c)
 		}
 	}
 	e.mu.Unlock()
 	for _, c := range victims {
-		e.holdOneLoud(ctx, c, iso.Pool(), m.cmd().Id, rates[c.rec.Volume])
+		e.holdOneLoud(ctx, c, m.cmd().Id, writers[c.rec.Volume])
 	}
 }
 
-func (e *Engine) holdOneLoud(ctx context.Context, c *command, pool, benchID string, rateBytes float64) {
+func (e *Engine) holdOneLoud(ctx context.Context, c *command, benchID string, w bench.Writer) {
 	c.freezeMu.Lock()
 	defer c.freezeMu.Unlock()
 	e.mu.Lock()
@@ -263,16 +287,16 @@ func (e *Engine) holdOneLoud(ctx context.Context, c *command, pool, benchID stri
 		}
 		return
 	}
-	rate := rateBytes / 1e6
+	rate := w.Rate / 1e6
 	cmd.State = parked
 	cmd.CpuCores = 0
-	cmd.Reason = fmt.Sprintf("held: its volume wrote %.1f MB/s to %s beside measurement %s, past its bound; thawed once it ends", rate, pool, benchID)
+	cmd.Reason = fmt.Sprintf("held: its volume wrote %.1f MB/s to %s beside measurement %s, past its bound; thawed once it ends", rate, w.To, benchID)
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "held", Detail: cmd.Reason})
 	c.rec.HeldFor = benchID
 	c.rec.ParkedAt = e.nowMs()
 	e.saveCommand(c, change{
 		what: "held", detail: cmd.Reason,
-		feed: feed(feedPark, fmt.Sprintf("hold %s · %.1f MB/s to %s beside measurement %s", cmd.Argv, rate, pool, benchID), ref("command", cmd.Id)),
+		feed: feed(feedPark, fmt.Sprintf("hold %s · %.1f MB/s to %s beside measurement %s", cmd.Argv, rate, w.To, benchID), ref("command", cmd.Id)),
 	})
 	e.mu.Unlock()
 }

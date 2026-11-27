@@ -495,9 +495,10 @@ workers keep running meanwhile, and what happened reaches `poll` once the contro
   runs alone on the node's measurement CPUs (`hotbed nodes`: `benchCpus`), which no other command
   uses meanwhile, with IRQs and kernel work moved off them and, where the node can, its own cache
   and memory bandwidth, the other cores' clocks capped and other work's disk IO capped. It never
-  swaps and is never parked. If that isolation is lost mid-run it fails, saying so, whatever its
-  status: rerun it. It goes only to nodes with `benchCpus`; compare only numbers from the same
-  node, so pin it with `--node`.
+  swaps and is never parked. In a VM (the vm runtime), its VM boots on the measurement CPUs, a
+  vCPU pinned to each (`--vm-cpus` asks fewer). If that isolation is lost mid-run it fails,
+  saying so, whatever its status: rerun it. It goes only to nodes with `benchCpus`; compare only
+  numbers from the same node, so narrow it to that node's architecture (`--arch amd64` for ubu1).
 - Toolchains and caches (`RUSTUP_HOME`, `CARGO_HOME`, `GOMODCACHE`, `GOCACHE`, `XDG_*`) live
   inside the workspace, so the base's downloads and builds are already there.
 

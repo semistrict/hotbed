@@ -12,6 +12,7 @@ import {
 	candidateHasCapacity,
 	candidateUnfit,
 	chooseCandidate,
+	cpuCount,
 } from "../src/placement.ts";
 
 // A vm-runtime node with 8 CPUs and 16 GiB of RAM, online and up to date.
@@ -41,15 +42,63 @@ function vmNode(overrides: Partial<Candidate> = {}): Candidate {
 	} as unknown as Candidate;
 }
 
+// A vm-runtime node of arch with 16 CPUs, measurement CPUs benchCpus ("" for
+// none).
+function benchNode(host: string, arch: string, benchCpus: string): Candidate {
+	const resources = create(ResourcesSchema, {
+		arch,
+		cpus: 16,
+		memoryBytes: 16n << 30n,
+		benchCpus,
+		runtimes: ["vm"],
+	});
+	return vmNode({
+		host,
+		cpus: 16,
+		view: { online: true, hb: { resources }, node: { id: host } },
+	} as unknown as Partial<Candidate>);
+}
+
+describe("cpuCount", () => {
+	it("counts a cpulist's CPUs", () => {
+		expect(cpuCount("")).toBe(0);
+		expect(cpuCount("7-10")).toBe(4);
+		expect(cpuCount("4-7,12-15")).toBe(8);
+		expect(cpuCount("3")).toBe(1);
+	});
+});
+
 describe("candidateUnfit", () => {
 	it("leaves out a node too small for the VM a run asks", () => {
 		const fits = create(PlacementSchema, { runtime: "vm", vmCpus: 8, vmMemoryBytes: 16n << 30n });
 		expect(candidateUnfit(vmNode(), fits, [])).toBe("");
 		const cpus = create(PlacementSchema, { runtime: "vm", vmCpus: 9 });
-		expect(candidateUnfit(vmNode(), cpus, [])).toBe("big has 8 CPUs, fewer than the 9 its VM asks");
+		expect(candidateUnfit(vmNode(), cpus, [])).toBe(
+			"big has 8 CPUs, fewer than the 9 its VM asks (--vm-cpus)",
+		);
 		const mem = create(PlacementSchema, { runtime: "vm", vmMemoryBytes: 17n << 30n });
 		expect(candidateUnfit(vmNode(), mem, [])).toBe(
-			"big has 17179869184 bytes of RAM, less than the 18253611008 its VM asks",
+			"big has 17179869184 bytes of RAM, less than the 18253611008 its VM asks (--vm-mem)",
+		);
+	});
+	it("places a measurement on a vm node with measurement CPUs, naming what excludes the rest", () => {
+		const bench = create(PlacementSchema, { arch: "amd64", bench: true });
+		const ubu1 = benchNode("ubu1", "amd64", "4-7,12-15");
+		const amd = benchNode("plain", "amd64", "");
+		const mac = benchNode("asahimbp", "arm64", "7-10");
+		expect(candidateUnfit(ubu1, bench, [])).toBe("");
+		expect(candidateUnfit(amd, bench, [])).toBe("plain has no measurement CPUs (--bench)");
+		expect(candidateUnfit(mac, bench, [])).toBe("asahimbp is arm64, not amd64 (--arch)");
+		expect(chooseCandidate([amd, mac, ubu1], bench, [], true).chosen?.host).toBe("ubu1");
+		expect(candidateUnfit(ubu1, create(PlacementSchema, { bench: true, runtime: "vm" }), [])).toBe(
+			"",
+		);
+		expect(
+			candidateUnfit(ubu1, create(PlacementSchema, { bench: true, runtime: "cladefs" }), []),
+		).toBe("ubu1 offers the vm runtime, not cladefs (--runtime)");
+		expect(candidateUnfit(ubu1, create(PlacementSchema, { bench: true, vmCpus: 8 }), [])).toBe("");
+		expect(candidateUnfit(ubu1, create(PlacementSchema, { bench: true, vmCpus: 9 }), [])).toBe(
+			"ubu1 has 8 measurement CPUs, fewer than the 9 its VM asks, a vCPU on each (--bench --vm-cpus)",
 		);
 	});
 	it("rejects deprecated Placement.node from older CLIs instead of silently ignoring it", () => {

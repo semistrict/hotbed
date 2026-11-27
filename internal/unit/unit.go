@@ -126,11 +126,16 @@ type Spec struct {
 	Properties []string
 }
 
-// VMSize is how many vCPUs and how much memory (MiB) a VM's guest sees; a
-// zero field is the node's default.
-type VMSize struct {
+// VMBoot is how a command's VM boots: how many vCPUs and how much memory
+// (MiB) its guest sees, and whether it is a measurement's. A zero field is
+// the node's default (any, to a VM already up).
+type VMBoot struct {
 	VCPUs  int
 	MemMiB int
+	// BenchCPUs, a cpulist (4-7,12-15), boots a measurement's VM on them: in
+	// the measurement's slice, a cpuset partition of these CPUs while it
+	// runs, never swapping, its vCPU i pinned to the i-th of them.
+	BenchCPUs string
 }
 
 // VMExit is how a command's VM ended under it, as the host saw the VM's

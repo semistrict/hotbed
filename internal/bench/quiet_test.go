@@ -5,6 +5,7 @@ package bench
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -25,9 +26,31 @@ type quietHost struct {
 	clock *clock
 	syncs []string
 	iso   *Isolation
+	// vms is what each volume's VM has written, as Options.Writes says it
+	// on a node with VMs (newVMQuietHost), and asks how often it was asked.
+	vms  map[string]int64
+	asks int
 }
 
 func newQuietHost(t *testing.T, cfg Config, pool string) *quietHost {
+	return newQuietHostWith(t, cfg, pool, nil)
+}
+
+// newVMQuietHost is a quietHost whose commands run in VMs, whose writes
+// Options.Writes says, beside the pool.
+func newVMQuietHost(t *testing.T, cfg Config, pool string) *quietHost {
+	var h *quietHost
+	h = newQuietHostWith(t, cfg, pool, func(o *Options) {
+		o.Writes = func() (map[string]int64, error) {
+			h.asks++
+			return maps.Clone(h.vms), nil
+		}
+	})
+	h.vms = map[string]int64{}
+	return h
+}
+
+func newQuietHostWith(t *testing.T, cfg Config, pool string, more func(*Options)) *quietHost {
 	h := &quietHost{host: newHost(t, "0-10"), clock: &clock{now: time.Unix(1795400000, 0)}}
 	h.kernelPartitions("7-10")
 	h.write("sys/dev/block/230:0/uevent", "MAJOR=230\nMINOR=0\nDEVNAME=zd0\nDEVTYPE=disk\n")
@@ -38,6 +61,9 @@ func newQuietHost(t *testing.T, cfg Config, pool string) *quietHost {
 		o.SyncPool = func(_ context.Context, pool string) error {
 			h.syncs = append(h.syncs, pool)
 			return nil
+		}
+		if more != nil {
+			more(o)
 		}
 	})
 	return h
@@ -65,7 +91,18 @@ func (h *quietHost) wrote(zd0 int64, datasets map[string]int64) {
 			"213 1 0x01 28 7872 7048079248 130705216995423\nname                            type data\ndataset_name                    7    %s\nwrites                          4    18\nnwritten                        4    %d\nreads                           4    8958\n", ds, datasets[ds]))
 	}
 	h.clock.now = h.clock.now.Add(time.Second)
-	h.iso.Sample()
+	h.iso.Sample(false)
+}
+
+// measuring is a second's sample while a measurement waits or runs, its
+// VMs having written vms by then (added to what they had).
+func (h *quietHost) measuring(vms map[string]int64) {
+	h.t.Helper()
+	for vol, n := range vms {
+		h.vms[vol] += n
+	}
+	h.clock.now = h.clock.now.Add(time.Second)
+	h.iso.Sample(true)
 }
 
 // Work writing to the scratch disk past the bound beside a measurement
@@ -149,7 +186,7 @@ func TestLoudNamesTheHeaviestWriters(t *testing.T) {
 		ds["rpool/hotbed/ws/c"] += 4_000_000
 		h.wrote(0, ds)
 	}
-	want := []Writer{{"ws/b", 40_000_000}, {"ws/c", 4_000_000}}
+	want := []Writer{{Volume: "ws/b", Rate: 40_000_000, To: "rpool/hotbed"}, {Volume: "ws/c", Rate: 4_000_000, To: "rpool/hotbed"}}
 	if got := h.iso.Loud("ws/m"); !slices.Equal(got, want) {
 		t.Errorf("Loud = %v, want %v: a's 3 MB/s is under half the bound", got, want)
 	}
@@ -189,5 +226,66 @@ func TestHeldFailsWhenWritesCantBeRead(t *testing.T) {
 	h.wrote(0, nil)
 	if err := h.iso.Held("ws/m"); err == nil {
 		t.Error("Held with no kstats for tank: nil, want an error")
+	}
+}
+
+// The VMs' writes, which cladefsd makes for them, past the bound beside a
+// measurement fail it, naming the VMs' disks and the heaviest writer; its
+// own VM's don't count. What a VM wrote before its writes were first asked
+// (as a measurement came to wait) isn't counted against it.
+func TestHeldFailsOnOthersVMWrites(t *testing.T) {
+	h := newVMQuietHost(t, Config{CPUs: "7-10"}, "")
+	if got := h.iso.Quieted(); got != "the VMs' disks" {
+		t.Errorf("Quieted = %q, want the VMs' disks", got)
+	}
+	h.vms["ws/b"] = 50_000_000_000 // since its VM booted
+	h.wrote(0, nil)
+	if h.asks != 0 {
+		t.Errorf("asked the VMs %d times with no measurement, want none", h.asks)
+	}
+	h.on()
+	for range 31 {
+		h.measuring(map[string]int64{"ws/m": 900_000_000, "ws/b": 1_000_000})
+	}
+	if err := h.iso.Held("ws/m"); err != nil {
+		t.Fatalf("Held with only its own VM busy: %v", err)
+	}
+	h.measuring(map[string]int64{"ws/b": 300_000_000})
+	want := "others wrote 329 MB to the VMs' disks (ws/b the most, 329 MB) in 30s, past the bound of 8 MB/s over 30s"
+	if err := h.iso.Held("ws/m"); err == nil || err.Error() != want {
+		t.Errorf("Held = %v, want %q", err, want)
+	}
+}
+
+// A measurement waits until two samples name the VMs writing (Ready), so
+// it holds them before it starts; Loud names them, where they write.
+func TestLoudNamesTheHeaviestVMWriters(t *testing.T) {
+	h := newVMQuietHost(t, Config{CPUs: "7-10", WorkWriteMB: 10}, "rpool/hotbed")
+	if got := h.iso.Quieted(); got != "rpool/hotbed and the VMs' disks" {
+		t.Errorf("Quieted = %q, want rpool/hotbed and the VMs' disks", got)
+	}
+	h.wrote(0, map[string]int64{"rpool/hotbed/ws/a": 0})
+	h.wrote(0, map[string]int64{"rpool/hotbed/ws/a": 0})
+	if h.iso.Ready() {
+		t.Error("Ready before the VMs were asked: true, want false")
+	}
+	h.measuring(nil)
+	if h.iso.Ready() {
+		t.Error("Ready after one sample of the VMs: true, want false")
+	}
+	h.measuring(map[string]int64{"ws/m": 500_000_000, "ws/b": 40_000_000, "ws/c": 3_000_000})
+	if !h.iso.Ready() {
+		t.Error("Ready after two samples of the VMs: false, want true")
+	}
+	want := []Writer{{Volume: "ws/b", Rate: 40_000_000, To: "the VMs' disks"}}
+	if got := h.iso.Loud("ws/m"); !slices.Equal(got, want) {
+		t.Errorf("Loud = %v, want %v: c's 3 MB/s is under half the bound", got, want)
+	}
+	// Unasked a while (no measurement waits), it is not Ready again.
+	for range 4 {
+		h.wrote(0, map[string]int64{"rpool/hotbed/ws/a": 0})
+	}
+	if h.iso.Ready() {
+		t.Error("Ready after the VMs went unasked past the window: true, want false")
 	}
 }

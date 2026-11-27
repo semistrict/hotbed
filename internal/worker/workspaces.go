@@ -35,6 +35,9 @@ const (
 // repo at its branch's head: a fork of the newest base when that is at the
 // heads, or, while the base is brought up to date, a workspace that is
 // preparing and becomes a fork of the new base when its freshen ends.
+// wsVolume is workspace id's volume, which its commands write.
+func wsVolume(id string) string { return "ws/" + id }
+
 func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
 	if req.Id == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "workspace has no ID")
@@ -85,7 +88,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: wsRuntime, Throwaway: req.Throwaway,
 			Reason: fmt.Sprintf("waiting for base %s to freshen", base.Id),
 		},
-		Volume: "ws/" + req.Id, BaseSnapshot: base.Id, Note: note,
+		Volume: wsVolume(req.Id), BaseSnapshot: base.Id, Note: note,
 	}}
 	e.mu.Lock()
 	if _, dup := e.workspaces[req.Id]; dup {

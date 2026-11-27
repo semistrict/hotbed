@@ -33,6 +33,15 @@ type VMM interface {
 	Sweep(ctx context.Context, live map[string]bool)
 }
 
+// A VCPUPinner pins a VM's vCPUs to host CPUs, as a measurement's VM needs
+// (LaunchSpec.BenchCPUs): Firecracker's VMM does; machined's, on a Mac,
+// which takes no measurements, does not.
+type VCPUPinner interface {
+	// PinVCPUs pins unit's VM's vCPU i to host CPU cpus[i], one for each of
+	// its vCPUs, which run already.
+	PinVCPUs(ctx context.Context, unit string, cpus []int) error
+}
+
 // ErrNoKill is a VMM's Kill when it has no stronger way to stop a VM than
 // Stop.
 var ErrNoKill = errors.New("vmm: no kill beyond stop")

@@ -710,7 +710,7 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: b.Kind(), Throwaway: req.Throwaway,
 			Reason: l.preparing,
 		},
-		Volume: "ws/" + req.Id, BaseSnapshot: l.base,
+		Volume: wsVolume(req.Id), BaseSnapshot: l.base,
 	}}
 	e.mu.Lock()
 	if _, dup := e.workspaces[req.Id]; dup {

@@ -30,6 +30,8 @@ type fakeLauncher struct {
 	exited       map[string]int
 	customStatus map[string]ProcessStatus
 	slices       map[string]string
+	props        map[string][]string
+	lists        []string
 	onStart      func(ProcessSpec) error
 	onStop       func(ctx context.Context, name string) error
 	onKill       func(ctx context.Context, name string) error
@@ -44,6 +46,7 @@ func newFakeLauncher() *fakeLauncher {
 		exited:       map[string]int{},
 		customStatus: map[string]ProcessStatus{},
 		slices:       map[string]string{},
+		props:        map[string][]string{},
 	}
 }
 
@@ -59,6 +62,7 @@ func (f *fakeLauncher) Start(_ context.Context, s ProcessSpec) error {
 	delete(f.deactivating, s.Name)
 	delete(f.exited, s.Name)
 	f.slices[s.Name] = s.Slice
+	f.props[s.Name] = s.Properties
 	return nil
 }
 
@@ -100,6 +104,7 @@ func (f *fakeLauncher) Status(_ context.Context, name string) (ProcessStatus, er
 func (f *fakeLauncher) List(_ context.Context, slice string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lists = append(f.lists, slice)
 	seen := map[string]bool{}
 	var out []string
 	for name := range f.running {
@@ -533,7 +538,7 @@ func TestProcessStatusFromUnitState(t *testing.T) {
 		{
 			name: "running",
 			st:   unit.State{Loaded: true, Running: true, Result: "success", PID: 42, Cgroup: "/hotbed.slice/x.service"},
-			want: ProcessStatus{Loaded: true, Running: true, Result: "success"},
+			want: ProcessStatus{Loaded: true, Running: true, Result: "success", Cgroup: "/hotbed.slice/x.service"},
 		},
 		{
 			name: "deactivating",

@@ -134,7 +134,7 @@ func TestALeftoverUnitIsStoppedFirst(t *testing.T) {
 // workspaces m, b and c on volumes ws/m, ws/b and ws/c.
 func quietEngine(t *testing.T, iso *fake.Isolation) (*Engine, *fake.Units) {
 	t.Helper()
-	iso.SetPool("rpool/hotbed")
+	iso.SetQuieted("rpool/hotbed")
 	units := &fake.Units{}
 	store := &fake.Store{Root: t.TempDir()}
 	e, err := NewEngine(t.Context(), EngineConfig{
@@ -175,7 +175,7 @@ func TestAMeasurementKeepsThePoolQuiet(t *testing.T) {
 	if s := writer.cmd().State; s != running {
 		t.Fatalf("the writer is %v", s)
 	}
-	iso.SetLoud(bench.Writer{Volume: "ws/b", Rate: 40e6})
+	iso.SetLoud(bench.Writer{Volume: "ws/b", Rate: 40e6, To: "rpool/hotbed"})
 	m := e.exec(t, units, "m-1", "m", true)
 	e.step(t.Context())
 	if s := m.cmd().State; s != running {
@@ -191,15 +191,15 @@ func TestAMeasurementKeepsThePoolQuiet(t *testing.T) {
 	if got := writer.cmd().Reason; got != want {
 		t.Errorf("the writer's reason = %q, want %q", got, want)
 	}
-	if iso.Samples() == 0 {
-		t.Error("no samples taken")
+	if all, measuring := iso.Samples(); all == 0 || measuring == 0 {
+		t.Errorf("%d samples taken, %d of them measuring; want some of each", all, measuring)
 	}
 
 	iso.SetLoud()
 	other := e.exec(t, units, "o-1", "c", false)
 	own := e.exec(t, units, "s-1", "m", false)
 	e.step(t.Context())
-	if s, r := other.cmd().State, other.cmd().Reason; s != queued || r != "waiting for measurement m-1 to finish: it keeps rpool/hotbed quiet, which no cap can do on ZFS" {
+	if s, r := other.cmd().State, other.cmd().Reason; s != queued || r != "waiting for measurement m-1 to finish: it keeps rpool/hotbed quiet, which no cap can do" {
 		t.Errorf("a command in another workspace is %v: %q", s, r)
 	}
 	if s := own.cmd().State; s != running {
@@ -228,13 +228,46 @@ func TestAMeasurementKeepsThePoolQuiet(t *testing.T) {
 	}
 }
 
+// A measurement starts only once the samples name who writes where it holds
+// writers back (the VMs' disks, which are asked only while one waits), so
+// it can hold them first; a VM's writer is held as a pool's is.
+func TestAMeasurementWaitsToSeeTheVMsWriters(t *testing.T) {
+	iso := fake.NewIsolation("4-7", 4)
+	e, units := quietEngine(t, iso)
+	iso.SetQuieted("the VMs' disks")
+	writer := e.exec(t, units, "w-1", "b", false)
+	e.step(t.Context())
+	if _, measuring := iso.Samples(); measuring != 0 {
+		t.Errorf("%d samples asked the VMs with no measurement, want none", measuring)
+	}
+	iso.SetReady(false)
+	m := e.exec(t, units, "m-1", "m", true)
+	e.step(t.Context())
+	if s, r := m.cmd().State, m.cmd().Reason; s != queued || r != "waiting to see who writes to the VMs' disks, to hold them back beside it" {
+		t.Fatalf("the measurement is %v: %q", s, r)
+	}
+	if _, measuring := iso.Samples(); measuring == 0 {
+		t.Error("no sample asked the VMs while the measurement waited")
+	}
+	iso.SetReady(true)
+	iso.SetLoud(bench.Writer{Volume: "ws/b", Rate: 25e6, To: "the VMs' disks"})
+	e.step(t.Context())
+	if s := m.cmd().State; s != running {
+		t.Fatalf("the measurement is %v: %s", s, m.cmd().Reason)
+	}
+	want := "held: its volume wrote 25.0 MB/s to the VMs' disks beside measurement m-1, past its bound; thawed once it ends"
+	if s, r := writer.cmd().State, writer.cmd().Reason; s != parked || r != want {
+		t.Errorf("the writer is %v: %q, want parked: %q", s, r, want)
+	}
+}
+
 // Where the volumes aren't on ZFS, the kernel caps work's writes: nothing
 // is held, and work in other workspaces starts beside a measurement.
 func TestWithoutAPoolNothingIsHeld(t *testing.T) {
 	iso := fake.NewIsolation("4-7", 4)
 	e, units := quietEngine(t, iso)
-	iso.SetPool("")
-	iso.SetLoud(bench.Writer{Volume: "ws/b", Rate: 40e6})
+	iso.SetQuieted("")
+	iso.SetLoud(bench.Writer{Volume: "ws/b", Rate: 40e6, To: "rpool/hotbed"})
 	writer := e.exec(t, units, "w-1", "b", false)
 	e.step(t.Context())
 	m := e.exec(t, units, "m-1", "m", true)

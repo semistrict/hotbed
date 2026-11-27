@@ -35,7 +35,7 @@ type testGuestResolver struct {
 	clients map[string]*guestd.Client
 }
 
-func (r *testGuestResolver) EnsureVM(_ context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
+func (r *testGuestResolver) EnsureVM(_ context.Context, wsID string, _ unit.VMBoot) (*guestd.Client, error) {
 	return r.ClientFor(wsID)
 }
 
@@ -512,8 +512,12 @@ func TestResolveWorkspaceRuntimeOnlyAllowsVMAndCladefs(t *testing.T) {
 	if _, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Runtime: runtime.KindCladefs}); err == nil {
 		t.Fatal("vm-only engine must reject cladefs runtime")
 	}
-	if _, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Placement: &pb.Placement{Bench: true}}); err == nil {
-		t.Fatal("vm-only engine must reject --bench")
+	// A measurement takes the node's runtime, as any run: on a VM node, a VM.
+	if got, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Placement: &pb.Placement{Bench: true}}); err != nil || got != runtime.KindVM {
+		t.Fatalf("vm --bench = %q, %v; want %q, nil", got, err, runtime.KindVM)
+	}
+	if got, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Placement: &pb.Placement{Bench: true, Runtime: runtime.KindVM}}); err != nil || got != runtime.KindVM {
+		t.Fatalf("vm --bench --runtime vm = %q, %v; want %q, nil", got, err, runtime.KindVM)
 	}
 
 	if got, err := fuseEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{}); err != nil || got != runtime.KindCladefs {
@@ -529,7 +533,7 @@ func TestResolveWorkspaceRuntimeOnlyAllowsVMAndCladefs(t *testing.T) {
 		t.Fatal("cladefs-only engine must reject vm runtime")
 	}
 	if _, err := fuseEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Placement: &pb.Placement{Bench: true, Runtime: runtime.KindVM}}); err == nil {
-		t.Fatal("cladefs engine must reject --bench with vm runtime")
+		t.Fatal("cladefs-only engine must reject --bench with vm runtime")
 	}
 }
 

@@ -92,7 +92,7 @@ func TestBenchOnANodeThatTakesNoMeasurementsFails(t *testing.T) {
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "tidy-owl")
 	code, e := c.fails("run", "-s", "tidy-owl", "-r", "app", "--bench", "--", "true")
-	if code != exitError || e.Code != api.CodeInvalidArgs || e.Message != "no node can take the run: asahimbp has no measurement CPUs" {
+	if code != exitError || e.Code != api.CodeInvalidArgs || e.Message != "no node can take the run: asahimbp has no measurement CPUs (--bench)" {
 		t.Fatalf("run --bench: exit %d, %+v", code, e)
 	}
 }

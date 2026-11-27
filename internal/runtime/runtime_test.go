@@ -32,7 +32,7 @@ type fakeResolver struct {
 	makeFn  func(wsID string) (*guestd.Client, error)
 }
 
-func (f *fakeResolver) EnsureVM(ctx context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
+func (f *fakeResolver) EnsureVM(ctx context.Context, wsID string, _ unit.VMBoot) (*guestd.Client, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if c, ok := f.clients[wsID]; ok {
@@ -203,11 +203,11 @@ type oomVMResolver struct {
 	reclaimHits int
 }
 
-func (o *oomVMResolver) EnsureVM(ctx context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
+func (o *oomVMResolver) EnsureVM(ctx context.Context, wsID string, _ unit.VMBoot) (*guestd.Client, error) {
 	o.mu.Lock()
 	o.ensureCalls++
 	o.mu.Unlock()
-	return o.fakeResolver.EnsureVM(ctx, wsID, unit.VMSize{})
+	return o.fakeResolver.EnsureVM(ctx, wsID, unit.VMBoot{})
 }
 
 func (o *oomVMResolver) VMExit(_ context.Context, wsID string) (unit.VMExit, bool) {

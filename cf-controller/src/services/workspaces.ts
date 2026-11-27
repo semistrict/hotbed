@@ -442,7 +442,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		syncHost: string,
 	): CreateWorkspaceRequest {
 		const chosenArch = node.view.hb?.resources?.arch ?? "";
-		const reqRuntime = req.placement?.bench ? "cladefs" : (req.placement?.runtime ?? "");
+		const reqRuntime = req.placement?.runtime ?? "";
 		const chosenRuntimes = (node.view.hb?.resources?.runtimes ?? []).filter(
 			(r) => r === "vm" || r === "cladefs",
 		);
@@ -898,7 +898,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					return { kind: "reconcile" as const, needRelease, needProbe };
 				}
 				const filtered = nvs.filter((nv) => !skip.has(nv.node.id));
-				const reqRuntimeForWarm = req.placement?.bench ? "cladefs" : (req.placement?.runtime ?? "");
+				const reqRuntimeForWarm = req.placement?.runtime ?? "";
 				const cs = buildCandidates(
 					filtered,
 					p.name,

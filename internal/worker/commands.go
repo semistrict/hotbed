@@ -198,6 +198,13 @@ func (e *Engine) checkVMRequestLocked(req *pb.RunCommandRequest) error {
 		return api.Errorf(api.CodeInvalidArgs, "workspace %s runs commands on the host: --vm-cpus and --vm-mem need the vm runtime", req.WorkspaceId).
 			WithSuggestion("run with --runtime vm")
 	}
+	if req.Bench && e.cfg.Bench != nil {
+		// Each vCPU has a measurement CPU of its own: more would share them.
+		if cpus := e.cfg.Bench.CPUs(); int(req.VmCpus) > len(cpus) {
+			return api.Errorf(api.CodeInvalidArgs, "--vm-cpus %d: a measurement's VM on %s runs on its %d measurement CPUs (%s), a vCPU on each", req.VmCpus, e.cfg.Host, len(cpus), cpus).
+				WithSuggestion(fmt.Sprintf("ask for 1 to %d vCPUs, or leave --vm-cpus out for %d", len(cpus), len(cpus)))
+		}
+	}
 	if cpus := e.resources.GetCpus(); req.VmCpus < 0 || req.VmCpus > cpus {
 		return api.Errorf(api.CodeInvalidArgs, "--vm-cpus %d: %s has %d CPUs", req.VmCpus, e.cfg.Host, cpus).
 			WithSuggestion(fmt.Sprintf("ask for 1 to %d, or pick a bigger node with --node (hotbed nodes lists them)", cpus))
@@ -259,9 +266,20 @@ func estimateNote(est *pb.CommandEstimate, peak int64, seconds float64) string {
 	return strings.Join(parts, " · ") + " (" + est.Source + ")"
 }
 
-// vmSize is the size of the VM c runs in, as its unit asks it.
-func vmSize(c *command) unit.VMSize {
-	return unit.VMSize{VCPUs: int(c.cmd().VmCpus), MemMiB: int((c.cmd().VmMemoryBytes + 1<<20 - 1) >> 20)}
+// vmBoot is how the VM c runs in boots, as its command asks: a
+// measurement's on the node's measurement CPUs, one vCPU on each unless it
+// asks fewer (RunCommand refuses more). Call with e.mu held.
+func (e *Engine) vmBoot(c *command) unit.VMBoot {
+	cmd := c.cmd()
+	b := unit.VMBoot{VCPUs: int(cmd.VmCpus), MemMiB: int((cmd.VmMemoryBytes + 1<<20 - 1) >> 20)}
+	if cmd.Bench && e.cfg.Bench != nil {
+		cpus := e.cfg.Bench.CPUs()
+		b.BenchCPUs = cpus.String()
+		if b.VCPUs == 0 {
+			b.VCPUs = len(cpus)
+		}
+	}
+	return b
 }
 
 // newID is ten random base32 characters, lowercase: 50 bits, so commands
@@ -461,9 +479,10 @@ func (e *Engine) step(ctx context.Context) {
 			active = append(active, c)
 		}
 	}
+	pending := e.cfg.Bench != nil && e.benchPending()
 	e.mu.Unlock()
 	if e.cfg.Bench != nil {
-		e.cfg.Bench.Sample()
+		e.cfg.Bench.Sample(pending)
 	}
 	// Writers are held before the measurement's isolation is checked, so
 	// what this sample saw is held now.
@@ -940,7 +959,7 @@ func (e *Engine) admit(ctx context.Context) {
 		// may use the VM meanwhile, until its unit has started.
 		var heldVM *sync.RWMutex
 		if kind == "" {
-			if w, ok := e.workspaces[c.runtimeTarget()]; ok && e.runsInGuest(c) && vmSize(c) != (unit.VMSize{}) {
+			if w, ok := e.workspaces[c.runtimeTarget()]; ok && e.runsInGuest(c) && e.vmBoot(c) != (unit.VMBoot{}) {
 				if w.vm.TryLock() {
 					heldVM = &w.vm
 				} else {
@@ -1487,7 +1506,7 @@ func (e *Engine) guestSpec(c *command) (runtime.CommandSpec, error) {
 		MemoryLow:  cmd.Limits.MemoryLowBytes,
 		MemoryHigh: cmd.Limits.MemoryHighBytes,
 		LogPath:    logPath,
-		VM:         vmSize(c),
+		VM:         e.vmBoot(c),
 		TTY:        cmd.Tty,
 		TTYInput:   cmd.TtyInput,
 	}, nil

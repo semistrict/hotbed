@@ -11,7 +11,7 @@ import (
 // liveResolver resolves the live tests' workspaces to their Manager's VMs.
 type liveResolver struct{ mgr *vm.Manager }
 
-func (r *liveResolver) EnsureVM(_ context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
+func (r *liveResolver) EnsureVM(_ context.Context, wsID string, _ unit.VMBoot) (*guestd.Client, error) {
 	return r.mgr.ClientFor(wsID)
 }
 func (r *liveResolver) ClientFor(wsID string) (*guestd.Client, error) {

@@ -176,20 +176,20 @@ export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: st
 	if (hosts.length > 0 && !hosts.includes(c.host)) {
 		return `${c.host} keeps no bases of the project`;
 	}
+	// Each reason a node can't take the run ends with the requirement that
+	// excludes it, so a caller can tell which to loosen.
 	const reqArch = p?.arch ?? "";
 	const nodeArch = c.view.hb.resources?.arch ?? "";
 	if (reqArch && nodeArch !== reqArch) {
-		return `${c.host} is ${nodeArch}, not ${reqArch}`;
+		return `${c.host} is ${nodeArch}, not ${reqArch} (--arch)`;
 	}
-	if (p?.bench && !(c.view.hb.resources?.benchCpus ?? "")) {
-		return `${c.host} has no measurement CPUs`;
+	const benchCpus = cpuCount(c.view.hb.resources?.benchCpus ?? "");
+	if (p?.bench && benchCpus === 0) {
+		return `${c.host} has no measurement CPUs (--bench)`;
 	}
 	const reqRuntime = p?.runtime ?? "";
 	if (reqRuntime && reqRuntime !== "vm" && reqRuntime !== "cladefs") {
-		return `unknown runtime "${reqRuntime}" (want vm or cladefs)`;
-	}
-	if (p?.bench && reqRuntime === "vm") {
-		return `${c.host} cannot run --bench inside vm runtime (requires cladefs)`;
+		return `unknown runtime "${reqRuntime}" (want vm or cladefs) (--runtime)`;
 	}
 	const runtimes: string[] = (c.view.hb.resources?.runtimes ?? []).filter(
 		(r) => r === "vm" || r === "cladefs",
@@ -197,23 +197,38 @@ export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: st
 	if (runtimes.length === 0) {
 		return `${c.host} has no available runtimes`;
 	}
-	const effRuntime = p?.bench ? "cladefs" : reqRuntime;
-	if (effRuntime && !runtimes.includes(effRuntime)) {
-		return `${c.host} does not support ${effRuntime} runtime`;
+	// A measurement runs in either runtime: a VM's on the measurement CPUs
+	// as a host command's does.
+	if (reqRuntime && !runtimes.includes(reqRuntime)) {
+		return `${c.host} offers the ${runtimes.join(" and ")} runtime, not ${reqRuntime} (--runtime)`;
 	}
 	const memLow = p?.memoryLowBytes ?? 0n;
 	if (memLow > c.ram) {
-		return `${c.host} has ${c.ram} bytes of RAM, less than the ${memLow} guaranteed`;
+		return `${c.host} has ${c.ram} bytes of RAM, less than the ${memLow} guaranteed (--mem-low)`;
 	}
 	const vmCpus = p?.vmCpus ?? 0;
+	if (p?.bench && vmCpus > benchCpus) {
+		return `${c.host} has ${benchCpus} measurement CPUs, fewer than the ${vmCpus} its VM asks, a vCPU on each (--bench --vm-cpus)`;
+	}
 	if (vmCpus > c.cpus) {
-		return `${c.host} has ${c.cpus} CPUs, fewer than the ${vmCpus} its VM asks`;
+		return `${c.host} has ${c.cpus} CPUs, fewer than the ${vmCpus} its VM asks (--vm-cpus)`;
 	}
 	const vmMem = p?.vmMemoryBytes ?? 0n;
 	if (vmMem > c.ram) {
-		return `${c.host} has ${c.ram} bytes of RAM, less than the ${vmMem} its VM asks`;
+		return `${c.host} has ${c.ram} bytes of RAM, less than the ${vmMem} its VM asks (--vm-mem)`;
 	}
 	return "";
+}
+
+/** cpuCount is how many CPUs a cpulist (4-7,12-15) names. */
+export function cpuCount(list: string): number {
+	let n = 0;
+	for (const part of list.split(",")) {
+		if (!part.trim()) continue;
+		const [lo, hi] = part.split("-").map((x) => Number.parseInt(x, 10));
+		n += hi === undefined ? 1 : hi - lo + 1;
+	}
+	return n;
 }
 
 function fitsOnline(c: Candidate, p: Placement | undefined, hosts: string[]): boolean {

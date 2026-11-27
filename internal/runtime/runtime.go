@@ -36,7 +36,7 @@ type CommandSpec struct {
 	LogPath    string
 	// VM is the size of the VM it runs in, on a runtime that boots one for
 	// it; zero fields for the node's defaults.
-	VM unit.VMSize
+	VM unit.VMBoot
 	// TTY runs it with a terminal for its output, what it writes going to
 	// LogPath; TTYInput for its input too, its controlling terminal.
 	TTY, TTYInput bool

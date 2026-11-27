@@ -42,6 +42,7 @@ type Config struct {
 	GuestdBin           string        // path to static Linux hotbed-guestd binary (attached via read-only tools disk)
 	RunDir              string        // directory for per-VM state (vm.json, meta.json, vsock UDS, console.log)
 	Slice               string        // systemd slice for VM units (default hotbed.slice)
+	BenchSlice          string        // systemd slice for measurements' VM units (LaunchSpec.BenchCPUs); "" takes none
 	VMUser              string        // non-root host user running Firecracker (default cladefsd)
 	DefaultVCPUs        int           // vCPUs per workspace VM
 	DefaultMemMiB       int           // guest RAM in MiB per workspace VM
@@ -134,6 +135,9 @@ type LaunchSpec struct {
 	DiskBytes     uint64 // 0 -> Config.DefaultDiskBytes
 	ExtraBootArgs string // optional extra kernel cmdline tokens
 	DisableNet    bool   // skip TAP allocation for this VM
+	// BenchCPUs, a cpulist, boots a measurement's VM (unit.VMBoot): in
+	// Config.BenchSlice, never swapping, its vCPU i pinned to the i-th CPU.
+	BenchCPUs string
 }
 
 // size is the vCPUs and memory (MiB) a VM for spec boots with: what spec

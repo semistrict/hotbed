@@ -799,9 +799,11 @@ type Isolation struct {
 	ons, offs int
 	lost      error
 	offErr    error
-	pool      string
+	quieted   string
+	unready   bool
 	loud      []bench.Writer
 	samples   int
+	measuring int
 	heldOwn   string
 }
 
@@ -865,30 +867,48 @@ func (f *Isolation) HeldOwn() string {
 	return f.heldOwn
 }
 
-func (f *Isolation) Pool() string {
+func (f *Isolation) Quieted() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.pool
+	return f.quieted
 }
 
-// SetPool has the isolation hold back writers to the ZFS pool dataset.
-func (f *Isolation) SetPool(dataset string) {
+// SetQuieted has the isolation hold back writers to where (a ZFS pool
+// dataset, the VMs' disks).
+func (f *Isolation) SetQuieted(where string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pool = dataset
+	f.quieted = where
 }
 
-func (f *Isolation) Sample() {
+func (f *Isolation) Ready() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.unready
+}
+
+// SetReady says whether the samples name the writers to hold back yet.
+func (f *Isolation) SetReady(ready bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unready = !ready
+}
+
+func (f *Isolation) Sample(measuring bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.samples++
+	if measuring {
+		f.measuring++
+	}
 }
 
-// Samples counts the Samples taken.
-func (f *Isolation) Samples() int {
+// Samples counts the Samples taken, and of those, the ones taken while a
+// measurement waited or ran.
+func (f *Isolation) Samples() (all, measuring int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.samples
+	return f.samples, f.measuring
 }
 
 func (f *Isolation) Loud(own string) []bench.Writer {

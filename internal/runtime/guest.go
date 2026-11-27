@@ -22,9 +22,10 @@ import (
 // manager in Step 3, or a test harness).
 type GuestResolver interface {
 	// EnsureVM boots wsID's VM unless it is up and returns its client. A VM up
-	// at another size than a non-zero field of size asks is stopped and booted
-	// again at that size: callers ask a size only of a VM nothing runs in yet.
-	EnsureVM(ctx context.Context, wsID string, size unit.VMSize) (*guestd.Client, error)
+	// booted otherwise than a non-zero field of boot asks (another size, or
+	// not on its measurement CPUs) is stopped and booted again as asked:
+	// callers ask so only of a VM nothing runs in yet.
+	EnsureVM(ctx context.Context, wsID string, boot unit.VMBoot) (*guestd.Client, error)
 	ClientFor(wsID string) (*guestd.Client, error)
 	StopVM(ctx context.Context, wsID string) error
 }
@@ -43,7 +44,7 @@ func NewGuestRuntime(vms GuestResolver) *GuestRuntime {
 func (g *GuestRuntime) Kind() string { return KindVM }
 
 func (g *GuestRuntime) EnsureReady(ctx context.Context, wsID string) error {
-	c, err := g.vms.EnsureVM(ctx, wsID, unit.VMSize{})
+	c, err := g.vms.EnsureVM(ctx, wsID, unit.VMBoot{})
 	if err != nil {
 		return err
 	}
@@ -69,7 +70,7 @@ func (g *GuestRuntime) client(ctx context.Context, wsID string) (*guestd.Client,
 	// Always go through EnsureVM so a tracked Firecracker VMM that exited
 	// unexpectedly (e.g. systemd-oomd kill or cladefsd exit 158) is detected,
 	// cleaned up, and rebooted cleanly instead of returning a dead vsock client.
-	return g.vms.EnsureVM(ctx, wsID, unit.VMSize{})
+	return g.vms.EnsureVM(ctx, wsID, unit.VMBoot{})
 }
 
 func (g *GuestRuntime) StartCommand(ctx context.Context, wsID string, spec CommandSpec) error {

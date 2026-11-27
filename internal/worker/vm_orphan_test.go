@@ -353,14 +353,14 @@ func TestVMBackendEnsureVMBootsAgainAtTheSizeAsked(t *testing.T) {
 		return len(fl.stopped)
 	}
 
-	if _, err := b.EnsureVM(ctx, "sizews", unit.VMSize{}); err != nil {
+	if _, err := b.EnsureVM(ctx, "sizews", unit.VMBoot{}); err != nil {
 		t.Fatalf("EnsureVM at no size: %v", err)
 	}
 	if n := stops(); n != 0 {
 		t.Fatalf("EnsureVM at no size stopped %d VMs, want 0", n)
 	}
 
-	if _, err := b.EnsureVM(ctx, "sizews", unit.VMSize{VCPUs: 3, MemMiB: 1536}); err != nil {
+	if _, err := b.EnsureVM(ctx, "sizews", unit.VMBoot{VCPUs: 3, MemMiB: 1536}); err != nil {
 		t.Fatalf("EnsureVM at 3 vCPUs, 1536 MiB: %v", err)
 	}
 	if inst := b.mgr.Get("sizews"); inst == nil || inst.VCPUs != 3 || inst.MemMiB != 1536 {
@@ -371,7 +371,7 @@ func TestVMBackendEnsureVMBootsAgainAtTheSizeAsked(t *testing.T) {
 	}
 
 	// At the size it has, it stays.
-	if _, err := b.EnsureVM(ctx, "sizews", unit.VMSize{VCPUs: 3}); err != nil {
+	if _, err := b.EnsureVM(ctx, "sizews", unit.VMBoot{VCPUs: 3}); err != nil {
 		t.Fatalf("EnsureVM at 3 vCPUs again: %v", err)
 	}
 	if n := stops(); n != 1 {
@@ -398,9 +398,9 @@ func TestVMBackendEnsureVMBootsOnceForConcurrentCallers(t *testing.T) {
 	fl.starting, fl.gate = make(chan string, 2), make(chan struct{})
 	fl.mu.Unlock()
 	errs := make(chan error, 2)
-	go func() { _, err := b.EnsureVM(ctx, "twows", unit.VMSize{}); errs <- err }()
+	go func() { _, err := b.EnsureVM(ctx, "twows", unit.VMBoot{}); errs <- err }()
 	<-fl.starting // the first boot is in flight
-	go func() { _, err := b.EnsureVM(ctx, "twows", unit.VMSize{}); errs <- err }()
+	go func() { _, err := b.EnsureVM(ctx, "twows", unit.VMBoot{}); errs <- err }()
 	close(fl.gate)
 	for range 2 {
 		if err := <-errs; err != nil {
@@ -467,7 +467,7 @@ func TestEngineRestartBootsSavedVMWorkspaceOnItsCell(t *testing.T) {
 	t.Cleanup(func() { e2.Close() })
 	t.Cleanup(func() { _ = vmb.mgr.Stop(context.Background(), "ws-idle", true) })
 
-	if _, err := vmb.EnsureVM(ctx, "ws-idle", unit.VMSize{}); err != nil {
+	if _, err := vmb.EnsureVM(ctx, "ws-idle", unit.VMBoot{}); err != nil {
 		t.Fatalf("EnsureVM after restart: %v", err)
 	}
 	if got, want := vmb.mgr.Get("ws-idle").CellPath, cladefs.FormatCellID(1, 42); got != want {
@@ -476,7 +476,7 @@ func TestEngineRestartBootsSavedVMWorkspaceOnItsCell(t *testing.T) {
 	if !api.cells[42] {
 		t.Fatal("restart deleted the idle workspace's cell")
 	}
-	if _, err := vmb.EnsureVM(ctx, "ws-released", unit.VMSize{}); err == nil ||
+	if _, err := vmb.EnsureVM(ctx, "ws-released", unit.VMBoot{}); err == nil ||
 		err.Error() != "vm ws-released: no cladefs cell recorded for workspace" {
 		t.Fatalf("EnsureVM on a released workspace = %v, want no cell", err)
 	}

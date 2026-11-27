@@ -268,7 +268,7 @@ func TestScheduledRunThatCannotStart(t *testing.T) {
 	c.ok(nil, "schedule", "add", "pinned", "-r", "app", "--cron", nightly, "--arch", "amd64", "--", "true")
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "pinned")
-	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp is arm64, not amd64" || run.EndedAt == nil {
+	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp is arm64, not amd64 (--arch)" || run.EndedAt == nil {
 		t.Fatalf("run on an arch that is not there = %v", run)
 	}
 	if s := c.session(run.SessionId); s.EndedAt == nil || s.EndReason != "its scheduled run could not start" {
@@ -288,7 +288,7 @@ func TestScheduledRunKeepsToItsArchitecture(t *testing.T) {
 	}
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "x86")
-	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp is arm64, not amd64" {
+	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp is arm64, not amd64 (--arch)" {
 		t.Errorf("run with no amd64 node = %v", run)
 	}
 }
@@ -306,7 +306,7 @@ func TestScheduledSizedRunNeedsAVMNode(t *testing.T) {
 	}
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "big")
-	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp does not support vm runtime" {
+	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp offers the cladefs runtime, not vm (--runtime)" {
 		t.Errorf("sized run with no vm node = %v", run)
 	}
 }

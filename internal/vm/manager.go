@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/bench"
 	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 	"github.com/semistrict/hotbed/internal/guestd"
 )
@@ -47,6 +48,9 @@ type Instance struct {
 	// VCPUs and MemMiB are the size it booted at, as its guest sees it.
 	VCPUs  int
 	MemMiB int
+	// BenchCPUs is the measurement CPUs it booted pinned to, "" for none
+	// (LaunchSpec.BenchCPUs).
+	BenchCPUs string
 	// Boot is how long each step of its boot took; zero for a VM
 	// reconnected after a worker restart.
 	Boot BootTimes
@@ -93,6 +97,7 @@ type vmMeta struct {
 	ToolsDiskPath  string    `json:"toolsDiskPath,omitempty"`
 	VCPUs          int       `json:"vcpus,omitempty"`
 	MemMiB         int       `json:"memMiB,omitempty"`
+	BenchCPUs      string    `json:"benchCPUs,omitempty"`
 }
 
 const (
@@ -229,7 +234,7 @@ func (m *Manager) configSnapshot() Config {
 // UpdateConfig hot-reloads VM launch settings (kernel, guestd, firecracker
 // binary, vCPUs, memory, disk, DAX window, cache type, DNS) for all subsequent
 // VM boots without disrupting running Firecracker instances. Structural manager
-// fields (RunDir, Slice, BridgeName, BridgeCIDR, DisableNetwork, GitAuthHostSock)
+// fields (RunDir, Slice, BenchSlice, BridgeName, BridgeCIDR, DisableNetwork, GitAuthHostSock)
 // are preserved when unset in cfg.
 func (m *Manager) UpdateConfig(cfg Config) {
 	m.mu.Lock()
@@ -237,6 +242,9 @@ func (m *Manager) UpdateConfig(cfg Config) {
 	cfg.RunDir = m.cfg.RunDir
 	if cfg.Slice == "" {
 		cfg.Slice = m.cfg.Slice
+	}
+	if cfg.BenchSlice == "" {
+		cfg.BenchSlice = m.cfg.BenchSlice
 	}
 	if cfg.BridgeName == "" {
 		cfg.BridgeName = m.cfg.BridgeName
@@ -279,9 +287,14 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		m.mu.Unlock()
 		return nil, fmt.Errorf("vm %s: already starting: %w", spec.ID, ErrVMRunning)
 	}
+	cfg := m.cfg
+	pin, err := m.benchPin(spec, cfg)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("vm %s: %w", spec.ID, err)
+	}
 	m.starting[spec.ID] = struct{}{}
 	cid := m.allocCIDLocked(spec.ID)
-	cfg := m.cfg
 	m.mu.Unlock()
 
 	began := time.Now()
@@ -318,6 +331,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		ConsoleLog:    mach.ConsoleLog,
 		GuestCID:      cid,
 		StartedAt:     now,
+		BenchCPUs:     spec.BenchCPUs,
 	}
 	// Written before the boot too, so a worker that dies during it leaves
 	// the orphan reaper what to stop.
@@ -377,6 +391,15 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		}
 		return stopOnErr(err)
 	}
+	if pin != nil {
+		// Its vCPUs run by now: its guest answered.
+		if err := pin(ctx, mach.Unit, b.VCPUs); err != nil {
+			if gaBridge != nil {
+				_ = gaBridge.Close()
+			}
+			return stopOnErr(fmt.Errorf("pin its vCPUs to measurement CPUs %s: %w", spec.BenchCPUs, err))
+		}
+	}
 
 	inst := &Instance{
 		ID:             spec.ID,
@@ -394,6 +417,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		ToolsDiskPath:  b.ToolsDiskPath,
 		VCPUs:          b.VCPUs,
 		MemMiB:         b.MemMiB,
+		BenchCPUs:      spec.BenchCPUs,
 		Boot:           boot,
 		gitAuth:        gaBridge,
 	}
@@ -405,6 +429,39 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	startedOK = true
 	m.mu.Unlock()
 	return inst, nil
+}
+
+// benchPin checks a measurement's VM can boot as spec asks, before
+// anything of it starts, and says how to pin its vCPUs once its guest runs:
+// nil for a VM that is no measurement's. A measurement's VM runs in
+// cfg.BenchSlice, which its isolation makes a cpuset partition of spec's
+// CPUs, so its every thread (vCPUs, Firecracker's own, its device queues)
+// runs on them alone; each vCPU is pinned to one of them besides, so the
+// guest's CPU i is the same host CPU from run to run.
+func (m *Manager) benchPin(spec LaunchSpec, cfg Config) (func(ctx context.Context, unit string, vcpus int) error, error) {
+	if spec.BenchCPUs == "" {
+		return nil, nil
+	}
+	cpus, err := bench.ParseCPUs(spec.BenchCPUs)
+	if err != nil {
+		return nil, err
+	}
+	if len(cpus) == 0 {
+		return nil, fmt.Errorf("measurement CPUs %q name none", spec.BenchCPUs)
+	}
+	if cfg.BenchSlice == "" {
+		return nil, errors.New("a measurement's VM needs the measurement slice, which the VM manager's config names none of")
+	}
+	if vcpus, _ := cfg.size(spec); vcpus > len(cpus) {
+		return nil, fmt.Errorf("a measurement's VM of %d vCPUs is more than its %d measurement CPUs (%s)", vcpus, len(cpus), cpus)
+	}
+	p, ok := m.vmm.(VCPUPinner)
+	if !ok {
+		return nil, errors.New("its VMM cannot pin vCPUs, which a measurement's VM needs")
+	}
+	return func(ctx context.Context, unit string, vcpus int) error {
+		return p.PinVCPUs(ctx, unit, cpus[:vcpus])
+	}, nil
 }
 
 // waitHealthy waits for the guestd of the VM unitName runs to answer, and
@@ -566,6 +623,7 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			ToolsDiskPath:  meta.ToolsDiskPath,
 			VCPUs:          meta.VCPUs,
 			MemMiB:         meta.MemMiB,
+			BenchCPUs:      meta.BenchCPUs,
 			gitAuth:        gaBridge,
 		}
 		m.mu.Lock()
@@ -763,9 +821,15 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 	cfg := m.configSnapshot()
 	candidates := map[string]struct{}{}
 
-	if units, err := m.vmm.List(ctx, cfg.Slice); err != nil {
-		slog.Warn("vm reconcile orphans: list units failed", "slice", cfg.Slice, "err", err)
-	} else {
+	for _, slice := range []string{cfg.Slice, cfg.BenchSlice} {
+		if slice == "" {
+			continue
+		}
+		units, err := m.vmm.List(ctx, slice)
+		if err != nil {
+			slog.Warn("vm reconcile orphans: list units failed", "slice", slice, "err", err)
+			continue
+		}
 		for _, u := range units {
 			if id, ok := strings.CutPrefix(u, "hotbed-vm-"); ok && id != "" {
 				candidates[id] = struct{}{}

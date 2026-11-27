@@ -607,7 +607,7 @@ func TestVMFlagsNeedAVMNode(t *testing.T) {
 	}
 	for _, flags := range [][]string{{"--vm-cpus", "2"}, {"--vm-mem", "2G"}} {
 		code, e := c.fails(append(append([]string{"run", "-s", "keen-elk", "-r", "app"}, flags...), "--", "true")...)
-		if code != exitError || e.Code != api.CodeInvalidArgs || e.Message != "no node can take the run: asahimbp does not support vm runtime" {
+		if code != exitError || e.Code != api.CodeInvalidArgs || e.Message != "no node can take the run: asahimbp offers the cladefs runtime, not vm (--runtime)" {
 			t.Errorf("run %v on host-runtime nodes: exit %d, %+v; want it refused for want of a vm node", flags, code, e)
 		}
 	}

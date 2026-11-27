@@ -273,8 +273,10 @@ it runs in, and whatever earlier commands wrote stays on their node.
 
 `cf-controller/src/placement.ts` decides. It leaves out nodes the run cannot use: offline, on another build than
 the controller's (it follows within minutes; until then a run waits for it, retryably), not
-keeping the project's bases, not `--node`, not `--arch`, without measurement CPUs for `--bench`, or
-with less RAM than `--mem-low`. Each node left weighs its load (CPU busy, plus queued commands
+keeping the project's bases, not `--arch`, without measurement CPUs for `--bench`, without the
+`--runtime` asked, or with less RAM than `--mem-low` (or than `--vm-cpus`/`--vm-mem` ask; a
+measurement's VM, no more vCPUs than measurement CPUs). A refusal names, for each node, the
+requirement that excluded it (`ubu1 has no measurement CPUs (--bench)`). Each node left weighs its load (CPU busy, plus queued commands
 per CPU, plus 1 when `--mem-low` does not fit now), plus 0.3 when the session has no workspace
 there (a fresh fork rebuilds what the session had compiled), plus 0.5 more when neither the
 node nor the cluster has a warm base of the project for its arch and runtime (its first build is from nothing), plus 10 when its newest base failed with none
@@ -441,13 +443,24 @@ fxjob-isolate, which did it for fxjob before hotbed replaced it.
   kernel takes them from every other cgroup. Unbound workqueues and movable IRQs go to the other
   CPUs. Where configured, resctrl gives it most of the L3 and the others little memory
   bandwidth, and the other cores' clocks are capped at nominal, leaving it the power budget.
+- **In a VM too.** A measurement takes the node's runtime like any run. In a VM, its VM boots
+  for it once the node is isolated: its unit in the measurement's slice (so every thread of
+  Firecracker's, its vCPUs, device queues and VMM, runs on the measurement CPUs alone), never
+  swapping, with a vCPU on each measurement CPU (`--vm-cpus` asks fewer, never more), each vCPU
+  thread pinned to its own CPU, in order, so the guest's CPU i is the same host CPU from run to
+  run. A VM that can't be booted so (more vCPUs than CPUs, a VMM that can't pin) fails before
+  it starts. cladefsd, which serves its disk, stays a host daemon on the other CPUs.
 - **Quiet disks.** Other commands may write at most a bound (`workWriteMB` in the bench config,
   8 MB/s by default) to each disk or pool it uses. On a block device (the scratch disk, a btrfs
   store's disk) the work slice's `io.max` caps them. A ZFS pool is written by ZFS's own threads,
   which no cgroup cap reaches, so the worker reads each dataset's writes (its objset kstat) every
   step and holds (parks) the commands of volumes writing past half the bound, just before the
-  measurement starts and while it runs. Queued commands of other volumes wait for it to end. The
-  pool is synced before it starts. Held commands thaw once it ends.
+  measurement starts and while it runs. The VMs' disks are the same: cladefsd writes them for
+  every VM, so the worker reads what each VM's guest says it wrote (cladefsd's `GetStats`,
+  `device_write_bytes`) and holds (freezes in its guest) the loud ones' commands. Asking costs
+  every VM a little, so it is asked only while a measurement waits or runs, and a measurement
+  starts once two samples name the writers. Queued commands of other volumes wait for it to end.
+  The pool is synced before it starts. Held commands thaw once it ends.
 - **Nothing in its way.** It never swaps (`MemorySwapMax=0`), is never parked, and runs in its own
   sibling slice at normal CPU and IO priority (nice 0, default IO class).
 - **Checked.** Its isolation is checked every second and as it ends: a measurement whose

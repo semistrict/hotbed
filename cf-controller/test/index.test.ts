@@ -829,7 +829,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				repo: "clade-demo",
 				placement: { arch: "arm64", runtime: "vm" },
 			}),
-		).rejects.toThrow(/does not support vm runtime/);
+		).rejects.toThrow(/asahimbp offers the cladefs runtime, not vm \(--runtime\)/);
 
 		// removed chroot runtime rejected upfront
 		await expect(
@@ -840,23 +840,27 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			}),
 		).rejects.toThrow(/unknown runtime "chroot"/);
 
-		// --bench + runtime=vm rejected
+		// A refusal names the requirement that excluded each node: --bench
+		// takes the node's measurement CPUs, in a VM as on the host, so only
+		// the runtime asked of it, or a VM bigger than them, excludes it.
 		await expect(
 			owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "clade-demo",
-				placement: { arch: "amd64", runtime: "vm", bench: true },
+				placement: { arch: "amd64", runtime: "cladefs", bench: true },
 			}),
-		).rejects.toThrow(/cannot run --bench inside vm runtime/);
-
-		// --bench rejected on vm-only amd64 nodes even without explicit runtime
+		).rejects.toThrow(
+			/no node can take the run: asahimbp is arm64, not amd64 \(--arch\); clade1 offers the vm runtime, not cladefs \(--runtime\); clade2 has no measurement CPUs \(--bench\)/,
+		);
 		await expect(
 			owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "clade-demo",
-				placement: { arch: "amd64", bench: true },
+				placement: { arch: "amd64", bench: true, vmCpus: 8 },
 			}),
-		).rejects.toThrow(/does not support cladefs runtime/);
+		).rejects.toThrow(
+			/clade1 has 4 measurement CPUs, fewer than the 8 its VM asks, a vCPU on each \(--bench --vm-cpus\); clade2 has no measurement CPUs \(--bench\)/,
+		);
 
 		// Connect /ws/worker tunnel for clade2 to capture forwarded CreateWorkspaceRequest
 		const captured: Array<MessageShape<typeof CreateWorkspaceRequestSchema>> = [];

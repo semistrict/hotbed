@@ -24,9 +24,10 @@
 //     Refused where a clock is shared with a measurement CPU (a cluster's,
 //     on Apple Silicon).
 //   - Disks (quiet.go): other work's writes to the scratch disk and to the
-//     disk or pool the node's volumes are on kept under Config.WorkWriteMB,
-//     capped by the kernel on a block device (io.max), held back by the
-//     worker on a ZFS pool, which no cgroup's cap reaches, and checked.
+//     disk or pool the node's volumes are on, and the VMs' disks, kept
+//     under Config.WorkWriteMB, capped by the kernel on a block device
+//     (io.max), held back by the worker on a ZFS pool or the VMs' disks,
+//     which no cgroup's cap reaches, and checked.
 package bench
 
 import (
@@ -122,6 +123,14 @@ type Options struct {
 	// ZFS. ZFS writes a pool from threads of its own, which no cgroup's IO
 	// cap reaches.
 	Pool string
+	// Writes reads what each volume (ws/3f2a01) has written so far where
+	// neither a cgroup's IO cap nor the pool's kstats see it: to the VMs'
+	// disks, which cladefsd writes for every VM. The worker holds the loud
+	// ones back as it does the pool's (Loud). It asks every VM, so Sample
+	// reads it only while a measurement waits or runs. Nil for none, and
+	// WritesTo names where they go, for people ("" for the VMs' disks).
+	Writes   func() (map[string]int64, error)
+	WritesTo string
 	// SyncPool writes out what was written to a pool so far (zpool sync);
 	// nil for zpool's own.
 	SyncPool func(ctx context.Context, pool string) error
@@ -208,10 +217,6 @@ func GiveBack(ctx context.Context, o Options) error {
 
 // Slice is the measurement's slice.
 func (i *Isolation) Slice() string { return i.o.Slice }
-
-// Pool is the ZFS dataset whose writers the worker holds back while a
-// measurement runs (Loud), or "" where the node's volumes are not on ZFS.
-func (i *Isolation) Pool() string { return i.o.Pool }
 
 // CPUs is the measurement's CPUs.
 func (i *Isolation) CPUs() CPUs { return i.cpus }

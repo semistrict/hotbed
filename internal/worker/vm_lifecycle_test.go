@@ -30,7 +30,7 @@ type lifecycleTestResolver struct {
 	// a stop whose guest sync failed does.
 	stoppedErr error
 	// sizes is the size each VM was last asked for.
-	sizes map[string]unit.VMSize
+	sizes map[string]unit.VMBoot
 }
 
 func newLifecycleTestResolver() *lifecycleTestResolver {
@@ -39,11 +39,11 @@ func newLifecycleTestResolver() *lifecycleTestResolver {
 		stopped:   map[string]bool{},
 		bootCount: map[string]int{},
 		stopCount: map[string]int{},
-		sizes:     map[string]unit.VMSize{},
+		sizes:     map[string]unit.VMBoot{},
 	}
 }
 
-func (r *lifecycleTestResolver) EnsureVM(_ context.Context, wsID string, size unit.VMSize) (*guestd.Client, error) {
+func (r *lifecycleTestResolver) EnsureVM(_ context.Context, wsID string, size unit.VMBoot) (*guestd.Client, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sizes[wsID] = size
@@ -146,6 +146,13 @@ func startLocalTestGuestd(t *testing.T) *guestd.Client {
 
 func newLifecycleTestEngine(t *testing.T) (*Engine, *lifecycleTestResolver, *fake.System, *time.Time) {
 	t.Helper()
+	return newLifecycleTestEngineWith(t, nil)
+}
+
+// newLifecycleTestEngineWith is newLifecycleTestEngine's, its config as
+// more makes it.
+func newLifecycleTestEngineWith(t *testing.T, more func(*EngineConfig)) (*Engine, *lifecycleTestResolver, *fake.System, *time.Time) {
+	t.Helper()
 	ctx := t.Context()
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -154,7 +161,7 @@ func newLifecycleTestEngine(t *testing.T) (*Engine, *lifecycleTestResolver, *fak
 	sys.Mem = sysinfo.Mem{Total: 16 << 30, Available: 12 << 30}
 	resolver := newLifecycleTestResolver()
 	rt := runtime.NewGuestRuntime(resolver)
-	eng, err := NewEngine(ctx, EngineConfig{
+	cfg := EngineConfig{
 		Dir:        dir,
 		NodeID:     "n1",
 		Host:       "worker1",
@@ -165,7 +172,11 @@ func newLifecycleTestEngine(t *testing.T) (*Engine, *lifecycleTestResolver, *fak
 		RuntimeFor: func(string) bool { return true },
 		System:     sys,
 		Now:        func() time.Time { return now },
-	})
+	}
+	if more != nil {
+		more(&cfg)
+	}
+	eng, err := NewEngine(ctx, cfg)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -479,13 +490,58 @@ func TestCommandVMSizeSizesItsVMOnly(t *testing.T) {
 	resolver.mu.Lock()
 	got := resolver.sizes["ws-sz"]
 	resolver.mu.Unlock()
-	if got != (unit.VMSize{VCPUs: 2, MemMiB: 3073}) {
+	if got != (unit.VMBoot{VCPUs: 2, MemMiB: 3073}) {
 		t.Fatalf("VM size asked = %+v, want 2 vCPUs, 3073 MiB (rounded up)", got)
 	}
 	if r := eng.Heartbeat("cl").ReservedMemoryBytes; r != defaultReservation {
 		t.Fatalf("reserved = %d, want the default %d: a VM's size is not a reservation", r, defaultReservation)
 	}
 	_, _ = eng.Stop(ctx, c.Id, "done")
+}
+
+// A measurement in a VM boots its VM on the node's measurement CPUs, a vCPU
+// on each unless it asks fewer, once the node is isolated; more than there
+// are is refused, as they would share them.
+func TestBenchCommandBootsItsVMOnTheMeasurementCPUs(t *testing.T) {
+	iso := fake.NewIsolation("4-7,12-15", 8)
+	eng, resolver, _, now := newLifecycleTestEngineWith(t, func(c *EngineConfig) { c.Bench = iso })
+	ctx := t.Context()
+	for _, tc := range []struct {
+		ws     string
+		vmCPUs int32
+		want   unit.VMBoot
+	}{
+		{"ws-all", 0, unit.VMBoot{VCPUs: 8, BenchCPUs: "4-7,12-15"}},
+		{"ws-two", 2, unit.VMBoot{VCPUs: 2, BenchCPUs: "4-7,12-15"}},
+	} {
+		seedTestVMWorkspace(t, eng, resolver, tc.ws, *now)
+		c, err := eng.Exec(ctx, &pb.RunCommandRequest{Id: "m-" + tc.ws, WorkspaceId: tc.ws, Bench: true, VmCpus: tc.vmCPUs, Args: []string{"/bin/sh", "-c", "sleep 60"}})
+		if err != nil {
+			t.Fatalf("Exec: %v", err)
+		}
+		ons := iso.Ons()
+		eng.step(ctx)
+		if cur, _ := eng.Command(c.Id); cur.State != running {
+			t.Fatalf("%s = %v (%q), want running", c.Id, cur.State, cur.Reason)
+		}
+		resolver.mu.Lock()
+		got := resolver.sizes[tc.ws]
+		resolver.mu.Unlock()
+		if got != tc.want {
+			t.Errorf("%s's VM booted as %+v, want %+v", c.Id, got, tc.want)
+		}
+		if iso.Ons() != ons+1 {
+			t.Errorf("%s: isolated %d times before it started, want once", c.Id, iso.Ons()-ons)
+		}
+		_, _ = eng.Stop(ctx, c.Id, "done")
+		eng.step(ctx)
+	}
+
+	seedTestVMWorkspace(t, eng, resolver, "ws-many", *now)
+	_, err := eng.Exec(ctx, &pb.RunCommandRequest{WorkspaceId: "ws-many", Bench: true, VmCpus: 9, Args: []string{"nproc"}})
+	if want := "INVALID_ARGS: --vm-cpus 9: a measurement's VM on worker1 runs on its 8 measurement CPUs (4-7,12-15), a vCPU on each"; err == nil || err.Error() != want {
+		t.Fatalf("--bench --vm-cpus 9: err = %v, want %q", err, want)
+	}
 }
 
 // A command asks of its VM only what its workspace and node can give.
@@ -558,7 +614,7 @@ func TestSizedCommandWaitsForAShellsVM(t *testing.T) {
 		t.Fatalf("Exec sized: %v", err)
 	}
 	eng.step(ctx)
-	if cur, _ := eng.Command(sized.Id); cur.State != queued || cur.Reason != "waiting for its workspace: a shell is open in its VM, and it asks a VM of its own size" {
+	if cur, _ := eng.Command(sized.Id); cur.State != queued || cur.Reason != "waiting for its workspace: a shell is open in its VM, and it asks a VM of its own (its size, or a measurement's)" {
 		t.Fatalf("sized command beside a shell = %v (%q), want queued for the shell", cur.State, cur.Reason)
 	}
 	_, _ = eng.Stop(ctx, sized.Id, "done")

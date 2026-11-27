@@ -2,7 +2,7 @@
 
 | Code | Meaning | What to do |
 |---|---|---|
-| `INVALID_ARGS` | A bad flag, argument, name or size, or no node fits the run's `--arch`/`--bench`/`--mem-low`/`--vm-cpus`/`--vm-mem` | Fix the command; `hotbed COMMAND --help`; `hotbed nodes` for what each node has |
+| `INVALID_ARGS` | A bad flag, argument, name or size, or no node fits the run's `--arch`/`--runtime`/`--bench`/`--mem-low`/`--vm-cpus`/`--vm-mem` (the message names the one that excluded each node) | Fix the command; `hotbed COMMAND --help`; `hotbed nodes` for what each node has |
 | `NOT_FOUND` | No such session, repo, workspace, command or scheduled command, or the session ended | Check the name; `hotbed session start` for a new session; `hotbed run` gives it a workspace |
 | `CONFLICT` | The session name is taken, the workspace is still preparing (retryable), `schedule run` while a run is in progress, or the session has workspaces of the repo on several nodes | Pick another name, or leave it out for a random one; for a run, `hotbed poll -s SESSION` on the session the message names; pass `--node` to say which workspace |
 | `REPO_UNREACHABLE` | The worker cannot read the repo's remote (retryable) | Check the URL in `hotbed repo ls` and the node's access to it, then retry |

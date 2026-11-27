@@ -28,6 +28,12 @@ import (
 //     what was written to it, so the worker holds back (parks) the commands
 //     of the volumes Loud names, before the measurement starts and while it
 //     runs.
+//   - The VMs' disks: cladefsd writes them for every VM, from threads of
+//     its own, so no cap reaches a VM's writes either. Each VM's guest
+//     tells cladefsd what it wrote (Options.Writes), and the worker holds
+//     back the loud ones' commands the same way. Asking costs every VM a
+//     little, so Sample asks only while a measurement waits or runs, and
+//     one starts once two samples name the writers to hold (Ready).
 //
 // Either way Held fails a measurement whose disks saw others write past the
 // bound anyway, averaged over checkWindow, as a caller's own contamination
@@ -52,24 +58,101 @@ type written struct {
 	disks map[string]int64
 	// vols is what was written to each volume of the pool (ws/3f2a01).
 	vols map[string]int64
-	err  error
+	// vms is what each volume's VM wrote to its disk (Options.Writes); nil
+	// when not asked.
+	vms map[string]int64
+	err error
 }
 
-// Writer is a volume writing to the pool a measurement uses, and how fast,
-// in bytes a second.
+// Writer is a volume writing to a place a measurement uses (the pool, the
+// VMs' disks), and how fast, in bytes a second.
 type Writer struct {
 	Volume string
 	Rate   float64
+	To     string
+}
+
+// place is somewhere the worker keeps quiet by holding writers back: its
+// name, for people, and what a sample says was written to it, by volume
+// (nil where the sample didn't ask).
+type place struct {
+	name string
+	vols func(written) map[string]int64
+	// costly is a place Sample asks only while a measurement waits or
+	// runs.
+	costly bool
+}
+
+// places is where the worker holds writers back: the pool, the VMs' disks.
+func (i *Isolation) places() []place {
+	var out []place
+	if i.o.Pool != "" {
+		out = append(out, place{name: i.o.Pool, vols: func(w written) map[string]int64 { return w.vols }})
+	}
+	if i.o.Writes != nil {
+		out = append(out, place{name: i.writesTo(), vols: func(w written) map[string]int64 { return w.vms }, costly: true})
+	}
+	return out
+}
+
+func (i *Isolation) writesTo() string {
+	if i.o.WritesTo == "" {
+		return "the VMs' disks"
+	}
+	return i.o.WritesTo
+}
+
+// Quieted is where the worker holds back writers beside a measurement
+// (Loud), which no cap reaches, or "" for nowhere.
+func (i *Isolation) Quieted() string {
+	var names []string
+	for _, p := range i.places() {
+		names = append(names, p.name)
+	}
+	return strings.Join(names, " and ")
+}
+
+// sampled is the samples of ws that asked p.
+func (p place) sampled(ws []written) []written {
+	var out []written
+	for _, w := range ws {
+		if p.vols(w) != nil {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// Ready says whether a measurement may start as far as its quiet goes:
+// whether the samples name who writes to every place it holds writers back
+// on, so it can hold them first (Loud).
+func (i *Isolation) Ready() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	ws := i.recent(time.Time{}, holdWindow)
+	for _, p := range i.places() {
+		if len(p.sampled(ws)) < 2 {
+			return false
+		}
+	}
+	return true
 }
 
 // Sample reads what others have written so far, for Held and Loud: the
 // worker calls it once a step, whether or not a measurement runs, so that
-// one that starts finds the last seconds' writers.
-func (i *Isolation) Sample() {
+// one that starts finds the last seconds' writers. measuring says whether
+// a measurement waits or runs, without which the costly places go unasked.
+func (i *Isolation) Sample(measuring bool) {
 	w := written{at: i.o.Now()}
 	w.disks, w.err = i.diskWrites()
 	if w.err == nil && i.o.Pool != "" {
 		w.vols, w.err = i.poolWrites()
+	}
+	if w.err == nil && i.o.Writes != nil && measuring {
+		w.vms, w.err = i.o.Writes()
+		if w.err == nil && w.vms == nil {
+			w.vms = map[string]int64{} // asked: no VM wrote
+		}
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -113,60 +196,78 @@ func (i *Isolation) quiet(own string) error {
 		}
 	}
 	ws := i.recent(i.since, checkWindow)
-	if len(ws) < 2 {
-		return nil
-	}
-	first, last := ws[0], ws[len(ws)-1]
-	span := last.at.Sub(first.at)
-	// The bound over the window, or the span if longer, and a second's
-	// more: a kernel's cap lets a little through ahead of time.
-	judged := max(span, checkWindow)
-	allowed := float64(i.writeBound()) * (judged + time.Second).Seconds()
-	over := func(n int64, where string) error {
-		return fmt.Errorf("others wrote %.0f MB to %s in %s, past the bound of %d MB/s over %s",
-			float64(n)/1e6, where, span.Round(100*time.Millisecond), i.writeBound()/1_000_000, judged.Round(time.Second))
-	}
-	for _, name := range sortedKeys(last.disks) {
-		// A disk capped since the window began counts from its first
-		// sample: what it wrote before it was capped is no one's.
-		from := first
-		for _, w := range ws {
-			if _, ok := w.disks[name]; ok {
-				from = w
-				break
+	if len(ws) >= 2 {
+		first, last := ws[0], ws[len(ws)-1]
+		for _, name := range sortedKeys(last.disks) {
+			// A disk capped since the window began counts from its first
+			// sample: what it wrote before it was capped is no one's.
+			from := first
+			for _, w := range ws {
+				if _, ok := w.disks[name]; ok {
+					from = w
+					break
+				}
+			}
+			if err := i.over(grew(from.disks, last.disks, name), name, first, last); err != nil {
+				return err
 			}
 		}
-		if n := grew(from.disks, last.disks, name); float64(n) > allowed {
-			return over(n, name)
-		}
 	}
-	if vols, total := grown(first.vols, last.vols, own); float64(total) > allowed {
-		return over(total, fmt.Sprintf("%s (%s the most, %.0f MB)", i.o.Pool, vols[0].vol, float64(vols[0].n)/1e6))
+	for _, p := range i.places() {
+		ps := p.sampled(ws)
+		if len(ps) < 2 {
+			continue
+		}
+		first, last := ps[0], ps[len(ps)-1]
+		if vols, total := grown(p.vols(first), p.vols(last), own); total > 0 {
+			where := fmt.Sprintf("%s (%s the most, %.0f MB)", p.name, vols[0].vol, float64(vols[0].n)/1e6)
+			if err := i.over(total, where, first, last); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
+// over says how n bytes others wrote to where from sample first to last
+// went past the bound, or nil if they didn't: the bound over checkWindow,
+// or the span if longer, and a second's more, as a kernel's cap lets a
+// little through ahead of time.
+func (i *Isolation) over(n int64, where string, first, last written) error {
+	span := last.at.Sub(first.at)
+	judged := max(span, checkWindow)
+	if float64(n) <= float64(i.writeBound())*(judged+time.Second).Seconds() {
+		return nil
+	}
+	return fmt.Errorf("others wrote %.0f MB to %s in %s, past the bound of %d MB/s over %s",
+		float64(n)/1e6, where, span.Round(100*time.Millisecond), i.writeBound()/1_000_000, judged.Round(time.Second))
+}
+
 // Loud is the volumes, other than own (the measurement's), that the worker
-// must hold back for the others' writes to the pool to stay under half the
-// bound, as the last holdWindow saw them: the heaviest first. Half leaves
-// room for writers that start meanwhile, until a sample sees them.
+// must hold back for the others' writes to each place (the pool, the VMs'
+// disks) to stay under half the bound, as the last holdWindow saw them:
+// the heaviest first, place by place. Half leaves room for writers that
+// start meanwhile, until a sample sees them.
 func (i *Isolation) Loud(own string) []Writer {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	ws := i.recent(time.Time{}, holdWindow)
-	if len(ws) < 2 {
-		return nil
-	}
-	first, last := ws[0], ws[len(ws)-1]
-	span := last.at.Sub(first.at).Seconds()
-	vols, total := grown(first.vols, last.vols, own)
 	var loud []Writer
-	for _, v := range vols {
-		if float64(total)/span <= float64(i.writeBound())/2 {
-			break
+	for _, p := range i.places() {
+		ps := p.sampled(ws)
+		if len(ps) < 2 {
+			continue
 		}
-		total -= v.n
-		loud = append(loud, Writer{Volume: v.vol, Rate: float64(v.n) / span})
+		first, last := ps[0], ps[len(ps)-1]
+		span := last.at.Sub(first.at).Seconds()
+		vols, total := grown(p.vols(first), p.vols(last), own)
+		for _, v := range vols {
+			if float64(total)/span <= float64(i.writeBound())/2 {
+				break
+			}
+			total -= v.n
+			loud = append(loud, Writer{Volume: v.vol, Rate: float64(v.n) / span, To: p.name})
+		}
 	}
 	return loud
 }

@@ -137,7 +137,7 @@ func TestProjectHostsKeepItsBases(t *testing.T) {
 	if ws := c.workspace("far-fox", nil); ws.Node != "mini" {
 		t.Errorf("workspace on %s, want mini, the one node keeping app's bases", ws.Node)
 	}
-	if _, e := c.tryWorkspace("far-fox", &pb.Placement{Arch: "arm64"}); e == nil || e.Message != "no node can take the run: asahimbp keeps no bases of the project; mini is amd64, not arm64" {
+	if _, e := c.tryWorkspace("far-fox", &pb.Placement{Arch: "arm64"}); e == nil || e.Message != "no node can take the run: asahimbp keeps no bases of the project; mini is amd64, not arm64 (--arch)" {
 		t.Errorf("a run sent to arm64: %v, want refused: asahimbp keeps no bases of app", e)
 	}
 	c.ok(project, "project", "hosts", "app")

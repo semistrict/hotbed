@@ -308,7 +308,7 @@ func sampling(t *testing.T, iso *Isolation) {
 		tick := time.NewTicker(250 * time.Millisecond)
 		defer tick.Stop()
 		for {
-			iso.Sample()
+			iso.Sample(false)
 			select {
 			case <-done:
 				return
@@ -376,7 +376,7 @@ func TestQuietPoolForReal(t *testing.T) {
 	took := write(t, mount+"/out", 512)
 	rate := 512 / took.Seconds()
 	t.Logf("a writer in another volume wrote 512 MB in %v, %.0f MB/s", took.Round(time.Millisecond), rate)
-	iso.Sample() // one after it ended
+	iso.Sample(false) // one after it ended
 	loud := iso.Loud("ws/mine")
 	if len(loud) != 1 || loud[0].Volume != "ws/other" {
 		t.Errorf("Loud = %v, want ws/other", loud)

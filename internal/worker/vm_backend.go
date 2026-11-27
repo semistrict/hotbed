@@ -52,6 +52,10 @@ type VMBackend struct {
 	cfg          statedir.VMConfig
 	wsCells      map[string]cladefs.CellRef // wsID -> forked cell ref
 	activeBuilds map[string]struct{}        // in-flight base-* / prov-* VM IDs owned by this worker
+	// writesMu guards lastWrites: what each VM (by its cladefsd
+	// connection) last said it wrote, for VolumeWrites.
+	writesMu   sync.Mutex
+	lastWrites map[uint64]uint64
 	// boots serializes EnsureVM per VM (ID -> *sync.Mutex): a VM is down
 	// between commands, and callers that find it so at once wait for one
 	// boot rather than race it.
@@ -160,6 +164,7 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		GuestdBin:          cfg.GuestdBin,
 		RunDir:             filepath.Join(workerDir, "vms"),
 		Slice:              slice,
+		BenchSlice:         BenchSlice(slice),
 		VMUser:             cfg.VMUser,
 		DefaultVCPUs:       cfg.VCPUs,
 		DefaultMemMiB:      cfg.MemMiB,
@@ -600,7 +605,7 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 	b.wsCells[wsID] = wsRef
 	b.mu.Unlock()
 
-	if _, err := b.EnsureVM(ctx, wsID, unit.VMSize{}); err != nil {
+	if _, err := b.EnsureVM(ctx, wsID, unit.VMBoot{}); err != nil {
 		b.cleanupCell(ctx, wsRef.Tenant, wsRef.Cell)
 		b.mu.Lock()
 		delete(b.wsCells, wsID)
@@ -715,7 +720,7 @@ func (b *VMBackend) DeleteWorkspace(ctx context.Context, wsID string) error {
 }
 
 // EnsureVM implements runtime.GuestResolver.
-func (b *VMBackend) EnsureVM(ctx context.Context, wsID string, size unit.VMSize) (*guestd.Client, error) {
+func (b *VMBackend) EnsureVM(ctx context.Context, wsID string, want unit.VMBoot) (*guestd.Client, error) {
 	boot, _ := b.boots.LoadOrStore(wsID, &sync.Mutex{})
 	boot.(*sync.Mutex).Lock()
 	defer boot.(*sync.Mutex).Unlock()
@@ -727,11 +732,11 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string, size unit.VMSize)
 			// cladefsd restart): clean up its stale state and boot a fresh VM
 			// on the cell.
 			_ = b.mgr.Stop(ctx, wsID, false)
-		case b.sizeDiffers(wsID, size):
-			// Booted at another size before anything ran in it (to sync a
-			// checkout, say): boot it again at the size asked.
+		case b.bootDiffers(wsID, want):
+			// Booted otherwise before anything ran in it (to sync a
+			// checkout, say): boot it again as asked.
 			if err := b.mgr.Stop(ctx, wsID, true); err != nil {
-				return nil, fmt.Errorf("stop VM %s to boot it at %d vCPUs, %d MiB: %w", wsID, size.VCPUs, size.MemMiB, err)
+				return nil, fmt.Errorf("stop VM %s to boot it at %d vCPUs, %d MiB%s: %w", wsID, want.VCPUs, want.MemMiB, benchSuffix(want), err)
 			}
 		default:
 			return c, nil
@@ -756,8 +761,9 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string, size unit.VMSize)
 		ID:            wsID,
 		CellHostPath:  cellPath,
 		CladefsVMSock: b.currentStore().VMSock(),
-		VCPUs:         size.VCPUs,
-		MemMiB:        size.MemMiB,
+		VCPUs:         want.VCPUs,
+		MemMiB:        want.MemMiB,
+		BenchCPUs:     want.BenchCPUs,
 	})
 	if err != nil {
 		return nil, err
@@ -775,14 +781,24 @@ func (b *VMBackend) BootSince(wsID string, since time.Time) (vm.BootTimes, bool)
 	return inst.Boot, true
 }
 
-// sizeDiffers reports whether wsID's running VM has another size than a
-// non-zero field of size asks.
-func (b *VMBackend) sizeDiffers(wsID string, size unit.VMSize) bool {
+// bootDiffers reports whether wsID's running VM booted otherwise than a
+// non-zero field of boot asks: another size, or not on its measurement CPUs.
+func (b *VMBackend) bootDiffers(wsID string, boot unit.VMBoot) bool {
 	inst := b.mgr.Get(wsID)
 	if inst == nil {
 		return false
 	}
-	return (size.VCPUs > 0 && inst.VCPUs != size.VCPUs) || (size.MemMiB > 0 && inst.MemMiB != size.MemMiB)
+	return (boot.VCPUs > 0 && inst.VCPUs != boot.VCPUs) || (boot.MemMiB > 0 && inst.MemMiB != boot.MemMiB) ||
+		(boot.BenchCPUs != "" && inst.BenchCPUs != boot.BenchCPUs)
+}
+
+// benchSuffix is how boot's measurement CPUs read after its size: "" for
+// none.
+func benchSuffix(boot unit.VMBoot) string {
+	if boot.BenchCPUs == "" {
+		return ""
+	}
+	return " on measurement CPUs " + boot.BenchCPUs
 }
 
 // ClientFor implements runtime.GuestResolver.

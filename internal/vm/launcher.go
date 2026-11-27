@@ -35,6 +35,9 @@ type ProcessSpec struct {
 	Binary     string // path to firecracker binary
 	Args       []string
 	ConsoleLog string // file receiving Firecracker stdout+stderr (guest ttyS0)
+	// Properties are more systemd properties of its unit (KEY=VALUE), such
+	// as a measurement's MemorySwapMax=0.
+	Properties []string
 }
 
 // ProcessStatus reports whether a Firecracker VMM is currently running or exited.
@@ -50,6 +53,9 @@ type ProcessStatus struct {
 	// Detail is how an exited VM ended, when its VMM says so in words
 	// (machined's); else its ExitCode is Firecracker's.
 	Detail string
+	// Cgroup is its unit's cgroup, a path under /sys/fs/cgroup, while it
+	// runs (systemd's); "" where the VMM has none.
+	Cgroup string
 }
 
 // Why is how an exited VM ended, for people.
@@ -105,6 +111,9 @@ func (SystemdLauncher) Start(ctx context.Context, s ProcessSpec) error {
 	}
 	if s.User != "" {
 		args = append(args, "--uid="+s.User)
+	}
+	for _, p := range s.Properties {
+		args = append(args, "--property="+p)
 	}
 	if s.ConsoleLog != "" {
 		args = append(args,
@@ -192,6 +201,7 @@ func processStatus(st unit.State) ProcessStatus {
 		Signal:       st.Signal,
 		Result:       st.Result,
 		OOMKilled:    st.OOMKilled,
+		Cgroup:       st.Cgroup,
 	}
 }
 

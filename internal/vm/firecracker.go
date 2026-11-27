@@ -18,6 +18,11 @@ type firecrackerVMM struct {
 	launcher    Launcher
 	net         *NetManager // nil without networking
 	toolsDiskFn func(cacheDir, guestdBin string) (string, error)
+	// fsRoot is where PinVCPUs finds /sys and /proc ("" for /), and
+	// setAffinity how it pins a thread to a CPU (nil for the kernel's):
+	// tests' own.
+	fsRoot      string
+	setAffinity func(tid, cpu int) error
 
 	toolsMu        sync.Mutex
 	toolsCacheBin  string
@@ -79,11 +84,17 @@ func (f *firecrackerVMM) Boot(ctx context.Context, m Machine, spec LaunchSpec, c
 			_ = chownSockForUser(logPath, cfg.VMUser)
 		}
 	}
+	slice, props := cfg.Slice, []string(nil)
+	if spec.BenchCPUs != "" {
+		// A measurement's: in its slice, never swapping (Manager.benchPin).
+		slice, props = cfg.BenchSlice, []string{"MemorySwapMax=0"}
+	}
 	if err := f.launcher.Start(ctx, ProcessSpec{
-		Name:   m.Unit,
-		Slice:  cfg.Slice,
-		User:   cfg.VMUser,
-		Binary: cfg.FirecrackerBin,
+		Name:       m.Unit,
+		Slice:      slice,
+		Properties: props,
+		User:       cfg.VMUser,
+		Binary:     cfg.FirecrackerBin,
 		Args: []string{
 			"--id", m.ID,
 			"--enable-pci",
