@@ -1,6 +1,26 @@
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { ErrorCode, fromUnknownError, HotbedError, hotbedError } from "./errors.ts";
 import { randomHex } from "./ids.ts";
+
+/**
+ * Why a tunnel call its caller's signal aborted ends. Its caller's own
+ * deadline passing (Connect-Timeout-Ms, which aborts the handler's signal
+ * with DeadlineExceeded while the caller may still be listening) is the
+ * worker not answering in time, as retryable as a call's own timeout;
+ * anything else is the caller gone, which nobody hears.
+ */
+function abortError(host: string, procedure: string, signal: AbortSignal | undefined): HotbedError {
+	const reason: unknown = signal?.reason;
+	if (reason instanceof ConnectError && reason.code === Code.DeadlineExceeded) {
+		return hotbedError(
+			ErrorCode.WorkerUnreachable,
+			`${host}: ${procedure} timed out: its caller's deadline passed first`,
+			{ retryable: true },
+		);
+	}
+	return hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+}
 
 /**
  * Attachment persisted across Durable Object WebSocket hibernation.
@@ -490,12 +510,12 @@ export class WorkerTunnelHub {
 		signal?: AbortSignal,
 	): Promise<MessageShape<Res>> {
 		if (signal?.aborted) {
-			throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+			throw abortError(host, procedure, signal);
 		}
 		const waitMs = Math.min(this.reconnectWaitMs, timeoutMs);
 		let sock = await this.waitForSocket(nodeId, waitMs, signal);
 		if (signal?.aborted) {
-			throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+			throw abortError(host, procedure, signal);
 		}
 		if (!sock) {
 			throw hotbedError(
@@ -539,7 +559,7 @@ export class WorkerTunnelHub {
 						clearTimeout(timer);
 						this.pending.delete(id);
 						sendCancel();
-						reject(hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`));
+						reject(abortError(host, procedure, signal));
 					};
 					const cleanup = () => {
 						signal?.removeEventListener("abort", onAbort);
@@ -580,7 +600,7 @@ export class WorkerTunnelHub {
 				if (attempt === 0) {
 					const next = await this.waitForSocket(nodeId, waitMs, signal);
 					if (signal?.aborted) {
-						throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+						throw abortError(host, procedure, signal);
 					}
 					if (next && next.ws !== curSock.ws) {
 						sock = next;
@@ -742,7 +762,7 @@ export class WorkerTunnelHub {
 	): Promise<MessageShape<Res>> {
 		const sock = await this.waitForSocket(nodeId, this.reconnectWaitMs, signal);
 		if (signal?.aborted) {
-			throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+			throw abortError(host, procedure, signal);
 		}
 		if (!sock) {
 			throw hotbedError(
@@ -768,7 +788,7 @@ export class WorkerTunnelHub {
 				clearTimeout(timer);
 				this.pending.delete(id);
 				cancel();
-				reject(hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`));
+				reject(abortError(host, procedure, signal));
 			};
 			const cleanup = () => {
 				settled = true;

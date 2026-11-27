@@ -6,7 +6,7 @@ import {
 	type DescMessage,
 	type MessageShape,
 } from "@bufbuild/protobuf";
-import { createClient, type Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError, createClient, type Interceptor } from "@connectrpc/connect";
 import { createFetchClient } from "@connectrpc/connect/protocol";
 import { createTransport } from "@connectrpc/connect/protocol-connect";
 import { describe, expect, it } from "vite-plus/test";
@@ -15,6 +15,7 @@ import {
 	ClusterService,
 	CommandSchema,
 	CommandState,
+	ErrorInfoSchema,
 	OutputLineSchema,
 	OutputQuerySchema,
 	QueryOutputRequestSchema,
@@ -22,6 +23,7 @@ import {
 	SessionService,
 	WorkspaceService,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
+import { ErrorCode, HotbedError } from "../src/errors.ts";
 import {
 	WorkerTunnelHub,
 	type TunnelDownMessage,
@@ -213,6 +215,74 @@ describe("WorkerTunnelHub socket ownership on reconnect", () => {
 	});
 });
 
+describe("WorkerTunnelHub calls aborted by their caller", () => {
+	function hubWithWorker() {
+		const { state } = fakeDurableObjectState();
+		const hub = new WorkerTunnelHub(state, 50);
+		const ws = new FakeWebSocket();
+		hub.accept(ws as unknown as WebSocket, {
+			nodeId: "node-a",
+			hostname: "macbook",
+			connectedAt: 1000,
+		});
+		return { hub, ws };
+	}
+
+	function query(hub: WorkerTunnelHub, signal: AbortSignal) {
+		return hub.callUnary(
+			"node-a",
+			"macbook",
+			"/hotbed.v1.WorkspaceService/QueryOutput",
+			QueryOutputRequestSchema,
+			create(QueryOutputRequestSchema, { id: "rw4jqbpo", wait: true, timeoutSeconds: 30 }),
+			OutputQuerySchema,
+			60_000,
+			signal,
+		);
+	}
+
+	// A caller's deadline (Connect-Timeout-Ms) aborts the handler's signal
+	// with DeadlineExceeded while the caller may still be listening: what it
+	// hears is the worker not answering in time, which it may retry.
+	it("ends a call its caller's deadline aborted as a retryable worker timeout", async () => {
+		const { hub, ws } = hubWithWorker();
+		const ac = new AbortController();
+		const call = query(hub, ac.signal);
+		await Promise.resolve();
+		expect(ws.sent.length).toBe(1);
+		ac.abort(new ConnectError("the operation timed out", Code.DeadlineExceeded));
+		const err = await call.then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect(err).toBeInstanceOf(HotbedError);
+		expect((err as HotbedError).toJSON()).toEqual({
+			code: ErrorCode.WorkerUnreachable,
+			message:
+				"macbook: /hotbed.v1.WorkspaceService/QueryOutput timed out: its caller's deadline passed first",
+			retryable: true,
+		});
+		expect(JSON.parse(ws.sent[1]!)).toEqual({ type: "rpc_cancel", id: JSON.parse(ws.sent[0]!).id });
+	});
+
+	it("ends a call its caller abandoned as canceled", async () => {
+		const { hub } = hubWithWorker();
+		const ac = new AbortController();
+		const call = query(hub, ac.signal);
+		await Promise.resolve();
+		ac.abort();
+		const err = await call.then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect((err as HotbedError).toJSON()).toEqual({
+			code: ErrorCode.Internal,
+			message: "macbook: /hotbed.v1.WorkspaceService/QueryOutput canceled",
+			retryable: false,
+		});
+	});
+});
+
 describe("WorkspaceService.QueryOutput --wait resilience", () => {
 	async function seedRunningCommand(nodeId: string, hostname: string, cmdId: string) {
 		const owner = ownerClients();
@@ -279,6 +349,105 @@ describe("WorkspaceService.QueryOutput --wait resilience", () => {
 		});
 		return ws;
 	}
+
+	function replyTo(ws: WebSocket, id: string, out: MessageShape<typeof OutputQuerySchema>) {
+		ws.send(
+			JSON.stringify({
+				type: "rpc_msg",
+				id,
+				body: encodeBase64(encodeProto(OutputQuerySchema, out)),
+			} satisfies TunnelUpMessage),
+		);
+	}
+
+	// A caller that sends Connect-Timeout-Ms but does not enforce it itself
+	// (or does so a little late, as a loaded client does) hears whatever the
+	// controller answers as that deadline passes; the controller must answer
+	// first, never let its own abort of the call race the caller.
+	function clientsWithDeadline(timeoutMs: number) {
+		return createClient(
+			WorkspaceService,
+			makeTransport(OWNER_TOKEN, {
+				"X-Hotbed-Host": "macbook",
+				"Connect-Timeout-Ms": String(timeoutMs),
+			}),
+		);
+	}
+
+	it("answers a wait that its caller's deadline cuts short before that deadline", async () => {
+		const nodeId = "node-wait-caller-deadline";
+		const hostname = "macbook-caller-deadline";
+		const cmdId = "cd5wait01";
+		await seedRunningCommand(nodeId, hostname, cmdId);
+		const slices: number[] = [];
+		// The worker waits each slice out, as a real one does, and says it
+		// timed out.
+		const ws = await connectWorker(nodeId, hostname, (req, ws, id) => {
+			slices.push(req.timeoutSeconds);
+			setTimeout(() => {
+				replyTo(
+					ws,
+					id,
+					create(OutputQuerySchema, {
+						commandId: cmdId,
+						state: CommandState.RUNNING,
+						totalLines: 10n,
+						waited: "timeout",
+					}),
+				);
+			}, req.timeoutSeconds * 1000);
+		});
+		try {
+			const started = Date.now();
+			const res = await clientsWithDeadline(36_000).queryOutput({
+				id: cmdId,
+				wait: true,
+				timeoutSeconds: 600,
+			});
+			expect(res.waited).toBe("timeout");
+			expect(res.state).toBe(CommandState.RUNNING);
+			// 36s less the answer's margin (5s) and the last slice's worker
+			// allowance (30s): a single 1s slice.
+			expect(slices).toEqual([1]);
+			expect(Date.now() - started).toBeLessThan(31_000);
+		} finally {
+			ws.close(1000, "test done");
+		}
+	});
+
+	it("tells a caller whose deadline a silent worker outlasts to retry, before that deadline", async () => {
+		const nodeId = "node-wait-silent-worker";
+		const hostname = "macbook-silent";
+		const cmdId = "cd5wait02";
+		await seedRunningCommand(nodeId, hostname, cmdId);
+		let calls = 0;
+		const ws = await connectWorker(nodeId, hostname, () => {
+			calls++;
+		});
+		try {
+			const started = Date.now();
+			const err = await clientsWithDeadline(4_000)
+				.queryOutput({ id: cmdId, wait: true, timeoutSeconds: 600 })
+				.then(
+					() => null,
+					(e: unknown) => e,
+				);
+			const elapsed = Date.now() - started;
+			expect(err).toBeInstanceOf(ConnectError);
+			const ce = err as ConnectError;
+			expect(ce.code).toBe(Code.Unavailable);
+			expect(ce.rawMessage).toBe(`${hostname}: /hotbed.v1.WorkspaceService/QueryOutput timed out`);
+			const [info] = ce.findDetails(ErrorInfoSchema);
+			expect(info?.code).toBe(ErrorCode.WorkerUnreachable);
+			expect(info?.retryable).toBe(true);
+			expect(calls).toBe(1);
+			// Half of 4s, its margin, for the answer's way back.
+			expect(elapsed).toBeGreaterThanOrEqual(2_000);
+			expect(elapsed).toBeLessThan(4_000);
+		} finally {
+			ws.close(1000, "test done");
+		}
+	});
 
 	it("slices 600s wait into bounded worker RPCs and rides out a worker reconnect mid-wait", async () => {
 		const nodeId = "node-wait-reconnect";

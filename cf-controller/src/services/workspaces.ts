@@ -135,6 +135,9 @@ const SYNC_RPC_TIMEOUT_MS = 15 * 60_000;
 const QUERY_OUTPUT_SLICE_SEC = 30;
 const QUERY_OUTPUT_RECONNECT_GRACE_MS = 30_000;
 const QUERY_OUTPUT_RETRY_POLL_MS = 250;
+// How long before its caller's deadline a handler answers, for the answer's
+// way back to the caller.
+const ANSWER_MARGIN_MS = 5_000;
 const WORKER_PROBE_TIMEOUT_MS = 5_000;
 const DAEMON_LOG_WORKER_TIMEOUT_MS = 5_000;
 const DEFAULT_DAEMON_LOG_LIMIT = 200;
@@ -1751,8 +1754,18 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			// Slice waiting queries (--wait, --until) into bounded worker tunnel
 			// calls and ride out brief worker reconnects (e.g. auto-upgrade) within
 			// the caller's timeout budget so a dead socket never strands a wait.
-			const totalWaitMs = Math.min(Math.max(req.timeoutSeconds || 60, 0), 600) * 1000;
-			const deadline = Date.now() + totalWaitMs;
+			// The caller's own deadline (Connect-Timeout-Ms) bounds it too: the
+			// answer, or why there is none, goes back before the caller gives up,
+			// never racing it (a slow worker's last slice once ran past it, and
+			// the caller heard "canceled").
+			const now = Date.now();
+			const answerBy = answerDeadline(now, ctx.timeoutMs());
+			// Each slice keeps its worker its full WORKER_RPC_TIMEOUT_MS to
+			// answer: the last one starts in time to end by answerBy.
+			const deadline = Math.min(
+				now + Math.min(Math.max(req.timeoutSeconds || 60, 0), 600) * 1000,
+				answerBy - WORKER_RPC_TIMEOUT_MS,
+			);
 			let unreachableSince = 0;
 
 			while (true) {
@@ -1771,7 +1784,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						QueryOutputRequestSchema,
 						sliceReq,
 						OutputQuerySchema,
-						WORKER_RPC_TIMEOUT_MS + sliceSec * 1000,
+						Math.max(1, Math.min(WORKER_RPC_TIMEOUT_MS + sliceSec * 1000, answerBy - Date.now())),
 						ctx.signal,
 					);
 					unreachableSince = 0;
@@ -2175,6 +2188,16 @@ function unreachableDaemonLogSource(n: Node, msg: string): DaemonLogSource {
 		maxFiles: prev?.maxFiles ?? 0,
 		maxAgeDays: prev?.maxAgeDays ?? 0,
 	});
+}
+
+/**
+ * When a handler must have answered a caller whose deadline is timeoutMs
+ * away (undefined: it set none): ANSWER_MARGIN_MS before it, or halfway
+ * there when less time is left than that.
+ */
+function answerDeadline(now: number, timeoutMs: number | undefined): number {
+	if (timeoutMs === undefined) return Infinity;
+	return now + timeoutMs - Math.min(ANSWER_MARGIN_MS, timeoutMs / 2);
 }
 
 function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
