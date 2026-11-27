@@ -64,9 +64,13 @@ func TestVMBackendTwoTierR2CaptureAndEphemeralSwap(t *testing.T) {
 	// 3. CaptureWorkspaceBase versions & syncs the cell, updates heldBases,
 	// drops the bucket cell, and swaps ws-cap onto a local-only ephemeral fork.
 	repos := map[string]string{"hotbed": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
-	captured, newWsCell, err := b.CaptureWorkspaceBase(ctx, "ws-cap", "hotbed", "base-key-1", 3, repos, 1700000000, 1700000500000)
+	steps := map[string]string{"go-toolchain": "h-go", "node": "h-node"}
+	captured, newWsCell, err := b.CaptureWorkspaceBase(ctx, "ws-cap", "hotbed", "base-key-1", "setup-h1", steps, 3, repos, 1700000000, 1700000500000)
 	if err != nil {
 		t.Fatalf("CaptureWorkspaceBase: %v", err)
+	}
+	if captured.SetupHash != "setup-h1" || captured.StepHashes["go-toolchain"] != "h-go" || captured.StepHashes["node"] != "h-node" {
+		t.Fatalf("CaptureWorkspaceBase dropped step metadata: setup=%q steps=%v", captured.SetupHash, captured.StepHashes)
 	}
 	if !captured.AutoCaptured || captured.BaseCommitTime != 1700000000 || captured.CapturedAt != 1700000500000 {
 		t.Fatalf("captured metadata mismatch: %+v", captured)
@@ -129,6 +133,26 @@ func TestPickAutoCaptureBase(t *testing.T) {
 	}
 	if got := pickAutoCaptureBase(held, sharedNewer, false, true, p, "k1"); got == nil || got.Ref.Cell != 3 {
 		t.Fatalf("expected locally fresh held cell 3 to win, got %+v", got)
+	}
+
+	// Issue #23: a project with setup steps must reject any captured base whose
+	// StepHashes are empty (bare OS image) or stale, and accept one that ran all steps.
+	pStepped := &pb.HostedProject{
+		Name:         "hotbed",
+		ScratchEpoch: 2,
+		Steps: []*pb.Step{
+			{Name: "go-toolchain", Hash: "h-go"},
+			{Name: "node", Hash: "h-node"},
+		},
+	}
+	poisoned := &projectBase{Ref: cladefs.CellRef{Tenant: 1, Cell: 5, Version: 1}, BaseKey: "k1", ScratchEpoch: 2, CapturedAt: 5000, AutoCaptured: true}
+	staleStep := &projectBase{Ref: cladefs.CellRef{Tenant: 1, Cell: 6, Version: 1}, BaseKey: "k1", ScratchEpoch: 2, CapturedAt: 4000, StepHashes: map[string]string{"go-toolchain": "h-go", "node": "old"}}
+	validStepped := &projectBase{Ref: cladefs.CellRef{Tenant: 1, Cell: 7, Version: 1}, BaseKey: "k1", ScratchEpoch: 2, CapturedAt: 3000, StepHashes: map[string]string{"go-toolchain": "h-go", "node": "h-node"}}
+	if got := pickAutoCaptureBase(poisoned, staleStep, false, false, pStepped, "k1"); got != nil {
+		t.Fatalf("unstepped/stale bases must be rejected when project has steps, got %+v", got)
+	}
+	if got := pickAutoCaptureBase(poisoned, validStepped, false, true, pStepped, "k1"); got == nil || got.Ref.Cell != 7 {
+		t.Fatalf("expected valid stepped base cell 7 over poisoned held base, got %+v", got)
 	}
 }
 
@@ -283,7 +307,7 @@ func TestVMBackendOnMachinedCaptureForksChildAndPreservesBaseOnDelete(t *testing
 		t.Fatalf("StopVM: %v", err)
 	}
 
-	captured, newWsCell, err := b.CaptureWorkspaceBase(ctx, "ws-mac-cap", "hotbed", "base-key-mac", 1, map[string]string{"hotbed": "aaaa"}, 1700000000, 1700000500000)
+	captured, newWsCell, err := b.CaptureWorkspaceBase(ctx, "ws-mac-cap", "hotbed", "base-key-mac", "setup-mac", map[string]string{"go": "h1"}, 1, map[string]string{"hotbed": "aaaa"}, 1700000000, 1700000500000)
 	if err != nil {
 		t.Fatalf("CaptureWorkspaceBase machined: %v", err)
 	}
@@ -315,5 +339,140 @@ func TestVMBackendOnMachinedCaptureForksChildAndPreservesBaseOnDelete(t *testing
 	}
 	if api.cells[newWsCell.GetCell()] {
 		t.Fatalf("expected child cell %d to be deleted on release", newWsCell.GetCell())
+	}
+}
+
+// Issue #23: a project with setup steps preserves StepHashes/SetupHash across
+// auto-capture, and a --fresh workspace forked from the bare OS image must
+// never auto-capture and poison the project's warm base.
+func TestSteppedProjectPreservesStepsOnCaptureAndRefusesBareOSCapture(t *testing.T) {
+	ctx := t.Context()
+	api := newStrictVMCladefsClient()
+	fl := newFakeVMLauncher()
+	vmb, _ := newTestVMBackend(t, api, fl)
+
+	dir := t.TempDir()
+	eng, err := NewEngine(ctx, EngineConfig{
+		Dir:     dir,
+		NodeID:  "node-1",
+		Host:    "node-1",
+		Store:   &fake.Store{Root: filepath.Join(dir, "volumes")},
+		Units:   &fake.Units{},
+		System:  fake.NewSystem(),
+		VM:      vmb,
+		Runtime: vmb.Runtime(),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { eng.Close() })
+	go eng.Run(ctx)
+
+	baseKey := vmb.baseKeyFor(eng.cfg.BaseSpec)
+	proj := &pb.HostedProject{
+		Name:         "hotbed",
+		ScratchEpoch: 1,
+		Repos:        []*pb.Repo{{Id: "hotbed"}},
+		Steps: []*pb.Step{
+			{Name: "go-toolchain", Hash: "h-go"},
+			{Name: "node", Hash: "h-node"},
+		},
+	}
+	wantSteps := map[string]string{"go-toolchain": "h-go", "node": "h-node"}
+	shared := &pb.SharedBase{
+		Cell: &pb.CladefsCell{
+			Tenant:  vmb.tenantID(),
+			Cell:    200,
+			Version: 5,
+			BaseId:  "hotbed-vm-stepped",
+			Project: "hotbed",
+			Runtime: "vm",
+		},
+		BaseKey:      baseKey,
+		SetupHash:    "setup-hash-1",
+		ScratchEpoch: 1,
+		Repos:        map[string]string{"hotbed": "1111111111111111111111111111111111111111"},
+		StepHashes:   wantSteps,
+		CapturedAt:   1000,
+	}
+
+	// 1. Fork from a valid stepped base and auto-capture: the captured base
+	// must keep SetupHash and StepHashes so pickAutoCaptureBase accepts it.
+	ws, err := eng.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
+		Id:             "stepcap1",
+		SessionId:      "test-sess",
+		Agent:          "test",
+		Repo:           "hotbed",
+		SyncDir:        "/local/hotbed",
+		SyncHost:       "laptop",
+		Runtime:        "vm",
+		Project:        proj,
+		SharedBase:     shared,
+		CaptureBase:    true,
+		BaseCommit:     "2222222222222222222222222222222222222222",
+		BaseCommitTime: 1700000100,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace stepped: %v", err)
+	}
+	eventuallyTrue(t, "stepped workspace ready", func() bool {
+		got, err := eng.Workspace(ws.Id)
+		return err == nil && got.State == pb.WorkspaceState_WORKSPACE_STATE_IDLE
+	})
+	cmd, err := eng.Exec(ctx, &pb.RunCommandRequest{
+		WorkspaceId: ws.Id,
+		Args:        []string{"sh", "-c", "true"},
+		Kind:        "test",
+	})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	eventuallyTrue(t, "command succeeded", func() bool {
+		c, ok := eng.Command(cmd.Id)
+		return ok && c.State == pb.CommandState_COMMAND_STATE_SUCCEEDED
+	})
+	eng.retireVMs(ctx)
+	eventuallyTrue(t, "stepped workspace captured", func() bool {
+		held, fresh := vmb.heldBases().get("hotbed")
+		return fresh && held != nil && held.AutoCaptured
+	})
+	held, _ := vmb.heldBases().get("hotbed")
+	if held.SetupHash != "setup-hash-1" || held.StepHashes["go-toolchain"] != "h-go" || held.StepHashes["node"] != "h-node" {
+		t.Fatalf("captured stepped base lost step metadata: %+v", held)
+	}
+	if picked := pickAutoCaptureBase(held, nil, false, true, proj, baseKey); picked == nil || picked.BaseID != held.BaseID {
+		t.Fatalf("pickAutoCaptureBase rejected newly captured stepped base: %+v", picked)
+	}
+
+	// 2. A --fresh workspace on a stepped project forks from the bare OS image
+	// and must NEVER set CaptureBase=true even when requested.
+	vmb.imagesMu.Lock()
+	vmb.baseImages[baseKey] = cladefs.CellRef{Tenant: vmb.tenantID(), Cell: 99, Version: 1}
+	vmb.imagesMu.Unlock()
+	freshWS, err := eng.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
+		Id:          "freshst1",
+		SessionId:   "test-sess",
+		Agent:       "test",
+		Repo:        "hotbed",
+		SyncDir:     "/local/hotbed",
+		SyncHost:    "laptop",
+		Runtime:     "vm",
+		Project:     proj,
+		Fresh:       true,
+		CaptureBase: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace --fresh: %v", err)
+	}
+	eventuallyTrue(t, "fresh workspace ready", func() bool {
+		got, err := eng.Workspace(freshWS.Id)
+		return err == nil && got.State == pb.WorkspaceState_WORKSPACE_STATE_IDLE
+	})
+	gotFresh, err := eng.Workspace(freshWS.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotFresh.CaptureBase {
+		t.Fatalf("--fresh workspace on stepped project must not be capture-eligible (would poison warm base)")
 	}
 }

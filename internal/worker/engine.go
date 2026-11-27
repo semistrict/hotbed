@@ -425,6 +425,12 @@ type workspace struct {
 	// this workspace's cladefs cell; captureDone closes when it finishes.
 	capturing   bool
 	captureDone chan struct{}
+	// baseSetupHash / baseStepHashes record the setup steps applied to the base
+	// this workspace forked from so auto-capture preserves step metadata and
+	// refuses to capture an unstepped bare OS image when the project has steps.
+	baseSetupHash     string
+	baseStepHashes    map[string]string
+	baseRequiresSteps bool
 }
 
 func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }

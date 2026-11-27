@@ -658,7 +658,8 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 // so subsequent commands in wsID incur zero R2 traffic.
 func (b *VMBackend) CaptureWorkspaceBase(
 	ctx context.Context,
-	wsID, project, baseKey string,
+	wsID, project, baseKey, setupHash string,
+	stepHashes map[string]string,
 	scratchEpoch int64,
 	repos map[string]string,
 	baseCommitTime, capturedAt int64,
@@ -680,8 +681,10 @@ func (b *VMBackend) CaptureWorkspaceBase(
 		Ref:            baseRef,
 		BaseID:         baseID,
 		BaseKey:        baseKey,
+		SetupHash:      setupHash,
 		ScratchEpoch:   scratchEpoch,
 		Repos:          maps.Clone(repos),
+		StepHashes:     maps.Clone(stepHashes),
 		BaseCommitTime: baseCommitTime,
 		CapturedAt:     capturedAt,
 		AutoCaptured:   true,

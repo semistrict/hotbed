@@ -104,9 +104,25 @@ func (b *projectBase) shared(project, rt string) *pb.SharedBase {
 	}
 }
 
+// hasAllProjectSteps reports whether b has recorded matching hashes for every
+// setup step defined on p. Projects with no steps trivially satisfy it.
+func hasAllProjectSteps(b *projectBase, p *pb.HostedProject) bool {
+	if p == nil || len(p.GetSteps()) == 0 {
+		return true
+	}
+	for _, s := range p.GetSteps() {
+		h, ok := b.StepHashes[s.GetName()]
+		if !ok || h != s.GetHash() {
+			return false
+		}
+	}
+	return true
+}
+
 // pickAutoCaptureBase picks the best warm project base to fork immediately for
 // a workspace without running a freshen job. Returns nil when fresh is true or
-// neither held nor shared matches the current OS base image key and scratch epoch.
+// neither held nor shared matches the current OS base image key, scratch epoch,
+// and project setup steps.
 func pickAutoCaptureBase(held, shared *projectBase, fresh, heldFresh bool, p *pb.HostedProject, baseKey string) *projectBase {
 	if fresh {
 		return nil
@@ -119,6 +135,9 @@ func pickAutoCaptureBase(held, shared *projectBase, fresh, heldFresh bool, p *pb
 			return false
 		}
 		if baseKey != "" && b.BaseKey != "" && b.BaseKey != baseKey {
+			return false
+		}
+		if !hasAllProjectSteps(b, p) {
 			return false
 		}
 		return true

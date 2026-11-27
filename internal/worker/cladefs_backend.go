@@ -66,8 +66,8 @@ type cladefsBackend interface {
 	// project's new warm base, holds it for future forks, and (on R2-backed
 	// daemons) drops the bucket cell and replaces wsID's backing cell with an
 	// ephemeral fork of the new version so subsequent commands stay local-only.
-	CaptureWorkspaceBase(ctx context.Context, wsID, project, baseKey string, scratchEpoch int64,
-		repos map[string]string, baseCommitTime, capturedAt int64) (*projectBase, *pb.CladefsCell, error)
+	CaptureWorkspaceBase(ctx context.Context, wsID, project, baseKey, setupHash string, stepHashes map[string]string,
+		scratchEpoch int64, repos map[string]string, baseCommitTime, capturedAt int64) (*projectBase, *pb.CladefsCell, error)
 	// DeleteWorkspace deletes the cell wsID ran on, once nothing runs on it.
 	DeleteWorkspace(ctx context.Context, wsID string) error
 	// RestoreWorkspaceCell notes the cell a saved workspace record names,
@@ -763,28 +763,39 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 		projBase := pickAutoCaptureBase(held, shared, req.GetFresh(), heldFresh, p, baseKey)
 
 		var (
-			fromRef     cladefs.CellRef
-			baseID      string
-			note        string
-			captureBase bool
-			cell        *pb.CladefsCell
-			err         error
+			fromRef        cladefs.CellRef
+			baseID         string
+			baseSetupHash  string
+			baseStepHashes map[string]string
+			note           string
+			captureBase    bool
+			cell           *pb.CladefsCell
+			err            error
 		)
-		// Fast path: synced runs, --fresh runs, and runs with an already-warm
-		// project base fork directly without polling git remotes or running
-		// freshen steps. Only unsynced cold starts (--no-sync / schedules on a
-		// brand-new project with no captured base yet) fall back to ensureProjectBase.
-		if req.GetSyncDir() != "" || req.GetFresh() || projBase != nil {
+		hasSteps := len(p.GetSteps()) > 0
+		// Fast path: fork directly without polling git remotes or running
+		// freshen steps when a compatible stepped warm base exists, when
+		// --fresh explicitly asked for the bare OS image, or on a synced run
+		// for a project with no setup steps. Projects with setup steps and no
+		// compatible warm base MUST run ensureProjectBase so setup toolchains
+		// exist and bare OS images are never auto-captured as project bases
+		// (issue #23).
+		fastPath := projBase != nil || req.GetFresh() || (!hasSteps && req.GetSyncDir() != "")
+		if fastPath {
 			if projBase != nil {
 				projBase = b.heldBases().hold(p.Name, projBase, false, false)
 				e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
 				fromRef = projBase.Ref
 				baseID = projBase.BaseID
+				baseSetupHash = projBase.SetupHash
+				baseStepHashes = maps.Clone(projBase.StepHashes)
 			} else {
 				fromRef, err = b.EnsureProvisionedBaseImage(bgCtx, baseSpec, prov)
 				baseID = "baseimage-" + baseKey
 			}
-			if !noCapture && (!req.GetThrowaway() || req.GetCaptureBase()) {
+			// Never auto-capture a workspace that started from the bare OS
+			// image when the project defines setup steps.
+			if !noCapture && (!req.GetThrowaway() || req.GetCaptureBase()) && (!hasSteps || projBase != nil) {
 				if b.IsLocalOnly() {
 					const localCaptureIntervalMs = int64(30 * time.Minute / time.Millisecond)
 					captureBase = req.GetCaptureBase() || projBase == nil ||
@@ -799,15 +810,27 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 				if err != nil && projBase != nil && cladefs.IsGone(err) {
 					b.heldBases().forget(p.Name, projBase.Ref)
 					projBase = nil
-					baseID = "baseimage-" + baseKey
-					if imgRef, ierr := b.EnsureProvisionedBaseImage(bgCtx, baseSpec, prov); ierr == nil {
-						cell, err = b.PrepareWorkspace(bgCtx, req.Id, imgRef, req.GetFencingToken(), captureBase)
+					baseSetupHash = ""
+					baseStepHashes = nil
+					if !hasSteps {
+						baseID = "baseimage-" + baseKey
+						if imgRef, ierr := b.EnsureProvisionedBaseImage(bgCtx, baseSpec, prov); ierr == nil {
+							cell, err = b.PrepareWorkspace(bgCtx, req.Id, imgRef, req.GetFencingToken(), captureBase)
+						} else {
+							err = ierr
+						}
 					} else {
-						err = ierr
+						// Stepped project lost its warm base cell: fall through
+						// to ensureProjectBase so setup steps run instead of
+						// serving or capturing an unstepped bare OS image.
+						captureBase = false
+						err = nil
+						fastPath = false
 					}
 				}
 			}
-		} else {
+		}
+		if !fastPath {
 			heads, herr := e.remoteHeads(bgCtx, p)
 			err = herr
 			var baseRes ensureBaseResult
@@ -827,6 +850,8 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 			if err == nil {
 				projBase = baseRes.Base
 				baseID = projBase.BaseID
+				baseSetupHash = projBase.SetupHash
+				baseStepHashes = maps.Clone(projBase.StepHashes)
 				note = baseRes.Note
 				e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
 				cell, err = b.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken(), false)
@@ -867,6 +892,9 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 		w.rec.CaptureBase = captureBase
 		w.rec.BaseKey = baseKey
 		w.rec.ScratchEpoch = p.GetScratchEpoch()
+		w.baseSetupHash = baseSetupHash
+		w.baseStepHashes = baseStepHashes
+		w.baseRequiresSteps = hasSteps
 		if projBase != nil {
 			for _, r := range w.ws().Repos {
 				if head, ok := projBase.Repos[r.Repo]; ok && head != "" {
@@ -977,9 +1005,18 @@ func (e *Engine) runWorkspaceCapture(ctx context.Context, w *workspace, b cladef
 		e.mu.Unlock()
 		return
 	}
+	if w.baseRequiresSteps && len(w.baseStepHashes) == 0 {
+		w.capturePending = false
+		w.rec.CaptureBase = false
+		w.ws().CaptureBase = false
+		e.mu.Unlock()
+		return
+	}
 	wsID := ws.Id
 	project := ws.Project
 	baseKey := w.rec.BaseKey
+	setupHash := w.baseSetupHash
+	stepHashes := maps.Clone(w.baseStepHashes)
 	scratchEpoch := w.rec.ScratchEpoch
 	repos := make(map[string]string, len(ws.Repos))
 	var maxCommitTime int64
@@ -995,7 +1032,7 @@ func (e *Engine) runWorkspaceCapture(ctx context.Context, w *workspace, b cladef
 	capturedAt := e.nowMs()
 	e.mu.Unlock()
 
-	captured, newCell, err := b.CaptureWorkspaceBase(ctx, wsID, project, baseKey, scratchEpoch, repos, maxCommitTime, capturedAt)
+	captured, newCell, err := b.CaptureWorkspaceBase(ctx, wsID, project, baseKey, setupHash, stepHashes, scratchEpoch, repos, maxCommitTime, capturedAt)
 	if err != nil {
 		slog.Warn("auto-capture workspace base failed (keeping previous project base)",
 			"workspace", wsID, "project", project, "err", err)
