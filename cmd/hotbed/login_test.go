@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,18 +29,21 @@ func TestLoginWhoamiOrgAndLogoutCommands(t *testing.T) {
 		{ID: "org_beta", Name: "Beta", Role: "member"},
 	}
 
+	var opened []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/auth/cli/authorize" && r.Method == http.MethodGet:
-			q := r.URL.Query()
-			dest, _ := url.Parse(q.Get("redirect_uri"))
-			dq := dest.Query()
-			dq.Set("code", "cli_code_1")
-			dq.Set("state", q.Get("state"))
-			dest.RawQuery = dq.Encode()
-			http.Redirect(w, r, dest.String(), http.StatusFound)
-		case r.URL.Path == "/auth/cli/exchange" && r.Method == http.MethodPost:
+		case r.URL.Path == "/auth/cli/device/start" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"deviceCode":              "dev_cli_1",
+				"userCode":                "WXYZ-1234",
+				"verificationUri":         "https://auth.example/device",
+				"verificationUriComplete": "https://auth.example/device?user_code=WXYZ-1234",
+				"expiresIn":               300,
+				"interval":                1,
+			})
+		case r.URL.Path == "/auth/cli/device/poll" && r.Method == http.MethodPost:
 			_ = json.NewEncoder(w).Encode(cliauth.TokenResponse{
+				Status:        "complete",
 				AccessToken:   "jwt_alpha",
 				RefreshToken:  "rt_1",
 				ExpiresAt:     time.Now().Add(10 * time.Minute).UnixMilli(),
@@ -117,15 +119,8 @@ func TestLoginWhoamiOrgAndLogoutCommands(t *testing.T) {
 			controller: at(srv.URL),
 			stdout:     &stdout,
 			stderr:     &stderr,
-			openURL: func(ctx context.Context, target string) error {
-				go func() {
-					req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-					resp, err := srv.Client().Do(req)
-					if err == nil {
-						_, _ = io.Copy(io.Discard, resp.Body)
-						resp.Body.Close()
-					}
-				}()
+			openURL: func(_ context.Context, target string) error {
+				opened = append(opened, target)
 				return nil
 			},
 		}
@@ -140,11 +135,14 @@ func TestLoginWhoamiOrgAndLogoutCommands(t *testing.T) {
 		return env
 	}
 
-	// 1. hotbed login
+	// 1. hotbed login (device-code flow, no localhost callback)
 	loginOut := runCLI("login", srv.URL)
 	var lr loginResult
 	if err := json.Unmarshal(loginOut.Data, &lr); err != nil || lr.Organization == nil || lr.Organization.ID != "org_alpha" {
 		t.Fatalf("unexpected login result: %s", loginOut.Data)
+	}
+	if len(opened) != 1 || opened[0] != "https://auth.example/device?user_code=WXYZ-1234" {
+		t.Fatalf("opened URLs = %v, want device verification URL", opened)
 	}
 
 	// 2. hotbed whoami
@@ -374,5 +372,63 @@ func TestControllerAuthTokenFailsClosedOnHotbedOrgError(t *testing.T) {
 	}
 	if _, err := resolveControllerAuthToken(t.Context(), where.getenv, controllerURL, nil); err == nil {
 		t.Fatalf("resolveControllerAuthToken returned nil error on failed HOTBED_ORG refresh; want error")
+	}
+}
+
+func TestLoginSkipsBrowserOpenOverSSH(t *testing.T) {
+	hotbedDir := t.TempDir()
+	origDir := defaultHotbedDir
+	defaultHotbedDir = func() (string, error) { return hotbedDir, nil }
+	t.Cleanup(func() { defaultHotbedDir = origDir })
+	where := newTestHere(t, map[string]string{"SSH_CONNECTION": "10.0.0.2 54321 10.0.0.1 22"})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/cli/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"deviceCode":              "dev_ssh_1",
+				"userCode":                "SSH1-CODE",
+				"verificationUri":         "https://auth.example/device",
+				"verificationUriComplete": "https://auth.example/device?user_code=SSH1-CODE",
+				"expiresIn":               300,
+				"interval":                1,
+			})
+		case "/auth/cli/device/poll":
+			_ = json.NewEncoder(w).Encode(cliauth.TokenResponse{
+				Status:       "complete",
+				AccessToken:  "jwt_ssh",
+				RefreshToken: "rt_ssh",
+				ExpiresAt:    time.Now().Add(10 * time.Minute).UnixMilli(),
+				User:         cliauth.UserInfo{ID: "user_1", Email: "ramon@alpha.test", Name: "Ramon"},
+				Organization: &cliauth.OrganizationSummary{ID: "org_alpha", Name: "Alpha", Role: "admin"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	opened := false
+	d := deps{
+		here:       where.here(),
+		http:       srv.Client(),
+		stream:     srv.Client(),
+		controller: at(srv.URL),
+		stdout:     &stdout,
+		stderr:     &stderr,
+		openURL: func(_ context.Context, _ string) error {
+			opened = true
+			return nil
+		},
+	}
+	if code := run(t.Context(), []string{"--json", "login", srv.URL}, d); code != exitOK {
+		t.Fatalf("hotbed login over SSH failed (code=%d): stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if opened {
+		t.Fatalf("hotbed login over SSH unexpectedly tried to open a local browser")
+	}
+	if !strings.Contains(stderr.String(), "SSH1-CODE") || !strings.Contains(stderr.String(), "https://auth.example/device?user_code=SSH1-CODE") {
+		t.Fatalf("stderr missing code or URL: %s", stderr.String())
 	}
 }

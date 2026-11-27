@@ -16,10 +16,9 @@ import (
 
 type loginCmd struct {
 	Controller string `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"Controller HTTPS URL (e.g. https://hotbed.semistrict.com). Defaults to HOTBED_CONTROLLER or your configured controller."`
-	Device     bool   `name:"device" help:"Use OAuth 2.0 Device Authorization Grant (for SSH/headless machines without a local browser)."`
-	NoOpen     bool   `name:"no-open" help:"Print the login URL without opening a browser."`
+	Device     bool   `name:"device" hidden:"" help:"Deprecated no-op: device-code login is always used."`
+	NoOpen     bool   `name:"no-open" help:"Print the login URL and one-time code without opening a browser."`
 	Org        string `name:"org" help:"Optional WorkOS organization ID to sign directly into."`
-	Provider   string `name:"provider" help:"WorkOS provider (GoogleOAuth)."`
 }
 
 type loginResult struct {
@@ -27,6 +26,13 @@ type loginResult struct {
 	User          cliauth.UserInfo              `json:"user"`
 	Organization  *cliauth.OrganizationSummary  `json:"organization,omitempty"`
 	Organizations []cliauth.OrganizationSummary `json:"organizations,omitempty"`
+}
+
+func isSSHSession(getenv func(string) string) bool {
+	if getenv == nil {
+		return false
+	}
+	return getenv("SSH_CONNECTION") != "" || getenv("SSH_CLIENT") != "" || getenv("SSH_TTY") != ""
 }
 
 func (c *loginCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -46,19 +52,14 @@ func (c *loginCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	var opener func(context.Context, string) error
-	if !c.NoOpen {
+	if !c.NoOpen && !isSSHSession(d.getenv) {
 		opener = d.openURL
 		if opener == nil {
 			opener = openDefaultBrowser
 		}
 	}
 	hc := d.http
-	var resp cliauth.TokenResponse
-	if c.Device {
-		resp, err = cliauth.LoginDevice(ctx, base, opener, d.stderr, hc)
-	} else {
-		resp, err = cliauth.LoginBrowser(ctx, base, strings.TrimSpace(c.Org), strings.TrimSpace(c.Provider), opener, d.stderr, hc)
-	}
+	resp, err := cliauth.LoginDevice(ctx, base, strings.TrimSpace(c.Org), opener, d.stderr, hc)
 	if err != nil {
 		return nil, err
 	}

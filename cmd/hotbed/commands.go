@@ -125,7 +125,7 @@ type cli struct {
 	Step      stepCmd      `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
 	Board     boardCmd     `cmd:"" help:"Project-scoped message board & task queue (read, post, reply, edit, delete, react, label, wait, tail, upload, download, actors, schema, schedule, task, import)."`
 	UI        uiCmd        `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
-	Login     loginCmd     `cmd:"" help:"Sign in to a WorkOS-enabled Hotbed controller (Google / AuthKit browser login, or --device for headless machines)."`
+	Login     loginCmd     `cmd:"" help:"Sign in to a Hotbed controller via one-time device code (works locally and over SSH)."`
 	Logout    logoutCmd    `cmd:"" help:"Remove locally stored credentials for a Hotbed controller."`
 	Whoami    whoamiCmd    `cmd:"" help:"Show the signed-in user, active organization, and role."`
 	Org       orgCmd       `cmd:"" help:"Manage WorkOS organizations, members, invitations, worker join tokens, and personal API tokens (ls, switch, create, members, invite, join-token, api-token)."`

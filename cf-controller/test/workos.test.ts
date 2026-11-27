@@ -1955,4 +1955,165 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			authenticateRequest(req(jwt), testEnv, NOOP_TOKEN_LOOKUP, { orgId: "org_other" }),
 		).rejects.toThrow("organization mismatch: token belongs to org_seam, not org_other");
 	});
+
+	it("runs CLI device-code login and honors optional organizationId on poll", async () => {
+		const testEnv = makeWorkOSEnv();
+		const nowSec = Math.floor(Date.now() / 1000);
+		const jwtInitial = await signJwt({
+			sub: "user_dev",
+			email: "dev@example.test",
+			org_id: "org_alpha",
+			role: "admin",
+			exp: nowSec + 3600,
+		});
+		const jwtBeta = await signJwt({
+			sub: "user_dev",
+			email: "dev@example.test",
+			org_id: "org_beta",
+			role: "member",
+			exp: nowSec + 3600,
+		});
+		let pollCount = 0;
+		mockHandlers.push((url, init) => {
+			if (url.pathname === "/user_management/authorize/device") {
+				return Response.json({
+					device_code: "dev_code_xyz",
+					user_code: "ABCD-1234",
+					verification_uri: "https://auth.test/device",
+					verification_uri_complete: "https://auth.test/device?user_code=ABCD-1234",
+					expires_in: 300,
+					interval: 5,
+				});
+			}
+			if (url.pathname === "/user_management/authenticate") {
+				const raw = typeof init?.body === "string" ? init.body : "";
+				let grant = "";
+				let orgId = "";
+				if (raw.startsWith("{")) {
+					const parsed = JSON.parse(raw) as Record<string, string>;
+					grant = parsed.grant_type ?? "";
+					orgId = parsed.organization_id ?? "";
+				} else {
+					const params = new URLSearchParams(raw);
+					grant = params.get("grant_type") ?? "";
+					orgId = params.get("organization_id") ?? "";
+				}
+				if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
+					pollCount++;
+					if (pollCount === 1) {
+						return Response.json({ error: "authorization_pending" }, { status: 400 });
+					}
+					return Response.json({
+						access_token: jwtInitial,
+						refresh_token: "rt_dev_1",
+						organization_id: "org_alpha",
+						authentication_method: "GoogleOAuth",
+						user: {
+							id: "user_dev",
+							email: "dev@example.test",
+							first_name: "Dev",
+							last_name: "User",
+						},
+					});
+				}
+				if (grant === "refresh_token" && orgId === "org_beta") {
+					return Response.json({
+						access_token: jwtBeta,
+						refresh_token: "rt_dev_2",
+						organization_id: "org_beta",
+						authentication_method: "GoogleOAuth",
+						user: {
+							id: "user_dev",
+							email: "dev@example.test",
+							first_name: "Dev",
+							last_name: "User",
+						},
+					});
+				}
+			}
+			if (url.pathname === "/user_management/organization_memberships") {
+				return Response.json({
+					data: [
+						{
+							id: "om_1",
+							organization_id: "org_alpha",
+							organization_name: "Alpha",
+							status: "active",
+							role: { slug: "admin" },
+						},
+						{
+							id: "om_2",
+							organization_id: "org_beta",
+							organization_name: "Beta",
+							status: "active",
+							role: { slug: "member" },
+						},
+					],
+				});
+			}
+			if (url.pathname === "/organizations/org_alpha") {
+				return Response.json({ id: "org_alpha", name: "Alpha" });
+			}
+			if (url.pathname === "/organizations/org_beta") {
+				return Response.json({ id: "org_beta", name: "Beta" });
+			}
+			return null;
+		});
+
+		const startRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/cli/device/start",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "{}",
+			},
+		);
+		expect(startRes.status).toBe(200);
+		const started = (await startRes.json()) as { deviceCode: string; userCode: string };
+		expect(started.deviceCode).toBe("dev_code_xyz");
+		expect(started.userCode).toBe("ABCD-1234");
+
+		const badOrgRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/cli/device/poll",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ deviceCode: "dev_code_xyz", organizationId: "bad org!" }),
+			},
+		);
+		expect(badOrgRes.status).toBe(400);
+
+		const pendingRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/cli/device/poll",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ deviceCode: "dev_code_xyz", organizationId: "org_beta" }),
+			},
+		);
+		expect(pendingRes.status).toBe(200);
+		expect(await pendingRes.json()).toEqual({ status: "pending" });
+
+		const doneRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/cli/device/poll",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ deviceCode: "dev_code_xyz", organizationId: "org_beta" }),
+			},
+		);
+		expect(doneRes.status).toBe(200);
+		const done = (await doneRes.json()) as {
+			status: string;
+			accessToken: string;
+			organization: { id: string; name: string } | null;
+		};
+		expect(done.status).toBe("complete");
+		expect(done.accessToken).toBe(jwtBeta);
+		expect(done.organization?.id).toBe("org_beta");
+	});
 });

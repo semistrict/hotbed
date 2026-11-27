@@ -1240,6 +1240,13 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
+		const requestedOrgId = (body.organizationId || body.organization_id || "").trim();
+		if (requestedOrgId && !isValidOrgId(requestedOrgId)) {
+			return Response.json(
+				{ code: ErrorCode.InvalidArgs, message: "invalid organizationId" },
+				{ status: 400 },
+			);
+		}
 		try {
 			const polled = await pollDeviceToken(env, deviceCode);
 			if (polled.status !== "complete") {
@@ -1281,15 +1288,21 @@ export async function handleAuthRoute(
 					);
 				}
 			}
-			if (!active.organizationId && organizations.length === 1 && active.refreshToken) {
+			const targetOrgId =
+				requestedOrgId ||
+				(!active.organizationId && organizations.length === 1 ? organizations[0].id : "");
+			if (targetOrgId && targetOrgId !== active.organizationId && active.refreshToken) {
 				try {
 					active = await authenticateWithRefreshToken(env, {
 						refreshToken: active.refreshToken,
-						organizationId: organizations[0].id,
+						organizationId: targetOrgId,
 						ipAddress: clientIp(request),
 						userAgent: clientUa(request),
 					});
-				} catch {
+				} catch (err) {
+					if (requestedOrgId) {
+						throw err;
+					}
 					// leave unselected
 				}
 			}

@@ -1,24 +1,18 @@
 // Package cliauth manages WorkOS user credentials for the hotbed CLI:
 // storing per-controller tokens in ~/.hotbed/auth.json (0600), running the
-// RFC 8252 loopback PKCE browser login and OAuth Device Authorization flows
-// against the controller, and transparently refreshing expiring WorkOS JWTs.
+// OAuth 2.0 Device Authorization flow against the controller, and
+// transparently refreshing expiring WorkOS JWTs.
 package cliauth
 
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +25,8 @@ const (
 	authFileName  = "auth.json"
 	refreshMargin = 60 * time.Second
 )
+
+var devicePollMinInterval = time.Second
 
 // Store is the on-disk ~/.hotbed/auth.json document.
 type Store struct {
@@ -414,168 +410,12 @@ func Refresh(ctx context.Context, controllerBaseURL, refreshToken, organizationI
 	return out, nil
 }
 
-func randomHex(nBytes int) (string, error) {
-	b := make([]byte, nBytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
-}
-
-func randomBase64URL(nBytes int) (string, error) {
-	b := make([]byte, nBytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-func pkceChallenge(verifier string) string {
-	sum := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
-}
-
-// LoginBrowser runs the RFC 8252 loopback PKCE browser login against the controller's
-// /auth/cli/authorize and /auth/cli/exchange endpoints.
-func LoginBrowser(
-	ctx context.Context,
-	controllerBaseURL, organizationID, provider string,
-	openURL func(context.Context, string) error,
-	stderr io.Writer,
-	hc *http.Client,
-) (TokenResponse, error) {
-	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return TokenResponse{}, fmt.Errorf("listen on loopback callback port: %w", err)
-	}
-	defer ln.Close()
-
-	state, err := randomHex(16)
-	if err != nil {
-		return TokenResponse{}, err
-	}
-	verifier, err := randomBase64URL(32)
-	if err != nil {
-		return TokenResponse{}, err
-	}
-	challenge := pkceChallenge(verifier)
-	redirectURI := fmt.Sprintf("http://%s/callback", ln.Addr().String())
-
-	type cbResult struct {
-		code string
-		err  error
-	}
-	resCh := make(chan cbResult, 1)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		if errMsg := q.Get("error"); errMsg != "" {
-			desc := q.Get("error_description")
-			if desc == "" {
-				desc = errMsg
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, "<!doctype html><body style='font-family:system-ui;background:#0b0d12;color:#f87171;padding:40px'><h2>Sign-in failed</h2><p>Return to your terminal for details.</p></body>")
-			select {
-			case resCh <- cbResult{err: api.Errorf(api.CodeNotAuthorized, "login failed: %s", desc)}:
-			default:
-			}
-			return
-		}
-		if q.Get("state") != state {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, "Invalid state parameter.")
-			return
-		}
-		code := strings.TrimSpace(q.Get("code"))
-		if code == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, "Missing authorization code.")
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, "<!doctype html><body style='font-family:system-ui;background:#0b0d12;color:#e5e7eb;display:grid;place-items:center;min-height:90vh'><div style='text-align:center'><h2>Signed in to hotbed</h2><p style='color:#9ca3af'>You can close this tab and return to your terminal.</p></div></body>")
-		select {
-		case resCh <- cbResult{code: code}:
-		default:
-		}
-	})
-
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = srv.Serve(ln) }()
-	defer func() {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
-
-	u, err := url.Parse(strings.TrimRight(controllerBaseURL, "/") + "/auth/cli/authorize")
-	if err != nil {
-		return TokenResponse{}, err
-	}
-	q := u.Query()
-	q.Set("redirect_uri", redirectURI)
-	q.Set("state", state)
-	q.Set("code_challenge", challenge)
-	if organizationID != "" {
-		q.Set("organization_id", organizationID)
-	}
-	if provider != "" {
-		q.Set("provider", provider)
-	}
-	u.RawQuery = q.Encode()
-
-	authURL := u.String()
-	if stderr != nil {
-		fmt.Fprintf(stderr, "Open this URL in your browser to sign in to hotbed:\n  %s\n", authURL)
-	}
-	if openURL != nil {
-		if oerr := openURL(ctx, authURL); oerr != nil && stderr != nil {
-			fmt.Fprintf(stderr, "Could not open browser automatically: %v\n", oerr)
-		}
-	}
-	if stderr != nil {
-		fmt.Fprintf(stderr, "Waiting for browser authentication...\n")
-	}
-
-	var cb cbResult
-	select {
-	case cb = <-resCh:
-	case <-ctx.Done():
-		return TokenResponse{}, ctx.Err()
-	}
-	if cb.err != nil {
-		return TokenResponse{}, cb.err
-	}
-
-	var out TokenResponse
-	if err := postJSON(
-		ctx,
-		hc,
-		strings.TrimRight(controllerBaseURL, "/")+"/auth/cli/exchange",
-		"",
-		map[string]string{
-			"code":         cb.code,
-			"codeVerifier": verifier,
-			"redirectUri":  redirectURI,
-		},
-		&out,
-	); err != nil {
-		return TokenResponse{}, err
-	}
-	return out, nil
-}
-
 // LoginDevice runs the OAuth 2.0 Device Authorization Grant flow via the controller's
-// /auth/cli/device/start and /auth/cli/device/poll endpoints (for headless/SSH machines).
+// /auth/cli/device/start and /auth/cli/device/poll endpoints (works identically locally
+// and over SSH without any localhost callback listener).
 func LoginDevice(
 	ctx context.Context,
-	controllerBaseURL string,
+	controllerBaseURL, organizationID string,
 	openURL func(context.Context, string) error,
 	stderr io.Writer,
 	hc *http.Client,
@@ -595,12 +435,18 @@ func LoginDevice(
 	if err := postJSON(ctx, hc, base+"/auth/cli/device/start", "", map[string]any{}, &start); err != nil {
 		return TokenResponse{}, err
 	}
-	if stderr != nil {
-		fmt.Fprintf(stderr, "! First copy your one-time code: %s\n", start.UserCode)
-		fmt.Fprintf(stderr, "Open this URL in your browser to sign in: %s\n", start.VerificationURI)
+	verifyURL := strings.TrimSpace(start.VerificationURIComplete)
+	if verifyURL == "" {
+		verifyURL = strings.TrimSpace(start.VerificationURI)
 	}
-	if openURL != nil && start.VerificationURIComplete != "" {
-		if oerr := openURL(ctx, start.VerificationURIComplete); oerr != nil && stderr != nil {
+	if stderr != nil {
+		fmt.Fprintf(stderr, "Open this URL in your browser to sign in to hotbed:\n  %s\n", verifyURL)
+		if start.UserCode != "" {
+			fmt.Fprintf(stderr, "One-time code: %s\n", start.UserCode)
+		}
+	}
+	if openURL != nil && verifyURL != "" {
+		if oerr := openURL(ctx, verifyURL); oerr != nil && stderr != nil {
 			fmt.Fprintf(stderr, "Could not open browser automatically: %v\n", oerr)
 		}
 	}
@@ -608,8 +454,18 @@ func LoginDevice(
 		fmt.Fprintf(stderr, "Waiting for authorization...\n")
 	}
 
-	interval := time.Duration(max(start.Interval, 2)) * time.Second
+	interval := 5 * time.Second
+	if start.Interval > 0 {
+		interval = time.Duration(start.Interval) * time.Second
+	}
+	if interval < devicePollMinInterval {
+		interval = devicePollMinInterval
+	}
 	deadline := time.Now().Add(time.Duration(max(start.ExpiresIn, 300)) * time.Second)
+	pollBody := map[string]string{"deviceCode": start.DeviceCode}
+	if orgID := strings.TrimSpace(organizationID); orgID != "" {
+		pollBody["organizationId"] = orgID
+	}
 	for {
 		if time.Now().After(deadline) {
 			return TokenResponse{}, api.Errorf(api.CodeNotAuthorized, "device login timed out before authorization completed")
@@ -620,9 +476,7 @@ func LoginDevice(
 		case <-time.After(interval):
 		}
 		var poll TokenResponse
-		if err := postJSON(ctx, hc, base+"/auth/cli/device/poll", "", map[string]string{
-			"deviceCode": start.DeviceCode,
-		}, &poll); err != nil {
+		if err := postJSON(ctx, hc, base+"/auth/cli/device/poll", "", pollBody, &poll); err != nil {
 			return TokenResponse{}, err
 		}
 		switch poll.Status {

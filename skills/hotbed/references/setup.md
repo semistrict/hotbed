@@ -7,8 +7,8 @@ sign-in for people and org-scoped tokens for machines (`hbj_` join, `hbw_` worke
 API); there is no tailnet and no controller to install on a machine.
 
 ```sh
-# Sign in once per client machine (browser; --device on a headless one). This stores the
-# controller URL, so later commands name no controller:
+# Sign in once per client machine (uses a one-time device code, so it works identically locally
+# and over SSH without a localhost callback). Stores the controller URL for later commands:
 hotbed login https://CONTROLLER
 
 # A join token (hbj_...) comes from the cockpit's Organization page ("Mint join token").

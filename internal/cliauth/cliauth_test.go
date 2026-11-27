@@ -1,12 +1,12 @@
 package cliauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,38 +97,47 @@ func TestSaveLoadAndAutoRefreshToken(t *testing.T) {
 	}
 }
 
-func TestLoginBrowserPKCEFlow(t *testing.T) {
-	var seenChallenge string
-	var seenRedirect string
+func TestLoginDeviceFlow(t *testing.T) {
+	origFloor := devicePollMinInterval
+	devicePollMinInterval = time.Millisecond
+	t.Cleanup(func() { devicePollMinInterval = origFloor })
+
+	var polls atomic.Int32
+	var seenOrg string
+	var openedURL string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/auth/cli/authorize":
-			q := r.URL.Query()
-			seenChallenge = q.Get("code_challenge")
-			seenRedirect = q.Get("redirect_uri")
-			dest, _ := url.Parse(seenRedirect)
-			dq := dest.Query()
-			dq.Set("code", "handoff_code_123")
-			dq.Set("state", q.Get("state"))
-			dest.RawQuery = dq.Encode()
-			http.Redirect(w, r, dest.String(), http.StatusFound)
-		case "/auth/cli/exchange":
+		case "/auth/cli/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"deviceCode":              "dev_code_123",
+				"userCode":                "ABCD-EFGH",
+				"verificationUri":         "https://auth.example/device",
+				"verificationUriComplete": "https://auth.example/device?user_code=ABCD-EFGH",
+				"expiresIn":               300,
+				"interval":                1,
+			})
+		case "/auth/cli/device/poll":
 			var body struct {
-				Code         string `json:"code"`
-				CodeVerifier string `json:"codeVerifier"`
-				RedirectURI  string `json:"redirectUri"`
+				DeviceCode     string `json:"deviceCode"`
+				OrganizationID string `json:"organizationId"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, err.Error(), 400)
 				return
 			}
-			if body.Code != "handoff_code_123" || body.RedirectURI != seenRedirect || pkceChallenge(body.CodeVerifier) != seenChallenge {
-				http.Error(w, `{"code":"NOT_AUTHORIZED","message":"pkce mismatch"}`, 401)
+			if body.DeviceCode != "dev_code_123" {
+				http.Error(w, `{"code":"NOT_AUTHORIZED","message":"bad device code"}`, 401)
+				return
+			}
+			seenOrg = body.OrganizationID
+			if polls.Add(1) == 1 {
+				_ = json.NewEncoder(w).Encode(TokenResponse{Status: "pending"})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(TokenResponse{
-				AccessToken:  "jwt_browser_ok",
-				RefreshToken: "rt_browser_ok",
+				Status:       "complete",
+				AccessToken:  "jwt_device_ok",
+				RefreshToken: "rt_device_ok",
 				ExpiresAt:    time.Now().Add(5 * time.Minute).UnixMilli(),
 				User:         UserInfo{ID: "user_1", Email: "ramon@echophase.test", Name: "Ramon"},
 				Organization: &OrganizationSummary{ID: "org_echo", Name: "Echophase", Role: "admin"},
@@ -139,25 +148,27 @@ func TestLoginBrowserPKCEFlow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Simulate the user's browser following the authorize URL and hitting the loopback callback.
-	openURL := func(ctx context.Context, target string) error {
-		go func() {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-			resp, err := srv.Client().Do(req)
-			if err == nil {
-				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
-			}
-		}()
+	var stderr bytes.Buffer
+	openURL := func(_ context.Context, target string) error {
+		openedURL = target
 		return nil
 	}
 
-	resp, err := LoginBrowser(t.Context(), srv.URL, "org_echo", "GoogleOAuth", openURL, io.Discard, srv.Client())
+	resp, err := LoginDevice(t.Context(), srv.URL, "org_echo", openURL, &stderr, srv.Client())
 	if err != nil {
-		t.Fatalf("LoginBrowser: %v", err)
+		t.Fatalf("LoginDevice: %v", err)
 	}
-	if resp.AccessToken != "jwt_browser_ok" || resp.Organization == nil || resp.Organization.ID != "org_echo" {
+	if resp.AccessToken != "jwt_device_ok" || resp.Organization == nil || resp.Organization.ID != "org_echo" {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if seenOrg != "org_echo" {
+		t.Fatalf("organizationId sent to poll = %q, want org_echo", seenOrg)
+	}
+	if openedURL != "https://auth.example/device?user_code=ABCD-EFGH" {
+		t.Fatalf("openedURL = %q, want complete verification URI", openedURL)
+	}
+	if !strings.Contains(stderr.String(), "ABCD-EFGH") || !strings.Contains(stderr.String(), "https://auth.example/device?user_code=ABCD-EFGH") {
+		t.Fatalf("stderr missing code or verification URL: %s", stderr.String())
 	}
 }
 
