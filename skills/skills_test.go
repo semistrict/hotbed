@@ -2,7 +2,9 @@ package skills
 
 import (
 	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -57,5 +59,33 @@ func TestSkillInternalLinksResolve(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Agents working on hotbed find its skills through .claude/skills, so every
+// skill here needs its link there, and each one's front matter names it.
+func TestEverySkillIsLinkedAndNamed(t *testing.T) {
+	list, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) < 2 {
+		t.Fatalf("List() = %d skills, want hotbed's core skill and its siblings", len(list))
+	}
+	for _, s := range list {
+		target, err := os.Readlink(filepath.Join("..", ".claude", "skills", s.Name))
+		if err != nil || target != "../../skills/"+s.Name {
+			t.Errorf(".claude/skills/%s links to %q (%v), want ../../skills/%s", s.Name, target, err, s.Name)
+		}
+		doc, err := Get(s.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name := frontMatter(doc, "name"); name != s.Name {
+			t.Errorf("skills/%s/SKILL.md names itself %q", s.Name, name)
+		}
+		if s.Description == "" || len(s.Description) > 1024 {
+			t.Errorf("skills/%s/SKILL.md description is %d characters, want 1..1024", s.Name, len(s.Description))
+		}
 	}
 }

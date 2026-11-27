@@ -2328,7 +2328,8 @@ message Session {
   // open the thread by; empty when it is not known.
   string t3code_thread_url = 17;
   // Compact descriptors of all active skills relevant to this session (global +
-  // its project); only set by StartSession unless omit_skills is true.
+  // its project, and the CLI's built-in ones); only set by StartSession unless
+  // omit_skills is true.
   SkillBriefing skills = 18;
 }
 
@@ -5869,12 +5870,6 @@ message ProxyGitHubAPIResponse {
 
 // ---- memories ---------------------------------------------------------------
 
-// Cross-agent memories and learned rules shared across sessions and machines.
-// Memories are automatically approved on creation (globally or for a project)
-// and returned in compact form on session start (always-on rules inline;
-// on-demand memories as a 1-line index fetched in full via GetMemories).
-// Users can edit any field, promote project memories to global, reorder,
-// archive/restore, or permanently remove them.
 // IssueService keeps the problems agents and people hit with hotbed itself:
 // a bug, a missing capability, an error that misleads. Each is reported
 // once and +1'd by everyone else who hits it, so its votes say how much it
@@ -6049,24 +6044,29 @@ message ReopenIssueRequest {
   }];
 }
 
+// Cross-agent memories shared across sessions and machines. Each is like a
+// skill: a one-line summary saying when it applies, which every session start
+// lists, and a body an agent reads with GetMemories once the summary applies.
+// Memories are approved on creation (globally or for a project). Users can
+// edit any field, promote project memories to global, reorder, archive and
+// restore, or permanently remove them.
 service MemoryService {
-  // Save a new memory or supersede/consolidate existing memories
-  // (--supersede ID). Automatically approved and active immediately. Defaults
-  // to the active session's project; pass --global for cross-project learnings.
-  // When --mode is omitted, omitting --body saves a short always-on rule
-  // (<= 240 chars) and passing --body/--body-file saves an on-demand playbook
-  // fetched with `hotbed memory get`.
+  // Save a new memory, or supersede/consolidate existing ones (--supersede
+  // ID). Approved and active at once. Defaults to the active session's
+  // project; pass --global for cross-project learnings. Give a --summary that
+  // says when it applies (session start lists it) and the --body/--body-file
+  // an agent reads with `hotbed memory get` once it does.
   rpc ProposeMemory(ProposeMemoryRequest) returns (Memory) {
     option (command) = {
       name: "memory add"
       session: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
     option (command) = {
       name: "memory propose"
       help: "Alias for `hotbed memory add`."
       session: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
   }
   // List memories (compact metadata without full body). Defaults to approved
@@ -6077,7 +6077,7 @@ service MemoryService {
       name: "memory ls"
       session: true
       read_only: true
-      format: "{{range .memories}}#{{pad 4 .id}}  {{pad 10 (state .state)}}  {{pad 12 (or .project \"global\")}}  {{with .content}}{{pad 9 (state .mode)}}  {{pad 28 .slug}}  {{short 60 .summary}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+      format: "{{range .memories}}#{{pad 4 .id}}  {{pad 10 (state .state)}}  {{pad 12 (or .project \"global\")}}  {{with .content}}{{pad 28 .slug}}  {{short 60 .summary}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
     };
   }
   // Fetch the full markdown body of one or more memories by slug or ID
@@ -6088,7 +6088,7 @@ service MemoryService {
       name: "memory get"
       session: true
       read_only: true
-      format: "{{range $i, $m := .memories}}{{if $i}}\n---\n{{end}}#{{$m.id}}  {{with $m.content}}{{.slug}}{{end}}  [{{if $m.project}}{{$m.project}}{{else}}global{{end}}{{if $m.repo}}/{{$m.repo}}{{end}} · {{with $m.content}}{{state .mode}}{{end}} · rev={{$m.revision}}]{{with $m.content}}\n{{.summary}}{{if .body}}\n\n{{.body}}{{end}}{{end}}\n{{end}}"
+      format: "{{range $i, $m := .memories}}{{if $i}}\n---\n{{end}}#{{$m.id}}  {{with $m.content}}{{.slug}}{{end}}  [{{if $m.project}}{{$m.project}}{{else}}global{{end}}{{if $m.repo}}/{{$m.repo}}{{end}} · rev={{$m.revision}}]{{with $m.content}}\n{{.summary}}{{if .body}}\n\n{{.body}}{{end}}{{end}}\n{{end}}"
     };
   }
   // Show one memory with its full body, provenance, supersession links, and
@@ -6099,10 +6099,10 @@ service MemoryService {
       name: "memory show"
       session: true
       read_only: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}} ({{state .mode}})\n{{if .title}}title     {{.title}}\n{{end}}summary   {{.summary}}{{if .tags}}\ntags      {{join \", \" .tags}}{{end}}{{if .body}}\n\n{{.body}}{{end}}{{end}}{{with .provenance}}{{if .rationale}}\nrationale {{.rationale}}{{end}}{{end}}{{with .archived}}{{if .reason}}\narchived  {{.reason}}{{end}}{{end}}{{if .supersedesIds}}\nsupersedes {{join \", \" .supersedesIds}}{{end}}{{if .supersededBy}}\nsuperseded-by #{{.supersededBy}}{{end}}{{if .cockpitUrl}}\ncockpit   {{.cockpitUrl}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}}\n{{if .title}}title     {{.title}}\n{{end}}summary   {{.summary}}{{if .tags}}\ntags      {{join \", \" .tags}}{{end}}{{if .body}}\n\n{{.body}}{{end}}{{end}}{{with .provenance}}{{if .rationale}}\nrationale {{.rationale}}{{end}}{{end}}{{with .archived}}{{if .reason}}\narchived  {{.reason}}{{end}}{{end}}{{if .supersedesIds}}\nsupersedes {{join \", \" .supersedesIds}}{{end}}{{if .supersededBy}}\nsuperseded-by #{{.supersededBy}}{{end}}{{if .cockpitUrl}}\ncockpit   {{.cockpitUrl}}{{end}}"
     };
   }
-  // Edit a memory in any way (slug, title, summary, body, mode, tags, scope,
+  // Edit a memory in any way (slug, title, summary, body, tags, scope,
   // repo, or rationale). Unspecified fields stay unchanged unless
   // --replace-content or a clear flag is passed.
   rpc ReviseMemory(ReviseMemoryRequest) returns (Memory) {
@@ -6173,14 +6173,6 @@ enum MemoryScope {
   MEMORY_SCOPE_PROJECT = 2;
 }
 
-enum MemoryMode {
-  MEMORY_MODE_UNSPECIFIED = 0;
-  // Short rule/guardrail returned inline on session start (summary <= 240 chars).
-  MEMORY_MODE_ALWAYS = 1;
-  // Progressive-disclosure memory: 1-line index on session start, full body via `memory get`.
-  MEMORY_MODE_ON_DEMAND = 2;
-}
-
 enum MemoryState {
   MEMORY_STATE_UNSPECIFIED = 0;
   // Waiting for the user's approval in the cockpit.
@@ -6212,16 +6204,14 @@ message MemoryContent {
   string slug = 1;
   // Short human title (optional; max 120 chars).
   string title = 2;
-  // Compact in-context component: the complete rule for ALWAYS mode (<= 240
-  // chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode
-  // (<= 280 chars).
+  // One line saying what the memory is about and when to read it, which
+  // every session start lists (required; <= 280 chars).
   string summary = 3;
-  // Full markdown details fetched via `hotbed memory get` (required for
-  // ON_DEMAND, optional for ALWAYS; max 64 KiB).
+  // The memory itself, in markdown, read with `hotbed memory get` once the
+  // summary applies (required; max 64 KiB).
   string body = 4 [(param) = {file_flag: "body-file"}];
-  // Delivery mode: always (inline rule on session start) or on_demand (index
-  // on session start, full body fetched on demand).
-  MemoryMode mode = 5;
+  reserved 5;
+  reserved "mode";
   // Short lowercase tags for filtering and search (repeatable).
   repeated string tags = 6 [(param) = {name: "tag"}];
 }
@@ -6284,19 +6274,21 @@ message MemoryIndexEntry {
   MemoryScope scope = 3;
   string project = 4;
   string repo = 5;
-  MemoryMode mode = 6;
+  reserved 6, 8;
+  reserved "mode", "has_body";
   string summary = 7;
-  bool has_body = 8;
   int64 revision = 9;
   int64 updated_at = 10;
 }
 
 // Startup recall payload attached to Session by StartSession.
 message MemoryBriefing {
-  repeated MemoryIndexEntry always = 1;
-  repeated MemoryIndexEntry on_demand = 2;
-  int32 omitted_always = 3;
-  int32 omitted_on_demand = 4;
+  reserved 1, 3;
+  reserved "always", "omitted_always";
+  // Each approved memory's summary, in the user's order, within the startup caps.
+  repeated MemoryIndexEntry entries = 2;
+  // Approved memories left out of entries for want of room.
+  int32 omitted = 4;
   int32 total_approved = 5;
   int32 pending_proposals = 6;
 }
@@ -6341,8 +6333,8 @@ message ListMemoriesRequest {
   }];
   // Filter by scope: global or project; omit for global + active project.
   MemoryScope scope = 2;
-  // Filter by delivery mode: always or on_demand.
-  MemoryMode mode = 3;
+  reserved 3;
+  reserved "mode";
   // Whose project memories to include (alongside global unless --scope project).
   oneof project_scope {
     // Only memories for this project (with global unless --scope project).
@@ -6376,18 +6368,14 @@ message ListMemoriesRequest {
 // caps, and how many it omitted past them. The server applies the caps, so
 // every client shows the same numbers the briefing has.
 message MemoryBudget {
-  int32 always_count = 1;
-  int32 always_bytes = 2;
-  int32 always_max_count = 3;
-  int32 always_max_bytes = 4;
-  int32 on_demand_count = 5;
-  int32 on_demand_bytes = 6;
-  int32 on_demand_max_count = 7;
-  int32 on_demand_max_bytes = 8;
-  // Always-on memories left out of the briefing for want of room.
-  int32 omitted_always = 9;
-  // On-demand memories left out of the index for want of room.
-  int32 omitted_on_demand = 10;
+  reserved 1 to 4, 9;
+  reserved "always_count", "always_bytes", "always_max_count", "always_max_bytes", "omitted_always";
+  int32 count = 5;
+  int32 bytes = 6;
+  int32 max_count = 7;
+  int32 max_bytes = 8;
+  // Approved memories left out of the briefing for want of room.
+  int32 omitted = 10;
 }
 
 message ListMemoriesResponse {
@@ -6396,7 +6384,7 @@ message ListMemoriesResponse {
   optional string reminder = 3;
   // The startup budget of global + the listed project (global alone when no
   // single project is listed, as for --scope global or --all-projects),
-  // whatever the state, mode, tag, query and limit filters.
+  // whatever the state, tag, query and limit filters.
   MemoryBudget budget = 4;
 }
 
@@ -6463,13 +6451,13 @@ message ReviseMemoryRequest {
   int64 if_revision = 6 [(param) = {name: "if-revision"}];
   reserved 7;
   reserved "body_file";
-  // Replace all content fields (slug, title, summary, body, mode, tags) with
+  // Replace all content fields (slug, title, summary, body, tags) with
   // the provided content instead of merging only non-empty fields.
   bool replace_content = 8 [(param) = {name: "replace-content"}];
   // Clear the optional title.
   bool clear_title = 9 [(param) = {name: "clear-title"}];
-  // Clear the optional body (allowed in always mode).
-  bool clear_body = 10 [(param) = {name: "clear-body"}];
+  reserved 10;
+  reserved "clear_body";
   // Replace tags with the provided --tag list (omit --tag to clear all tags).
   bool replace_tags = 11 [(param) = {name: "replace-tags"}];
   // Set or clear ("") the optional repo within a project-scoped memory.
@@ -6578,6 +6566,10 @@ enum SkillScope {
   SKILL_SCOPE_GLOBAL = 1;
   // Delivered on session start and MCP connection for its project.
   SKILL_SCOPE_PROJECT = 2;
+  // Compiled into the hotbed CLI: how to use hotbed itself. The CLI and its
+  // MCP server list and serve these (skill://builtin/<name>/SKILL.md); the
+  // controller stores none.
+  SKILL_SCOPE_BUILTIN = 3;
 }
 
 enum SkillState {
@@ -6704,7 +6696,8 @@ message SkillDescriptor {
   string project = 4;
   string repo = 5;
   string description = 6;
-  // Canonical MCP URI (skill://global/<name>/SKILL.md or skill://<project>/<name>/SKILL.md).
+  // Canonical MCP URI (skill://global/<name>/SKILL.md,
+  // skill://<project>/<name>/SKILL.md, or skill://builtin/<name>/SKILL.md).
   string uri = 7;
   int32 file_count = 8;
   int64 total_bytes = 9;
@@ -6714,7 +6707,9 @@ message SkillDescriptor {
   string source = 13;
 }
 
-// Startup skills payload attached to Session by StartSession.
+// Startup skills payload attached to Session by StartSession. The CLI puts
+// its built-in skills first (SKILL_SCOPE_BUILTIN), so a session start lists
+// how to use hotbed itself along with the stored skills.
 message SkillBriefing {
   repeated SkillDescriptor skills = 1;
   int32 total_active = 2;

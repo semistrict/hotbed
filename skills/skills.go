@@ -78,6 +78,15 @@ func frontMatter(doc, key string) string {
 	return ""
 }
 
+// IsBuiltin says whether name is one of these skills.
+func IsBuiltin(name string) bool {
+	if name == "" || strings.ContainsAny(name, "/.") {
+		return false
+	}
+	_, err := fs.Stat(files, name+"/SKILL.md")
+	return err == nil
+}
+
 // Get returns a skill's SKILL.md, or one of its files ("hotbed/references/x.md").
 func Get(path string) (string, error) {
 	path = strings.TrimSuffix(path, "/")

@@ -85,7 +85,6 @@ const issueDetail = createRoute({ getParentRoute: () => root, path: "/issues/$id
 const questionDetail = createRoute({ getParentRoute: () => root, path: "/questions/$id", component: QuestionDetailPage });
 const MEMORY_TABS = ["active", "history", "all"];
 const MEMORY_SCOPES = ["all", "global", "project"];
-const MEMORY_MODES = ["all", "always", "on-demand"];
 const MEMORY_SORTS = ["rank", "newest", "oldest", "updated", "slug"];
 const memories = createRoute({
   getParentRoute: () => root,
@@ -99,7 +98,6 @@ const memories = createRoute({
           ? (s.tab as MemoriesSearch["tab"])
           : undefined,
     scope: typeof s.scope === "string" && MEMORY_SCOPES.includes(s.scope) ? (s.scope as MemoriesSearch["scope"]) : undefined,
-    mode: typeof s.mode === "string" && MEMORY_MODES.includes(s.mode) ? (s.mode as MemoriesSearch["mode"]) : undefined,
     sort: typeof s.sort === "string" && MEMORY_SORTS.includes(s.sort) ? (s.sort as MemoriesSearch["sort"]) : undefined,
     q: typeof s.q === "string" && s.q ? s.q : undefined,
   }),

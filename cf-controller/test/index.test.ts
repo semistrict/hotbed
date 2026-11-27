@@ -39,9 +39,10 @@ import {
 	HeartbeatRequestSchema,
 	ListFilesResponseSchema,
 	ManagedArtifactSchema,
-	MemoryMode,
 	MemoryScope,
 	MemoryService,
+	SkillScope,
+	SkillService,
 	MemoryState,
 	NodeSystemUpgradeSchema,
 	NodeUsageSchema,
@@ -119,6 +120,7 @@ function ownerClients(extraHeaders?: Record<string, string>) {
 		workspaces: createClient(WorkspaceService, transport),
 		questions: createClient(QuestionService, transport),
 		memories: createClient(MemoryService, transport),
+		skills: createClient(SkillService, transport),
 		reviews: createClient(ReviewService, transport),
 		schedules: createClient(ScheduleService, transport),
 		gitauth: createClient(GitAuthService, transport),
@@ -937,33 +939,25 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			repos: ["github.com/org/budget-bytes"],
 		});
 		const s = await owner.sessions.startSession({ project: "budget-count" });
-		const save = (project: string, slug: string, summary: string, mode: MemoryMode) =>
+		const save = (project: string, slug: string, summary: string) =>
 			owner.memories.proposeMemory({
 				sessionId: s.id,
 				project,
 				rationale: "budget test",
-				content: { slug, summary, mode, body: mode === MemoryMode.ON_DEMAND ? "details" : "" },
+				content: { slug, summary, body: "details" },
 			});
 
-		// Newest memories rank first, so the oldest two of each are the ones left out.
+		// Newest memories rank first, so the oldest two are the ones left out.
 		const indexBytes = (prefix: string, from: number, to: number, summary: string) => {
 			let n = 0;
 			for (let i = from; i <= to; i++) n += `${prefix}-${i}: ${summary}`.length;
 			return n;
 		};
-		// Count caps: 22 always-on (cap 20) and 32 on-demand (cap 30).
-		for (let i = 0; i < 22; i++)
-			await save("budget-count", `rule-${i}`, "Short rule.", MemoryMode.ALWAYS);
-		for (let i = 0; i < 32; i++)
-			await save("budget-count", `topic-${i}`, "Short topic.", MemoryMode.ON_DEMAND);
-		// Byte cap: 240-character summaries admit 16 of 18 within 4096 bytes.
-		for (let i = 0; i < 18; i++) {
-			await save(
-				"budget-bytes",
-				`long-${String(i).padStart(2, "0")}`,
-				"x".repeat(240),
-				MemoryMode.ALWAYS,
-			);
+		// Count cap: 42 memories (cap 40).
+		for (let i = 0; i < 42; i++) await save("budget-count", `topic-${i}`, "Short topic.");
+		// Byte cap: 280-character summaries admit 28 of 30 within 8192 bytes.
+		for (let i = 0; i < 30; i++) {
+			await save("budget-bytes", `long-${String(i).padStart(2, "0")}`, "x".repeat(280));
 		}
 
 		const counts = await owner.memories.listMemories({
@@ -972,21 +966,16 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		});
 		const countBriefing = (await owner.sessions.startSession({ project: "budget-count" })).memories;
 		expect(counts.budget).toMatchObject({
-			alwaysCount: 20,
-			alwaysBytes: indexBytes("rule", 2, 21, "Short rule."),
-			alwaysMaxCount: 20,
-			alwaysMaxBytes: 4096,
-			omittedAlways: 2,
-			onDemandCount: 30,
-			onDemandBytes: indexBytes("topic", 2, 31, "Short topic."),
-			onDemandMaxCount: 30,
-			onDemandMaxBytes: 4096,
-			omittedOnDemand: 2,
+			count: 40,
+			bytes: indexBytes("topic", 2, 41, "Short topic."),
+			maxCount: 40,
+			maxBytes: 8192,
+			omitted: 2,
 		});
-		expect(countBriefing?.always.length).toBe(counts.budget?.alwaysCount);
-		expect(countBriefing?.onDemand.length).toBe(counts.budget?.onDemandCount);
-		expect(countBriefing?.omittedAlways).toBe(counts.budget?.omittedAlways);
-		expect(countBriefing?.omittedOnDemand).toBe(counts.budget?.omittedOnDemand);
+		expect(countBriefing?.entries.length).toBe(40);
+		expect(countBriefing?.entries[0].slug).toBe("topic-41");
+		expect(countBriefing?.omitted).toBe(2);
+		expect(countBriefing?.totalApproved).toBe(42);
 
 		const bytes = await owner.memories.listMemories({
 			projectScope: { case: "project", value: "budget-bytes" },
@@ -994,23 +983,16 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			limit: 1,
 		});
 		const byteBriefing = (await owner.sessions.startSession({ project: "budget-bytes" })).memories;
-		const entryBytes = "long-00: ".length + 240;
-		expect(bytes.budget).toMatchObject({
-			alwaysCount: 16,
-			alwaysBytes: 16 * entryBytes,
-			omittedAlways: 2,
-			onDemandCount: 0,
-			omittedOnDemand: 0,
-		});
-		expect(byteBriefing?.always.length).toBe(16);
-		expect(byteBriefing?.omittedAlways).toBe(2);
+		const entryBytes = "long-00: ".length + 280;
+		expect(bytes.budget).toMatchObject({ count: 28, bytes: 28 * entryBytes, omitted: 2 });
+		expect(byteBriefing?.entries.length).toBe(28);
+		expect(byteBriefing?.omitted).toBe(2);
 
 		// The budget describes the session start, not the listing's filters, and a
 		// listing with no single project reports global alone.
 		const filtered = await owner.memories.listMemories({
 			projectScope: { case: "project", value: "budget-bytes" },
 			states: [MemoryState.ARCHIVED],
-			mode: MemoryMode.ON_DEMAND,
 			query: "no-such-memory",
 		});
 		expect(filtered.memories).toEqual([]);
@@ -1022,6 +1004,12 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(all.budget).toEqual(global.budget);
 	});
 
+	it("refuses to list built-in skills, which only the CLI has", async () => {
+		await expect(ownerClients().skills.listSkills({ scope: SkillScope.BUILTIN })).rejects.toThrow(
+			"built-in skills are compiled into the hotbed CLI, not stored on the controller",
+		);
+	});
+
 	it("supports MemoryService auto-approval, full editing, promoting to global, superseding, removal, and session recall", async () => {
 		const owner = ownerClients();
 		await owner.cluster.addProject({
@@ -1031,7 +1019,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		await owner.cluster.addProject({ name: "other-proj", repos: ["github.com/org/other-proj"] });
 		const s1 = await owner.sessions.startSession({ project: "mem-proj" });
 
-		// Agent saves global always-on rule + project on-demand memory — both are auto-approved immediately.
+		// Agent saves a global memory and a project one — both are auto-approved immediately.
 		const m1 = await owner.memories.proposeMemory({
 			sessionId: s1.id,
 			global: true,
@@ -1039,8 +1027,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				slug: "use-neon",
 				title: "Subagent model",
 				summary: "Use gemini-4-neon for subagents.",
-				body: "Optional detail body.",
-				mode: MemoryMode.ALWAYS,
+				body: "Use gemini-4-neon for every subagent unless the user names another model.",
 				tags: ["subagents", "models"],
 			},
 			rationale: "user preference",
@@ -1057,7 +1044,6 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				title: "Build tips",
 				summary: "Build tips for mem-proj",
 				body: "Always run pnpm build first.",
-				mode: MemoryMode.ON_DEMAND,
 				tags: ["build"],
 			},
 			rationale: "discovered during build",
@@ -1071,43 +1057,40 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(snap.pendingMemories).toBe(0);
 		expect(snap.globalPendingMemories).toBe(0);
 
-		// New session immediately receives both in briefing + memory-saving reminder.
+		// New session immediately lists both summaries (newest first), without
+		// their bodies, plus the memory-saving reminder.
 		const s2 = await owner.sessions.startSession({ project: "mem-proj" });
-		expect(s2.memories?.always.map((e) => e.slug)).toEqual(["use-neon"]);
-		expect(s2.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
+		expect(
+			s2.memories?.entries.map((e) => ({ slug: e.slug, summary: e.summary, project: e.project })),
+		).toEqual([
+			{ slug: "build-tips", summary: "Build tips for mem-proj", project: "mem-proj" },
+			{ slug: "use-neon", summary: "Use gemini-4-neon for subagents.", project: "" },
+		]);
 		expect(s2.memories?.totalApproved).toBe(2);
 		expect(s2.reminder).toContain("hotbed memory add");
 
-		// Omitting mode defaults to ALWAYS when body is empty and ON_DEMAND when body is set.
-		const mAutoAlways = await owner.memories.proposeMemory({
-			sessionId: s1.id,
-			rationale: "testing default always mode",
-			content: { slug: "auto-always-rule", summary: "Concise inline rule without --mode." },
-		});
-		expect(mAutoAlways.content?.mode).toBe(MemoryMode.ALWAYS);
-		const mAutoOnDemand = await owner.memories.proposeMemory({
-			sessionId: s1.id,
-			rationale: "testing default on_demand mode",
-			content: {
-				slug: "auto-on-demand-playbook",
-				summary: "Trigger line without --mode.",
-				body: "Full playbook body.",
-			},
-		});
-		expect(mAutoOnDemand.content?.mode).toBe(MemoryMode.ON_DEMAND);
+		// Every memory needs a summary and a body.
 		await expect(
 			owner.memories.proposeMemory({
 				sessionId: s1.id,
-				rationale: "testing explicit on_demand without body",
-				content: {
-					slug: "explicit-on-demand-no-body",
-					summary: "Explicit on_demand still requires body.",
-					mode: MemoryMode.ON_DEMAND,
-				},
+				rationale: "testing a memory without a body",
+				content: { slug: "no-body", summary: "A summary alone is not a memory." },
 			}),
-		).rejects.toThrow(/require --body/);
-		await owner.memories.deleteMemory({ id: mAutoAlways.id });
-		await owner.memories.deleteMemory({ id: mAutoOnDemand.id });
+		).rejects.toThrow(/body is required/);
+		await expect(
+			owner.memories.proposeMemory({
+				sessionId: s1.id,
+				rationale: "testing a memory without a summary",
+				content: { slug: "no-summary", body: "A body alone is not listed anywhere." },
+			}),
+		).rejects.toThrow(/summary is required/);
+		await expect(
+			owner.memories.proposeMemory({
+				sessionId: s1.id,
+				rationale: "testing a long summary",
+				content: { slug: "long-summary", summary: "x".repeat(281), body: "details" },
+			}),
+		).rejects.toThrow(/summary is 281 characters \(max 280\)/);
 
 		// Ending a session returns a wrap-up memory reminder.
 		const sEnd = await owner.sessions.startSession({ project: "mem-proj" });
@@ -1124,7 +1107,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(m2Edited.content?.summary).toBe("Updated build tips for mem-proj");
 		expect(m2Edited.content?.body).toBe("Always run pnpm build first.");
 
-		// Editing can change repo, clear repo, edit/clear rationale, and replace/clear title, body, tags.
+		// Editing can change repo, clear repo, edit/clear rationale, and replace/clear title and tags.
 		const m2RepoChanged = await owner.memories.reviseMemory({
 			id: m2.id,
 			repo: "github.com/org/mem-extra",
@@ -1140,14 +1123,13 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				slug: "use-neon",
 				title: "",
 				summary: "Use gemini-4-neon for subagents (edited).",
-				body: "",
-				mode: MemoryMode.ALWAYS,
+				body: "Use gemini-4-neon for subagents.",
 				tags: [],
 			},
 			rationale: "",
 		});
 		expect(m1Cleared.content?.title).toBe("");
-		expect(m1Cleared.content?.body).toBe("");
+		expect(m1Cleared.content?.body).toBe("Use gemini-4-neon for subagents.");
 		expect(m1Cleared.content?.tags).toEqual([]);
 		expect(m1Cleared.provenance?.rationale).toBe("");
 
@@ -1171,7 +1153,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			content: {
 				slug: "build-tips",
 				summary: "Project-specific build tips colliding with global",
-				mode: MemoryMode.ALWAYS,
+				body: "details",
 			},
 		});
 		await expect(owner.memories.reviseMemory({ id: mCollide.id, global: true })).rejects.toThrow(
@@ -1206,7 +1188,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(m2Restored.state).toBe(MemoryState.APPROVED);
 
 		const sOther = await owner.sessions.startSession({ project: "other-proj" });
-		expect(sOther.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
+		expect(sOther.memories?.entries.map((e) => e.slug)).toEqual(["build-tips", "use-neon"]);
 
 		// Agent proposing a memory without rationale is rejected.
 		await expect(
@@ -1216,7 +1198,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				content: {
 					slug: "missing-rationale",
 					summary: "Should fail without rationale.",
-					mode: MemoryMode.ALWAYS,
+					body: "details",
 				},
 			}),
 		).rejects.toThrow(/--rationale/);
@@ -1230,7 +1212,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			content: {
 				slug: "use-neon",
 				summary: "Use gemini-4-neon (high) for subagents.",
-				mode: MemoryMode.ALWAYS,
+				body: "Use gemini-4-neon at its high tier for every subagent.",
 			},
 		});
 		expect(m3.state).toBe(MemoryState.APPROVED);
@@ -1257,8 +1239,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		await expect(owner.memories.showMemory({ ref: String(m2.id) })).rejects.toThrow();
 
 		const sAfterDelete = await owner.sessions.startSession({ project: "other-proj" });
-		expect(sAfterDelete.memories?.onDemand).toEqual([]);
-		expect(sAfterDelete.memories?.always.map((e) => e.slug)).toEqual(["use-neon"]);
+		expect(sAfterDelete.memories?.entries.map((e) => e.slug)).toEqual(["use-neon"]);
 	});
 });
 

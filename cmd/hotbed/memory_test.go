@@ -20,19 +20,20 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	c.ok(nil, "session", "start", "calm-heron")
 	c.ok(nil, "session", "start", "other-fox", "-p", "other")
 
-	// Saving a global always-on rule via `memory add` without --mode or --body defaults to ALWAYS and auto-approves.
+	// Saving a global memory via `memory add` auto-approves it.
 	mem1 := &pb.Memory{}
 	c.ok(mem1, "memory", "add", "-s", "brave-otter",
 		"--global",
 		"--slug", "subagent-model-neon",
 		"--title", "Subagent model",
 		"--summary", "Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents.",
+		"--body", "Delegate every T3 Code subagent to gemini-4-neon unless the user names another model.",
 		"--rationale", "User correction in thread fxdax",
 		"--model", "gemini-4-neon",
 		"--tag", "subagents", "--tag", "models",
 	)
-	if mem1.Id != 1 || mem1.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem1.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL || mem1.Content.Mode != pb.MemoryMode_MEMORY_MODE_ALWAYS {
-		t.Fatalf("mem1 = %v, want APPROVED GLOBAL ALWAYS", mem1)
+	if mem1.Id != 1 || mem1.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem1.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL {
+		t.Fatalf("mem1 = %v, want APPROVED GLOBAL", mem1)
 	}
 	if mem1.CockpitUrl == "" || !strings.HasSuffix(mem1.CockpitUrl, "/memories/1") {
 		t.Errorf("mem1 cockpitUrl = %q, want suffix /memories/1", mem1.CockpitUrl)
@@ -41,7 +42,7 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Errorf("auto-approved memory should carry no approval poll reminder, got %q", mem1.GetReminder())
 	}
 
-	// Saving a project-scoped memory with --body-file - (stdin) without --mode defaults to ON_DEMAND.
+	// Saving a project-scoped memory with --body-file - (stdin).
 	mem2 := &pb.Memory{}
 	c.okIn("# Debugging ZFS flakes\n\nRun `zpool status` first.\n", mem2,
 		"memory", "propose", "-s", "brave-otter",
@@ -52,8 +53,8 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		"--tag", "zfs", "--tag", "bases",
 		"--body-file", "-",
 	)
-	if mem2.Id != 2 || mem2.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem2.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || mem2.Project != "test" || mem2.Content.Mode != pb.MemoryMode_MEMORY_MODE_ON_DEMAND {
-		t.Fatalf("mem2 = %v, want APPROVED PROJECT test ON_DEMAND", mem2)
+	if mem2.Id != 2 || mem2.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem2.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || mem2.Project != "test" || mem2.Content.Body != "# Debugging ZFS flakes\n\nRun `zpool status` first." {
+		t.Fatalf("mem2 = %v, want APPROVED PROJECT test with its body", mem2)
 	}
 
 	// Agent saving a memory without --rationale is rejected.
@@ -61,9 +62,10 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Fatalf("agent memory add without rationale = %v, want INVALID_ARGS", e)
 	}
 
-	// Explicit --mode on_demand without --body is still rejected.
-	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--mode", "on_demand", "--slug", "no-body", "--summary", "needs body", "--rationale", "testing"); e.Code != api.CodeInvalidArgs {
-		t.Fatalf("explicit on_demand without body = %v, want INVALID_ARGS", e)
+	// Every memory is a summary and a body: a summary alone is refused.
+	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--slug", "no-body", "--summary", "needs body", "--rationale", "testing"); e.Code != api.CodeInvalidArgs ||
+		e.Message != "body is required: the memory itself, read with `hotbed memory get` once its summary applies" {
+		t.Fatalf("memory add without --body = %v, want INVALID_ARGS asking for the body", e)
 	}
 
 	// Default `memory ls` immediately shows both active memories (no approval step).
@@ -80,17 +82,22 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Errorf("snapshot pendingMemories=%d global=%d, want 0 and 0", snap.PendingMemories, snap.GlobalPendingMemories)
 	}
 
-	// Starting a new session immediately returns both memories in compact form (plain text + JSON).
+	// Starting a new session immediately lists both memories' summaries,
+	// newest first, without their bodies (plain text + JSON).
 	started := &pb.Session{}
 	c.ok(started, "session", "start", "keen-fox")
-	if started.Memories == nil || len(started.Memories.Always) != 1 || len(started.Memories.OnDemand) != 1 {
-		t.Fatalf("session start memories = %+v", started.Memories)
+	var briefed []string
+	for _, e := range started.GetMemories().GetEntries() {
+		briefed = append(briefed, e.Slug+": "+e.Summary)
 	}
-	if started.Memories.Always[0].Slug != "subagent-model-neon" || started.Memories.OnDemand[0].Slug != "zfs-base-freshen" {
-		t.Errorf("unexpected briefing slugs: always=%v onDemand=%v", started.Memories.Always, started.Memories.OnDemand)
+	if want := []string{
+		"zfs-base-freshen: How to debug ZFS snapshot/clone base freshening flakes.",
+		"subagent-model-neon: Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents.",
+	}; !slices.Equal(briefed, want) {
+		t.Errorf("session start memories = %q, want %q", briefed, want)
 	}
 
-	// Plain-text session start renders both sections cleanly.
+	// Plain-text session start lists them under one heading.
 	var plainOutBuf, plainErrBuf bytes.Buffer
 	plainDeps := c.cli
 	plainDeps.stdout, plainDeps.stderr = &plainOutBuf, &plainErrBuf
@@ -99,10 +106,11 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Fatalf("plain session start failed (%d): %s", code, plainErrBuf.String())
 	}
 	plainOut := plainOutBuf.String()
-	for _, want := range []string{"Memories (1 always-on, 1 on-demand", "Always-on:", "[global] subagent-model-neon:", "On-demand (read when relevant):", "[test] zfs-base-freshen —"} {
-		if !strings.Contains(plainOut, want) {
-			t.Errorf("plain session start output missing %q:\n%s", want, plainOut)
-		}
+	wantMemories := "\n\nMemories (read one with `hotbed memory get SLUG` when its summary applies):\n" +
+		"  [test] zfs-base-freshen — How to debug ZFS snapshot/clone base freshening flakes.\n" +
+		"  [global] subagent-model-neon — Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents.\n\n"
+	if !strings.Contains(plainOut, wantMemories) {
+		t.Errorf("plain session start output missing %q:\n%s", wantMemories, plainOut)
 	}
 
 	// --omit-memories suppresses the briefing.
@@ -136,7 +144,7 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Fatalf("memory ls -q zpool = %+v", searched.Memories)
 	}
 
-	// Edit a memory in any way: partial edits, clearing title/tags/rationale/body, changing mode/slug.
+	// Edit a memory in any way: partial edits, clearing title/tags/rationale, changing slug.
 	edited1 := &pb.Memory{}
 	c.ok(edited1, "memory", "edit", "1",
 		"--summary", "Use gemini-4-neon (high) for subagents.",
@@ -158,11 +166,11 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	c.ok(replaced1, "memory", "edit", "1",
 		"--replace-content",
 		"--slug", "subagent-model-neon",
-		"--mode", "always",
 		"--summary", "Use gemini-4-neon for all T3 Code subagents.",
+		"--body", "Every T3 Code subagent runs on gemini-4-neon.",
 		"--tag", "agents",
 	)
-	if replaced1.Content.Title != "" || replaced1.Content.Body != "" || !slices.Equal(replaced1.Content.Tags, []string{"agents"}) {
+	if replaced1.Content.Title != "" || replaced1.Content.Body != "Every T3 Code subagent runs on gemini-4-neon." || !slices.Equal(replaced1.Content.Tags, []string{"agents"}) {
 		t.Errorf("replaced1 content = %+v", replaced1.Content)
 	}
 
@@ -202,10 +210,11 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	// Superseding an existing memory immediately transitions old -> superseded and keeps slug working.
 	mem3 := &pb.Memory{}
 	c.ok(mem3, "memory", "propose", "-s", "brave-otter",
-		"--global", "--mode", "always",
+		"--global",
 		"--slug", "subagent-model-neon",
 		"--supersede", "1",
 		"--summary", "Use gemini-4-neon (high) for all T3 Code subagents; never GPT.",
+		"--body", "Delegate every T3 Code subagent to gemini-4-neon at its high tier; never a GPT model.",
 		"--rationale", "Clarified model tier with user",
 	)
 	if mem3.State != pb.MemoryState_MEMORY_STATE_APPROVED {
@@ -260,8 +269,8 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	}
 	// Slug of removed memory can be reused cleanly!
 	reused := &pb.Memory{}
-	c.ok(reused, "memory", "propose", "-p", "test", "--mode", "always",
-		"--slug", "zfs-base-freshen", "--summary", "Fresh memory reusing removed slug.")
+	c.ok(reused, "memory", "propose", "-p", "test",
+		"--slug", "zfs-base-freshen", "--summary", "Fresh memory reusing removed slug.", "--body", "details")
 	if reused.State != pb.MemoryState_MEMORY_STATE_APPROVED || reused.Content.Slug != "zfs-base-freshen" {
 		t.Fatalf("reused = %+v", reused)
 	}
@@ -277,7 +286,7 @@ func TestMemoryAddForAnotherProject(t *testing.T) {
 
 	theirs := &pb.Memory{}
 	c.ok(theirs, "memory", "add", "-s", "brave-otter", "-p", "other",
-		"--slug", "other-rule", "--summary", "A rule of project other.", "--rationale", "learned in a test session")
+		"--slug", "other-rule", "--summary", "A rule of project other.", "--body", "details", "--rationale", "learned in a test session")
 	if theirs.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || theirs.Project != "other" || theirs.State != pb.MemoryState_MEMORY_STATE_APPROVED {
 		t.Fatalf("memory add -p other from a test session = scope %v project %q state %v, want PROJECT other APPROVED", theirs.Scope, theirs.Project, theirs.State)
 	}
@@ -288,14 +297,14 @@ func TestMemoryAddForAnotherProject(t *testing.T) {
 	// It may supersede that project's memories...
 	replaced := &pb.Memory{}
 	c.ok(replaced, "memory", "add", "-s", "brave-otter", "-p", "other", "--supersede", fmt.Sprint(theirs.Id),
-		"--slug", "other-rule", "--summary", "A sharper rule of project other.", "--rationale", "sharpened")
+		"--slug", "other-rule", "--summary", "A sharper rule of project other.", "--body", "details", "--rationale", "sharpened")
 	if replaced.Project != "other" || !slices.Equal(replaced.SupersedesIds, []int32{theirs.Id}) {
 		t.Fatalf("superseding within other = project %q supersedes %v, want other [%d]", replaced.Project, replaced.SupersedesIds, theirs.Id)
 	}
 
 	// ...but a memory of one project never replaces another project's.
 	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--supersede", fmt.Sprint(replaced.Id),
-		"--slug", "steal", "--summary", "A test rule.", "--rationale", "testing"); e.Code != api.CodeConflict ||
+		"--slug", "steal", "--summary", "A test rule.", "--body", "details", "--rationale", "testing"); e.Code != api.CodeConflict ||
 		e.Message != fmt.Sprintf("memory #%d is project other's: a memory of project test cannot supersede it", replaced.Id) {
 		t.Fatalf("test memory superseding other's = %v, want CONFLICT naming both projects", e)
 	}
@@ -303,7 +312,7 @@ func TestMemoryAddForAnotherProject(t *testing.T) {
 	// A global memory may consolidate it upward.
 	global := &pb.Memory{}
 	c.ok(global, "memory", "add", "-s", "brave-otter", "--global", "--supersede", fmt.Sprint(replaced.Id),
-		"--slug", "everyone-rule", "--summary", "A rule for every project.", "--rationale", "applies everywhere")
+		"--slug", "everyone-rule", "--summary", "A rule for every project.", "--body", "details", "--rationale", "applies everywhere")
 	if global.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL || !slices.Equal(global.SupersedesIds, []int32{replaced.Id}) {
 		t.Fatalf("global superseding other's = scope %v supersedes %v, want GLOBAL [%d]", global.Scope, global.SupersedesIds, replaced.Id)
 	}
@@ -313,8 +322,8 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 	t.Parallel()
 	c := newControllerOnly(t)
 	// Seed a global memory directly (user action, no session bound, auto-approved).
-	c.ok(nil, "memory", "propose", "--global", "--mode", "always",
-		"--slug", "mcp-test-rule", "--summary", "Always prefer neon over GPT.")
+	c.ok(nil, "memory", "propose", "--global",
+		"--slug", "mcp-test-rule", "--summary", "Always prefer neon over GPT.", "--body", "Pick gemini-4-neon over any GPT model.")
 
 	dir := t.TempDir()
 	c.chdir(dir)
@@ -341,7 +350,6 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 	prop := &pb.Memory{}
 	m.call(prop, "memory_add", map[string]any{
 		"global":    true,
-		"mode":      "on_demand",
 		"slug":      "mcp-playbook",
 		"summary":   "Playbook saved over MCP",
 		"body":      "Step 1: verify MCP.\n",

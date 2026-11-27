@@ -585,6 +585,12 @@ export function createSkillService(ctrl: ControllerContext): ServiceImpl<typeof 
 			if (req.scope === SkillScope.GLOBAL && explicitProject) {
 				throw hotbedError(ErrorCode.InvalidArgs, "cannot combine --scope global with --project");
 			}
+			if (req.scope === SkillScope.BUILTIN) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					"built-in skills are compiled into the hotbed CLI, not stored on the controller",
+				).withSuggestion("hotbed skills ls lists them, and hotbed skills get NAME reads one");
+			}
 			let project = "";
 			if (req.scope === SkillScope.GLOBAL) {
 				if (req.sessionId) ctrl.store.sessions.get(req.sessionId);

@@ -246,10 +246,26 @@ func (c *skillsLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if out.Skills == nil {
 		out.Skills = []*pb.Skill{}
 	}
-	if c.Scope == "" && c.Tag == "" && len(c.State) == 0 && (c.Query == "" || strings.Contains("hotbed", strings.ToLower(c.Query))) {
-		out.Builtin = builtins
+	if c.Scope == "" && c.Tag == "" && len(c.State) == 0 {
+		out.Builtin = matchingBuiltins(builtins, c.Query)
 	}
 	return out, nil
+}
+
+// matchingBuiltins keeps the built-in skills whose name or description
+// holds query (any case), as the controller matches the stored ones.
+func matchingBuiltins(list []skills.Skill, query string) []skills.Skill {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return list
+	}
+	var out []skills.Skill
+	for _, s := range list {
+		if strings.Contains(strings.ToLower(s.Name+"\n"+s.Description), q) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ---- get ----
@@ -330,9 +346,10 @@ func (c *skillsGetCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	if !c.AllFiles {
 		if content, err := skills.Get(builtinTarget); err == nil {
-			// Prefer a controller skill if one explicitly exists with a non-builtin ref,
-			// unless ref is explicitly "hotbed" / "hotbed/..." / "skill://builtin/..." or no controller is set.
-			if strings.HasPrefix(c.Ref, "skill://builtin/") || c.Ref == "hotbed" || strings.HasPrefix(c.Ref, "hotbed/") {
+			// A built-in skill's name (or a file below it) is that skill: hotbed's
+			// own guides are read offline, whatever the controller stores.
+			name, _, _ := strings.Cut(c.Ref, "/")
+			if strings.HasPrefix(c.Ref, "skill://builtin/") || skills.IsBuiltin(name) {
 				return skillsGetResult{Name: builtinTarget, Content: content}, nil
 			}
 		}

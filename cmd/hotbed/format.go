@@ -38,7 +38,6 @@ type formatSpec struct {
 
 var defaultFormatSpecs = map[string]formatSpec{
 	"version":          {versionResult{}, `{{.version}}{{if .commit}} ({{short 12 .commit}}){{end}}  {{.os}}/{{.arch}}`},
-	"session start":    {&pb.Session{}, "{{.id}}{{if .project}}  project={{.project}}{{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}{{with .memories}}{{if or .always .onDemand}}\n\nMemories ({{len .always}} always-on, {{len .onDemand}} on-demand — fetch details with `hotbed memory get SLUG`):{{if .always}}\nAlways-on:{{range .always}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}}: {{.summary}}{{end}}{{end}}{{if .omittedAlways}}\n  (+{{.omittedAlways}} more always-on memories — run `hotbed memory ls --mode always`){{end}}{{if .onDemand}}\nOn-demand (read when relevant):{{range .onDemand}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}} — {{.summary}}{{end}}{{end}}{{if .omittedOnDemand}}\n  (+{{.omittedOnDemand}} more on-demand memories — run `hotbed memory ls`){{end}}{{end}}{{end}}{{if .skills}}{{if .skills.skills}}\n\nSkills ({{len .skills.skills}} — load with `hotbed skills get NAME` or MCP `skills/get`):{{range .skills.skills}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.name}} — {{.description}}{{if .uri}} ({{.uri}}){{end}}{{end}}{{end}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"},
 	"session current":  {sessionBinding{}, `{{.id}}  ({{.source}})`},
 	"session end":      {&pb.Session{}, "{{.id}}  ended{{if .reminder}}\n{{.reminder}}{{end}}"},
 	"session ls":       {&pb.ListSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}"},
@@ -170,6 +169,9 @@ func formatOutputQueryWithTimestamps(res *pb.OutputQuery, now time.Time) string 
 func report(data any, timestamps bool) (text string, ok bool, err error) {
 	if res, ok := data.(boardImportSummary); ok {
 		return formatBoardImportSummary(res), true, nil
+	}
+	if res, ok := data.(sessionStarted); ok {
+		return formatSessionStarted(res.Session), true, nil
 	}
 	if text, ok := formatSkillReport(data); ok {
 		return text, true, nil

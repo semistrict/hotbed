@@ -1005,7 +1005,7 @@ Proxy a GitHub REST or GraphQL API request through the controller using its stor
 
 ## `issue`
 
-Cross-agent memories and learned rules shared across sessions and machines.
+IssueService keeps the problems agents and people hit with hotbed itself: a bug, a missing capability, an error that misleads.
 
 ### `hotbed issue report TITLE`
 
@@ -1074,9 +1074,11 @@ Reopen an archived issue: it is back.
 
 ## `memory`
 
+Cross-agent memories shared across sessions and machines.
+
 ### `hotbed memory add`
 
-Save a new memory or supersede/consolidate existing memories (--supersede ID). Automatically approved and active immediately. Defaults to the active session's project; pass --global for cross-project learnings. When --mode is omitted, omitting --body saves a short always-on rule (<= 240 chars) and passing --body/--body-file saves an on-demand playbook fetched with `hotbed memory get`.
+Save a new memory, or supersede/consolidate existing ones (--supersede ID). Approved and active at once. Defaults to the active session's project; pass --global for cross-project learnings. Give a --summary that says when it applies (session start lists it) and the --body/--body-file an agent reads with `hotbed memory get` once it does.
 
 *MCP tool: `memory_add` · uses `-s/--session`*
 
@@ -1084,10 +1086,9 @@ Save a new memory or supersede/consolidate existing memories (--supersede ID). A
 | --- | --- | --- |
 | `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
 | `--title` |  | Short human title (optional; max 120 chars). |
-| `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
-| `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--summary` |  | One line saying what the memory is about and when to read it, which every session start lists (required; <= 280 chars). |
+| `--body` |  | The memory itself, in markdown, read with `hotbed memory get` once the summary applies (required; max 64 KiB). |
 | `--body-file` |  | Read `--body` from this file (`-` for stdin). |
-| `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--global` |  | Propose as a global memory (applies across all projects and machines). |
 | `-p`, `--project` |  | Project to scope this memory to (default: the active session's project). |
@@ -1106,10 +1107,9 @@ Alias for `hotbed memory add`.
 | --- | --- | --- |
 | `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
 | `--title` |  | Short human title (optional; max 120 chars). |
-| `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
-| `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--summary` |  | One line saying what the memory is about and when to read it, which every session start lists (required; <= 280 chars). |
+| `--body` |  | The memory itself, in markdown, read with `hotbed memory get` once the summary applies (required; max 64 KiB). |
 | `--body-file` |  | Read `--body` from this file (`-` for stdin). |
-| `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--global` |  | Propose as a global memory (applies across all projects and machines). |
 | `-p`, `--project` |  | Project to scope this memory to (default: the active session's project). |
@@ -1128,7 +1128,6 @@ List memories (compact metadata without full body). Defaults to approved memorie
 | --- | --- | --- |
 | `--state` |  | Filter by state (repeatable); default is approved. |
 | `--scope` |  | Filter by scope: global or project; omit for global + active project. |
-| `--mode` |  | Filter by delivery mode: always or on_demand. |
 | `-p`, `--project` | `HOTBED_PROJECT` | Only memories for this project (with global unless --scope project). |
 | `--all-projects` |  | List memories across global and every project. |
 | `--tag` |  | Filter by tag. |
@@ -1160,7 +1159,7 @@ Show one memory with its full body, provenance, supersession links, and complete
 
 ### `hotbed memory edit ID`
 
-Edit a memory in any way (slug, title, summary, body, mode, tags, scope, repo, or rationale). Unspecified fields stay unchanged unless --replace-content or a clear flag is passed.
+Edit a memory in any way (slug, title, summary, body, tags, scope, repo, or rationale). Unspecified fields stay unchanged unless --replace-content or a clear flag is passed.
 
 *MCP tool: `memory_edit` · uses `-s/--session`*
 
@@ -1169,17 +1168,15 @@ Edit a memory in any way (slug, title, summary, body, mode, tags, scope, repo, o
 | `ID` |  | Memory ID to edit. |
 | `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
 | `--title` |  | Short human title (optional; max 120 chars). |
-| `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
-| `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--summary` |  | One line saying what the memory is about and when to read it, which every session start lists (required; <= 280 chars). |
+| `--body` |  | The memory itself, in markdown, read with `hotbed memory get` once the summary applies (required; max 64 KiB). |
 | `--body-file` |  | Read `--body` from this file (`-` for stdin). |
-| `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--global` |  | Change scope to global (shared across all projects). |
 | `-p`, `--project` |  | Change scope to this project. |
 | `--if-revision` |  | Refuse with CONFLICT unless the memory is at this revision. |
-| `--replace-content` |  | Replace all content fields (slug, title, summary, body, mode, tags) with the provided content instead of merging only non-empty fields. |
+| `--replace-content` |  | Replace all content fields (slug, title, summary, body, tags) with the provided content instead of merging only non-empty fields. |
 | `--clear-title` |  | Clear the optional title. |
-| `--clear-body` |  | Clear the optional body (allowed in always mode). |
 | `--replace-tags` |  | Replace tags with the provided --tag list (omit --tag to clear all tags). |
 | `--repo` |  | Set or clear ("") the optional repo within a project-scoped memory. |
 | `--rationale` |  | Set or clear ("") the provenance rationale. |
@@ -1195,15 +1192,13 @@ Promote a project-specific memory to a global memory shared across all projects.
 | `ID` |  | Memory ID to edit. |
 | `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
 | `--title` |  | Short human title (optional; max 120 chars). |
-| `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
-| `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--summary` |  | One line saying what the memory is about and when to read it, which every session start lists (required; <= 280 chars). |
+| `--body` |  | The memory itself, in markdown, read with `hotbed memory get` once the summary applies (required; max 64 KiB). |
 | `--body-file` |  | Read `--body` from this file (`-` for stdin). |
-| `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--if-revision` |  | Refuse with CONFLICT unless the memory is at this revision. |
-| `--replace-content` |  | Replace all content fields (slug, title, summary, body, mode, tags) with the provided content instead of merging only non-empty fields. |
+| `--replace-content` |  | Replace all content fields (slug, title, summary, body, tags) with the provided content instead of merging only non-empty fields. |
 | `--clear-title` |  | Clear the optional title. |
-| `--clear-body` |  | Clear the optional body (allowed in always mode). |
 | `--replace-tags` |  | Replace tags with the provided --tag list (omit --tag to clear all tags). |
 | `--repo` |  | Set or clear ("") the optional repo within a project-scoped memory. |
 | `--rationale` |  | Set or clear ("") the provenance rationale. |

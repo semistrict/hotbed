@@ -11,10 +11,23 @@ the default branch, checked out and already built (dependencies, `target/`, tool
 Your workspace is an instant copy-on-write fork of it, so the first build in it compiles only what
 you changed.
 
+This skill is the core: sessions, runs, output and waiting. hotbed's other built-in skills cover
+the rest; a session start lists them, and `hotbed skills get NAME` reads one:
+
+| Skill | When |
+|---|---|
+| `hotbed-setup-steps` | A workspace lacks a tool, dependency or pre-build; a base fails a step |
+| `hotbed-questions` | You need the user's decision, or `poll` brings an answer |
+| `hotbed-reviews` | A change needs review, or you were given a review number |
+| `hotbed-memories` | A listed memory's summary applies, or a lesson has no better home |
+| `hotbed-skills` | Adding, installing or reading Agent Skills stored in hotbed |
+| `hotbed-board` | Coordinating with other agents through threads or a task queue |
+| `hotbed-schedules` | Work should recur on a cron schedule |
+
 ## The loop
 
 ```sh
-hotbed session start                             # prints active memories + skill descriptors & binds to T3CODE_THREAD_ID / worktree
+hotbed session start                             # lists skills and memories (one line each) & binds to T3CODE_THREAD_ID / worktree
 hotbed run -- go vet ./...                       # quick work: placed on a node, syncs your edits there, runs, prints output, exits with its status
                                                  # (125 if still running after 2 min: left running, detached; see run)
 hotbed run --detach --mem 8G -- cargo nextest run  # long work: say what it needs; prints the command's ID and returns
@@ -23,7 +36,10 @@ hotbed output CMD --grep 'FAIL|panicked' -C 3    # read its output, kept whole: 
 hotbed session end                               # ends session and reminds you to save any lessons learned
 ```
 
-Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints active memories and all relevant skill descriptors directly and auto-binds the session so `-s` is not needed.
+Do not pipe `hotbed session start` into `jq` or swallow its stdout: it lists every skill (hotbed's
+built-in ones first, then the project's and global ones) and every memory, each as one line saying
+when it applies, and auto-binds the session so `-s` is not needed. Read a skill with
+`hotbed skills get NAME` and a memory with `hotbed memory get SLUG` once its line applies.
 
 - **A session works on a project.** A project is one or more repos, named by their canonical git
   remotes (`github.com/semistrict/hotbed`). `session start` picks the one project that holds this
@@ -82,211 +98,6 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   node is offline it fails retryably rather than start over; `--arch` naming another
   architecture starts a fresh workspace there.
 
-## Memories & learning
-
-Memories are cross-agent rules and playbooks shared across every agent harness and machine. New
-memories are automatically approved and active immediately; users can edit any field, promote a
-project memory to global, archive/restore, reorder, or permanently remove them in the cockpit or CLI.
-
-```sh
-hotbed session start                             # prints active always-on rules + on-demand index
-hotbed memory get zsh-and-macos-shell-footguns   # fetch full markdown body of one or more memories
-hotbed memory ls [-q QUERY] [--scope global|project] [--all-projects]
-hotbed memory add --global \
-  --slug short-replies \
-  --summary "Keep chat replies to a few lines; put long detail in files or artifacts." \
-  --rationale "User correction: they don't read long replies"
-hotbed memory add --slug zfs-base-freshen \
-  --summary "ZFS clone/snapshot base freshening internals — read before debugging base failures." \
-  --rationale "Hit ZFS clone flake while debugging base freshening" \
-  --body-file - <<'EOF'
-...detailed markdown playbook...
-EOF
-hotbed memory add --supersede 4 --slug short-replies --summary "..." --rationale "..."
-hotbed memory edit 4 --summary "..." [--global | -p PROJECT] [--repo REPO] [--rationale "..."]
-hotbed memory promote 2                          # promote a project-specific memory to global
-hotbed memory archive 2 --reason "..."           # soft-retire (restorable via `memory restore`; --reason required for agents)
-hotbed memory rm 2                               # permanently remove a memory
-```
-
-- **Save lessons when you resolve them (not just in local files):** whenever you resolve a
-  non-obvious bug or repo/tooling quirk, the user corrects you, or the user says "remember this" /
-  "add to memory" / `/learn`, save it with `hotbed memory add` (alias `memory propose`, MCP:
-  `memory_add`) so every future session gets it on `hotbed session start`. Agents must pass
-  `--rationale "..."` explaining why the memory is being added and what triggered it; this
-  rationale is stored as metadata only and is not returned in context when reading memories.
-  `hotbed session end` prompts you at wrap-up.
-- **A memory is the last resort.** Every always-on memory costs every session's context, so first
-  put the lesson where it will be found: fix the bug or tooling quirk itself (a script, a check, a
-  clearer error); write a design decision as a comment beside the code it constrains, or in the
-  repo's `AGENTS.md` (a subdirectory's own `AGENTS.md` for rules about that part); and put how to
-  use a tool in that tool's skill. Save a memory for what has no such home: the user's
-  preferences, facts about machines, and workarounds for open bugs (name the bug's task so the
-  memory can go once it is fixed). Check `hotbed memory ls -q WORD` first and update a memory that
-  already covers it; keep each memory to one rule, so one can be retired without the others.
-- **Archive outdated memories with a reason:** when a memory is obsolete or no longer true,
-  agents can soft-retire it with `hotbed memory archive ID --reason "..."` (MCP: `memory_archive`;
-  `--reason` is required for agents). Archived memories can be restored with `hotbed memory restore`.
-- **Automatic delivery mode:** omit `--mode` and hotbed picks automatically:
-  - No `--body` → `always`: short guardrail/preference (≤ 240 chars) printed inline on every
-    `hotbed session start` (and in `hotbed mcp` server instructions).
-  - With `--body` / `--body-file` → `on_demand`: 1-line summary + trigger on `session start`; fetch
-    details with `hotbed memory get SLUG [SLUG...]` (or `global/SLUG`, `PROJECT/SLUG`, `#ID`).
-- **Two scopes:** defaults to your session's project (and repo if held by the project); pass
-  `--global` for cross-project preferences and workflows, or `-p PROJECT` for a lesson that
-  belongs to another project than your session's. Use `hotbed memory promote ID` (or
-  `hotbed memory edit ID --global`) to promote a project memory to global. A project's memory
-  can supersede only global memories and its own project's; a global one can supersede any.
-- **Update & condense, don't duplicate:** if a slug already exists, hotbed tells you its `#ID` so
-  you can pass `--supersede ID` or edit in place with `hotbed memory edit ID` (supporting
-  `--clear-title`, `--clear-body`, `--replace-tags`, `--replace-content`, `--repo`, `--rationale`).
-  `hotbed memory show REF` prints provenance, supersession links, and full revision history.
-
-## Agent Skills (CLI, `npx skills`-compatible install, & MCP)
-
-Hotbed stores reusable [Agent Skills](https://agentskills.io) (multi-file `SKILL.md` packages with `references/`, `scripts/`, `assets/`) in the controller, scoped either globally or to a project/repo, and announces **every** active skill descriptor relevant to your session on `hotbed session start` (pass `--omit-skills` to suppress). Skills are also served natively over MCP via the **MCP Skills Extension (SEP-2640, `io.modelcontextprotocol/skills`)** and standard MCP `resources/*` (`skill://global/<name>/SKILL.md`, `skill://<project>/<name>/SKILL.md`, `skill://builtin/hotbed/SKILL.md`).
-
-```sh
-# Install from any `npx skills` source (GitHub shorthand, @skill, @ref, GitHub/GitLab/Git URL,
-# local dir, RFC 8615 well-known URL, or direct SKILL.md / .zip / .tar.gz archive):
-hotbed skills add vercel-labs/agent-skills --list            # preview skills in source
-hotbed skills add vercel-labs/agent-skills -s frontend-design -g
-hotbed skills add owner/repo@my-skill -p myproj              # project-scoped skill
-hotbed skills add ./local-skills --rename custom-name        # rename SKILL.md frontmatter on install
-hotbed skills add owner/repo --local -a claude-code -a codex # also install into local agent dirs
-hotbed skills install --from-hotbed -g -a claude-code        # materialize active hotbed skills locally
-
-# Inspect, read, search, update, and manage skills:
-hotbed skills ls [-q QUERY] [--scope global|project] [--all-projects]
-hotbed skills get NAME [SUPPORTING_FILE] [--all-files]       # e.g. `hotbed skills get code-review references/checklist.md`
-hotbed skills show NAME                                      # manifest, SHA-256 digests, upstream source, history
-hotbed skills find QUERY [--owner USER]                      # search skills.sh
-hotbed skills check [NAME...]                                # check upstream sources for updates
-hotbed skills update [NAME...]                               # pull latest upstream changes into hotbed
-hotbed skills init [NAME]                                    # scaffold a new SKILL.md locally
-hotbed skills edit REF [--global | -p PROJECT] [--tag TAG] [--rationale "..."]
-hotbed skills promote REF                                    # promote project skill to global
-hotbed skills archive REF [--reason "..."] / restore REF / rm REF / move REF --first|--last|--before ID
-```
-
-- **`hotbed skills install` (no arguments)** still installs the compiled-in `hotbed` guide into `~/.claude/skills` offline (used by `hotbed upgrade`). Passing a source (`hotbed skills install owner/repo`) delegates to `skills add`, matching `npx skills install`.
-- **Cockpit `/skills`:** browse, inspect every supporting file, create new skills, promote, archive/restore, reorder, and delete skills from the web UI.
-
-## Missing a tool or dependency? Add a step
-
-Never install things ad hoc in a workspace: the next workspace, and every other agent, would
-lack them again. Make it a **setup step** of the project instead. By default, after all setup
-steps have run, common dev commands (builds, tests, checks, linters, etc.) should run without
-downloading or compiling anything:
-
-```sh
-hotbed step add playwright -- 'cd ratel && pnpm exec playwright install chromium'
-```
-
-`step add` runs the script in `/work` of your session's workspace, so you have what it installs at
-once. It runs it a second time to check that it is idempotent, then saves it to the session's
-project. Every base built after that runs it, so every new workspace starts with it. A step is a
-bash script run with `-eo pipefail` in `/work`, beside every repo of the project (so `cd REPO`
-first for one repo's build), and it is like a database migration: a base runs it once, and again
-only when its script changes. Add `--every-pull` for steps that must follow the code, such as
-builds and installs from a lockfile: they run again whenever any repo moved.
-
-Bases run steps against the default branch's files. A branch that changes what a step reads (a
-package list, a script it runs) must run that step's script in its own workspace first, or its
-runs lack what the change adds.
-
-- Install into the workspace, never into `$HOME` or the system, or forks won't have it. Programs go
-  in `$HOTBED_BIN` (on PATH). Caches and data go in `$XDG_CACHE_HOME` and `$XDG_DATA_HOME`.
-  `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH` and npm's cache already point into the workspace.
-  `$HOTBED_MEMORY_BYTES` carries the command's effective memory ceiling in bytes (the VM's RAM or the
-  host work slice's limit), so memory-heavy build steps (e.g. `CARGO_BUILD_JOBS`) can scale parallelism
-  to fit without OOM-killing on smaller nodes.
-- Make steps safe to repeat: check before installing, use `mkdir -p` and `--force`. A step that fails
-  its second run is refused (`STEP_NOT_IDEMPOTENT`).
-- To fix a step, add it again under the same name. `hotbed step ls` (`-p PROJECT` for another
-  project than the session's) shows each step and whether each node's newest base ran it. `hotbed
-  step show NAME` prints its script. `hotbed project bases [PROJECT] [--node HOST] [--state
-  building|warm|stale|failed]` lists every node's bases (newest generation first per node), their
-  repo commits, freshen command IDs (for `hotbed logs CMD`), and any failed step. The cockpit's
-  Projects page shows them too.
-- `hotbed project rebuild PROJECT` has every node build its next base from nothing, for when
-  incremental state has gone bad; `hotbed project hosts PROJECT HOST...` limits which nodes keep
-  its bases.
-- If a step breaks a later base, new workspaces still get the last good base, with a warning
-  (`reason`) that names the failed step. Fix the step and the next run retries.
-- Steps run chrooted as the build user with passwordless `sudo` to root: a step installs OS
-  packages with `sudo apt-get install -y PKG`, and they are in every base after it. Commands and
-  shells have the same `sudo`.
-- In a vm workspace, a command profiles itself without `sudo`: `perf record -g -- CMD` (kernel
-  stacks included) and `perf report` work as the workspace user, since the guest boots with
-  `kernel.perf_event_paranoid=-1` and `kptr_restrict=0`.
-
-## Asking the user: questions
-
-When you need the user's decision, don't stop and wait: ask on the project's question list, go
-ahead with your best guess, and read the answer when it comes. A question takes the JSON
-AskUserQuestion takes, plus a little; each of its questions becomes an entry of its own:
-
-```sh
-hotbed question add <<'EOF'
-{"questions": [{"question": "Which store should sessions use?", "header": "Store", "multiSelect": false,
-  "body": "Sessions outgrew `sessions.json`: **4 MB**, rewritten on every change.",
-  "options": [{"label": "SQLite", "description": "One file, already used", "implemented": true},
-              {"label": "Postgres", "description": "A server to run"}]}]}
-EOF
-hotbed poll                      # the answer arrives as an event, the question with it; keep working meanwhile
-hotbed question outbox           # answers waiting for an agent
-hotbed question ack 12           # you read it and acted on it: it is handled
-```
-
-- **Send the user its link.** Each question `question add` returns carries its cockpit page
-  (`cockpitUrl`, printed under it), where the user answers it: when you want an answer, put the
-  link and the question in plain words in your reply, not just its number.
-- **Poll before you assume no answer.** The user answers whenever they like; an answer reaches
-  you only through `hotbed poll`. Before you end your turn, commit, or conclude the user has not
-  answered, poll. Every question command's response carries a `reminder` saying so.
-- **Say what you went ahead with.** Mark the option you built `"implemented": true`: going ahead
-  and marking it is the norm, so the user sees what changes if they answer otherwise. Mark
-  `"recommended": true` explicitly for a way forward you have not built: option labels are
-  delivered verbatim (no `"(Recommended)"` suffix stripping). One of each at most unless
-  `multiSelect`; never both on one option.
-- **Record a decision you took without asking** with `question add --answered`: the same JSON,
-  what you decided marked `"implemented": true` (required) and what else was possible as the
-  other options, why and how to undo it in `body`. It is answered with its implemented options and
-  handled at once, by your session: never in the outbox, waking no one. The user reopens and
-  answers it to overturn it, which reaches the outbox as any answer does.
-- **Keep the title short.** `question` is one sentence; the setting, findings and stakes go in
-  `body`. Title, body, labels and descriptions are markdown; `preview` is shown as it is.
-- **One list per project, every session's.** `question ls` lists your project's questions, newest
-  first (`--sort oldest|updated|rank`, `--state open|answered|dismissed|handled|deleted|all`,
-  `--asked-by SESSION`, `--t3code-thread-id ID`, `-p PROJECT`, `--all-projects`). Read it before
-  asking: another session may have asked already.
-- **Sessions and T3 Code threads are mapped on every question.** Each question carries its
-  `t3codeThreadId` (captured from `T3CODE_THREAD_ID` when asked or resolved from its asking
-  session), and `question outbox` / `question ls` also return a `sessions` summary (session ID,
-  project, liveness, `t3codeThreadId`, matched `questionIds`, and state counts) so you can peek at
-  the outbox (`hotbed question outbox --all-projects`) and immediately see which sessions and T3
-  Code threads have answers waiting.
-- **The user answers in the cockpit**, or dismisses (no answer will come). An answer waits in the
-  outbox until an agent acknowledges it; any agent of the project may act on and ack an answer.
-  An answer or dismissal is also an event of the asking session: its `hotbed poll` returns it,
-  with the question as answered.
-- **Any session may edit (`question edit ID`, while open) or delete (`question rm ID --reason`)
-  any question** it finds wrong or no longer needed. Nothing is lost: `question show ID` has the
-  whole history, each change with its session and time.
-- A question records where you asked from (checkout, branch, commit, changed files) and, if the
-  project holds your checkout's repo, that it is about that repo (`--repo REMOTE` names another).
-- A session changes only its own project's questions (edit, rm, ack, answer, dismiss, revise,
-  reopen, move).
-- The user may change a response still in the outbox, return any answered or handled question to
-  the inbox (`question reopen ID`, which clears its response) and revise any question
-  (`question revise ID`, JSON as `question edit` takes): read the outbox again before acting.
-- Never answer a question yourself unless the user told you the answer: then pass it on with
-  `question answer ID --pick LABEL [--other TEXT] [--notes TEXT] -s SESSION`, or `question dismiss
-  ID --reason WHY`; `question reopen` and `question revise` likewise only at the user's word.
-  `question move ID --first|--last|--before ID` reorders the user's list within the question's
-  project. `question projects` counts every project's open and outbox questions.
-
 ## Problems with hotbed itself: issues
 
 When hotbed itself fails you (a bug, a missing capability, an error that misleads you), say so,
@@ -303,122 +114,6 @@ hotbed issue show 12                             # it, and everyone who +1'd it
 Work around it meanwhile, and say so in your reply. The user archives an issue once it is dealt
 with (`hotbed issue archive ID -m WHY`, `hotbed issue reopen ID`): an archived one takes no more
 +1s, so if it is back, report it again naming it. The cockpit's Issues page lists them.
-
-## Message board & task queue: board
-
-Hotbed includes a native project-scoped message board and leased DAG task queue (Cockpit `/board` and `/tasks`): threads, replies, edits with optimistic revision checks, atomic CAS labels, normalized emoji reactions, `@mentions`, structured data blocks (`json#name@version`) & schemas, chunked file attachments (up to 4 MiB), scheduled posts, live event waiting/tailing, and an importer from existing `@vercel/board` servers. Every command scopes to your Hotbed project (`-p PROJECT`, `HOTBED_PROJECT`, your bound session's project, or checkout repo — or `--all-projects`).
-
-```sh
-# Threads, replies, labels, reactions, attachments
-hotbed board read                              # list threads in current project (--all-projects, --label k=v, --text, --by, --mentions me)
-hotbed board read 42                           # read thread #42 (root, replies, pending schedules)
-hotbed board post "Shipped cache fix" -l area=storage --idempotency-key fix-1
-hotbed board reply 42 --after 45 "Verified on ubu1 @ramon"
-hotbed board edit 42 --if-revision 1 "Updated summary"
-hotbed board label 42 --if status=open status=done -old-key
-hotbed board react 42 👍                       # --remove to remove
-hotbed board delete 45                         # aliases: rm, del
-hotbed board upload trace.log                  # returns attachment ID for --attach ID
-hotbed board download ATT_ID -o trace.log
-
-# Schemas, structured blocks (```json#name@version), schedules, actors, live events
-hotbed board schema ls                         # built-in: git-commit@1, vercel-deployment@1
-hotbed board schema create bench@1 -d "Bench timing" --schema '{"type":"object","required":["ms"],"properties":{"ms":{"type":"number"}}}'
-hotbed board schedule add --in 10m --every 1h --times 3 "Check rollout"
-hotbed board schedule ls                       # hotbed board schedule cancel ID
-hotbed board actors                            # list seen actors in project
-hotbed board wait --after 120 --timeout 5m     # wait for matching events
-hotbed board tail --last 10                    # stream live events (--json for NDJSON)
-
-# First-class DAG task queue with leases. A claim belongs to the actor that made it (you, plus --as profile or your session),
-# which settles it by acting as itself: no token. Claiming a task you already hold re-issues its lease.
-hotbed board task ls                           # open tasks (waiting/ready/claimed/blocked); --state ready, --all
-hotbed board task create "Refactor index" --needs 10 --for worker-1 --claim --lease 30m
-hotbed board task create --plan plan.json      # atomic DAG plan (up to 100 tasks with internal key needs)
-hotbed board task claim --ready --wait 2m      # or `claim ID`
-hotbed board task run --ready -- ./worker.sh   # claims task, sets HOTBED_BOARD_TASK and acts-as env so the command settles it as the holder, auto-renews every 1/3 lease
-hotbed board task renew 42                     # preserves original lease duration when --lease omitted
-hotbed board task complete 42 "All tests green"  # alias: done; automatically readies waiting dependents
-hotbed board task fail 42 "Timed out"          # hotbed board task reopen 42
-hotbed board task release 42                   # return to ready
-hotbed board task block 42 --kind review "Need design check"  # hotbed board task unblock 42
-hotbed board task assign 42 reviewer           # or --unassign
-hotbed board task needs 42 10 11               # replace prerequisites (rejects cycles)
-hotbed board task cancel 42 "Superseded"
-
-# Idempotent import from an existing @vercel/board server (uses $BOARD_URL by default)
-hotbed board import --dry-run --map tasks=cladefs --map-label tag.hotbed=yes:hotbed
-hotbed board import --map tasks=cladefs --map-label tag.hotbed=yes:hotbed --create-projects
-```
-
-## Reviews: asking reviewer agents, and the user
-
-A review is of an exact version: the commits it names never move. Both the implementer's exact model
-and every reviewer's exact model are recorded; multiple reviewers (in separate sessions or as
-sub-agents sharing one session) can review the same review. Ask for one in the checkout to review,
-then give its number to one or more reviewer agents:
-
-```sh
-hotbed review request --model gemini-4-neon --title "Retry on lost leases" --instructions "look for races"
-                                 # --model names the implementer's exact model (or inherited from `session start --model`)
-                                 # base: where HEAD left origin's default branch (--base REF, --whole)
-                                 # head: HEAD, or a snapshot commit of uncommitted changes, pinned
-hotbed poll                      # each reviewer's end arrives as an event; keep working meanwhile
-hotbed review show 7             # implementer, reviewers, findings (with locations, decisions, quick_by and responses)
-hotbed review accept 7 1 3 --reason "fixing"
-hotbed review dismiss 7 2 --reason "pre-existing; not this change"   # alias: reject
-hotbed review wont-fix 7 4 --reason "intentional tradeoff; documented"
-hotbed review fixed 7 1 --commit HEAD --where lease.go:80-95 --notes "renew holds the lock"
-                                 # handled: the commit in full, the files and notes optional;
-                                 # the user can respond to it no more (reopen if the fix fails)
-hotbed review invalid 7 3 --evidence "expiry checks the clock under the lock (lease.go:41)"
-                                 # not a real defect, with Markdown evidence; the user may dispute it
-hotbed review link 7             # the review's page in the cockpit: send it to the user
-hotbed review responses 7        # the responses since you last read them (poll says when one comes)
-```
-
-Each reviewer (in its own session, or as a sub-agent sharing the parent session):
-
-```sh
-hotbed review start 7 --model claude-opus-4-6 [--subagent verifying-reviewer]
-                                 # claim/join the review, naming your exact model ID (required);
-                                 # multiple models or sub-agents may start on the same review
-git diff BASE HEAD               # the commits are in the requester's checkout (refs/hotbed/reviews/HEAD)
-hotbed review findings 7 [--reviewer 1] <<'EOF'
-{"findings": [{"short_summary": "Lease renewal races expiry", "summary": "...", "failure_scenario": "...",
-  "category": "correctness", "severity": "important", "verdict": "CONFIRMED", "file": "lease.go", "line": 88,
-  "locations": [{"path": "renew.go", "start_line": 12, "end_line": 20, "excerpt": "..."}]}]}
-EOF
-hotbed review finish 7 [--reviewer 1] --summary "One race, one nit."   # or: hotbed review fail 7 --reason WHY
-```
-
-- When multiple reviewers are active in the same session (e.g. concurrent sub-agents sharing
-  `T3CODE_THREAD_ID` / `HOTBED_SESSION`), pass `--reviewer ID` (or `--model` / `--subagent`) to
-  `findings`, `finish` and `fail` so each finding and report is attributed to the right reviewer.
-- A finding is ReportFindings' JSON (severity `important`, `pre_existing` or `nit`; verdict
-  `CONFIRMED`, `PLAUSIBLE` or none), with any number of `locations` besides, or none. Put the
-  lines in `excerpt`: the cockpit shows them without the code. Found nothing? Report
-  `{"findings": []}`: the review's events say so.
-- A reviewer that cannot reach hotbed (in a network-isolated sandbox, such as `codex exec
-  --sandbox read-only`) ends its report with its findings in a fenced block whose info string is
-  `json hotbed-findings`, holding that same `{"findings": [...]}` (`[]` when none survive). Its
-  caller records it with `--model` (and `--subagent` if sharing a session), and the review keeps
-  the whole report for the cockpit:
-
-  ```sh
-  hotbed review start 7 --model gpt-5.5-codex --subagent codex-exec
-  codex exec --sandbox read-only --output-last-message report.md - < instructions.md
-  hotbed review findings 7 --model gpt-5.5-codex --from-report report.md
-  hotbed review finish 7 --model gpt-5.5-codex --summary "$(head -1 report.md)"
-  ```
-- Every decision and response explicitly records `actor_kind` (`USER` vs `AGENT`) plus the agent's
-  exact `model`, `session`, optional `subagent`, and `t3code_thread_id`. `hotbed review respond`
-  uses your bound agent session by default; pass `--as-user` only when recording the human user's
-  explicit word. On findings, `quick_by` shows whether the user clicked `Verify` / `Fix if verified`
-  / `Won't fix` or an agent set it.
-- `hotbed review ls` lists the project's reviews (the session's, or the one holding this checkout's
-  repo); `review cancel` withdraws one; `review reopen`
-  makes a decided finding open again. Nothing is removed: `review show` has every event.
 
 ## Keeping a session alive
 
@@ -441,8 +136,9 @@ when it exits, and the next server started here resumes it. Its tools never take
 
 It also advertises the **MCP Skills Extension (`io.modelcontextprotocol/skills`, SEP-2640)** with
 `directoryRead: true`, implementing `skills/list`, `skills/get`, `resources/directory/read`, and
-`resources/read` (plus standard `resources/list` for every skill's `SKILL.md`), and includes all
-active session skill descriptors alongside memories in `InitializeResult.instructions`.
+`resources/read` (plus standard `resources/list` for every skill's `SKILL.md`), and puts what
+`session start` lists (skills, hotbed's built-in ones first, and memories) in
+`InitializeResult.instructions`. A built-in skill is `skill://builtin/NAME/SKILL.md`.
 
 ## Waiting: poll
 
@@ -649,102 +345,6 @@ Each event is one of:
 after two minutes means nothing happened yet. `ended: true` means the session is over
 (`endReason` says why).
 
-## Scheduled commands
-
-Recurring work, such as a nightly measurement, runs by itself:
-
-```sh
-hotbed schedule add nightly -r app --cron '0 2 * * *' --arch amd64 \
-  --env BENCH_ENV=nightly -- scripts/nightly.sh
-hotbed schedule show nightly                # the command, the next run, its runs and their sessions
-hotbed schedule run nightly                 # a run now; prints its session, for hotbed poll -s and logs
-```
-
-- **Each run is a session of its own**, `NAME-YYYYMMDD-HHMM`, with a fresh workspace of the repo
-  at its branch's head, in which the command runs detached at `/work/REPO`. It takes `run`'s
-  flags (`--env`, `--mem-low`, `--mem-high`, `--kind`, `--arch`, `--runtime`). Nothing persists between runs except what
-  the command keeps outside the workspace (such as what it pushes to git).
-- **Its session's end.** A run is never abandoned while its command runs. One that succeeds ends
-  its session. One that fails keeps it for the idle hour, so you can `hotbed run -s SESSION -r REPO --
-  ...` in its workspace to look; its log stays (`hotbed logs COMMAND`).
-- **Cron** has five fields in the controller's time zone (`CRON_TZ=Europe/Lisbon 0 2 * * *` for
-  another). Runs never overlap: a slot that comes while the previous run is still going is
-  `skipped`. A slot that passes while the controller is down is `missed`, not run late.
-- `schedule add` with an existing name replaces it. `schedule ls [-p PROJECT | --all-projects]`
-  lists the active project's schedules by default. `schedule pause`, `resume`, `rm`.
-
-## Other commands
-
-| Command | Does |
-|---|---|
-| `hotbed session status [--t3code-thread-id ID]` | Active session state, idle time, workspaces, and commands (`--t3code-thread-id`: look up the live or latest session for a T3 Code thread on the controller) |
-| `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
-| `hotbed session ls [--ended] [--all-projects] [--t3code-thread-id ID]` | The project's live sessions (`--ended`, `--all-projects`, `--t3code-thread-id`) |
-| `hotbed session search [THREAD_ID] [--t3code-thread-id ID] [--live] [-p PROJECT] [-n N]` | Search persistently across every project (and ended sessions of any age) for sessions associated with a T3 Code thread ID (default: `T3CODE_THREAD_ID`), live ones first then most recently active |
-| `hotbed shell [--arch ARCH] [--runtime RT] [--sync] [--env K=V] [-- CMD...]` | Open an interactive shell (over SSH) in the session's workspace (reuses an existing workspace when it has one; `--sync` pushes local checkout edits first) |
-| `hotbed project ls` | Projects, their repos, live sessions, schedules, reviews and questions |
-| `hotbed project show NAME` | A project and every change to it |
-| `hotbed project bases [PROJECT] [--node HOST] [--state STATE]` | Every node's bases for a project (or every project), newest generation first per node, with commits, freshen command ID, and failed step |
-| `hotbed freshen ls [PROJECT] [--node HOST] [--state STATE] [--active] [--runtime RT] [--cold] [--since 24h] [-n N]` | Active and historical (30-day) base freshens across all runtimes (`vm`, `cladefs`), with cluster-wide timing breakdowns (prep, queue, git, steps, parked, finalize/R2-sync), slowest steps ranking, per-node/project cold & failure streaks, and waiting workspaces |
-| `hotbed freshen show ID [--node HOST]` | Deep autopsy of one base freshen (by freshen command ID or base ID): cold reason, phase & step timings, memory guarantee vs peak, waiting workspaces, command timeline, live node admission snapshot, and related events |
-| `hotbed project rm-repo NAME --repo REMOTE` | Take a repo out of a project |
-| `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |
-| `hotbed schedule ls [-p PROJECT \| --all-projects]` | The project's schedules (`--all-projects`: every project's) |
-| `hotbed ps [-p PROJECT \| --all] [-e] [-m TEXT] [-n N]` | The session's commands, live and just ended (`-p`: a project's, `--all`: every session's; `-e`: ended ones too, from 30 days of history; `-m`: only those whose command line holds TEXT; `-n`: the newest N ended ones, default 50, 0 for all; running ones always show) |
-| `hotbed output CMD [--grep P -C N] [--head N \| --tail N] [--from N --to M] [--after N] [--until P \| --wait] [--timeout S] [--since-sync] [--raw] [--max N] [-t \| --timestamps]` | Read a command's output, kept whole, as its terminal shows it: bounded answers that say what they left out; `--until` / `--wait` wait first; `-t`/`--timestamps` prefixes each line with its local received time (`HH:MM:SS.mmm`, always present as `receivedAt` in `--json`) (MCP tool `output`) |
-| `hotbed detach CMD` | Let an attached command run on, detached (MCP tool `detach`) |
-| `hotbed send CMD TEXT [--no-newline]` | Type into a command run with `--tty` (MCP tool `send`) |
-| `hotbed issue report TITLE [-m DETAILS]` / `issue ls [-q WORDS] [--archived \| --all]` / `issue show ID` / `issue upvote ID [-m COMMENT]` / `issue archive ID [-m WHY]` / `issue reopen ID` | Problems with hotbed itself: report one once, +1 it after (MCP tools `issue_report`, `issue_ls`, …) |
-| `hotbed logs CMD [-f \| -n N] [-t \| --timestamps]` | A command's output, any session's by its ID; `-f` (the session's own command: it waits on it) follows until it ends, `-n N` its last N lines (at most 1 MiB of them; stderr says when it cut), `-t`/`--timestamps` prefixes each line with its local received time (`HH:MM:SS.mmm`). A log keeps its first 16 MiB and last 240 MiB, with a `[hotbed: … dropped here …]` line between; logs of ended commands are kept 7 days |
-| `hotbed stop CMD [-m COMMENT] [--diagnose]` | Stops a command of the session (another session's: `-s SESSION`); with `--diagnose`, takes its diagnostics first |
-| `hotbed pause CMD [-m COMMENT] [--diagnose]` | Pauses a command by hand: frozen until `hotbed resume`, waiting on it or not; with `--diagnose`, takes its diagnostics first |
-| `hotbed resume CMD [-m COMMENT]` | Resumes a paused command |
-| `hotbed diagnostics CMD [--seq N \| --after-seq N]` | The diagnostics taken of a command as someone stopped or paused it (activity sample and inspection), live or ended; supports `--seq` / `--after-seq` pagination and the `diagnostics` MCP tool |
-| `hotbed inspect [procs\|files\|cgroup\|kstack\|maps\|limits] CMD` | Opt-in Linux `/proc` & cgroup v2 inspection of a live command |
-| `hotbed sample CMD [-d SEC] [--pid PID] [--text]` | Activity Monitor-style Linux activity sample of a live command (CPU/IO deltas, user & kernel stacks, syscalls, open files/sockets/locks, cgroup/PSI deltas & perf counters); each is kept with the command, and stderr names its number |
-| `hotbed samples ls CMD` | The activity samples kept of a command (its newest 32, each trimmed to 1 MiB), live or ended: number, when, window, PID, who took it |
-| `hotbed samples show CMD N` | One kept activity sample in full, as `hotbed sample --text` prints it (`--json` for the sample itself) |
-| `hotbed trace [strace\|perf\|stat\|stacks\|bpf] CMD` | Opt-in active Linux tracing (`strace`, `perf`, thread stacks, `bpftrace`) of a live command |
-| `hotbed profile CMD \| --node HOST [--last 5m] [--query Q] [--format json\|folded\|top]` | Query the always-on OpenTelemetry eBPF continuous profile of a command (live or finished) or host-wide across a node. Its JSON lists each frame once, in `frames`; stacks, functions and buckets name frames by index there (`folded` and `top` print them by name) |
-| `hotbed workspace ls [-p PROJECT \| --all]` | The session's workspaces (`-p`: a project's, `--all`: every session's) |
-| `hotbed workspace show` | The session's workspace, as its worker has it now (`--node` when it has several) |
-| `hotbed workspace files` | Every repo's files, below `/work` (`REPO/path`), each `added`/`modified` against the base or unchanged |
-| `hotbed workspace file REPO/PATH` | A file's text and the lines it changed against the base |
-| `hotbed workspace release` | Gives the workspace up; the session goes on, and its next run gets a new one |
-| `hotbed repo add ID URL [-p PROJECT]` | Registers a repo, attaching it to `PROJECT` (or auto-creating a project for it) |
-| `hotbed repo ls [-p PROJECT]` | Repos: where each project's code comes from (`-p`: only a project's repos) |
-| `hotbed auth login [-w] [--name NAME] [--repo OWNER/REPO]` | Log in to GitHub on the controller via OAuth Device Flow (like `gh auth login`); delegates git HTTPS, git SSH, and `gh` to every worker, session, and command |
-| `hotbed auth login-start [--name NAME] [--repo OWNER/REPO]` | Start a GitHub OAuth Device Flow and print the one-time code and URL for `auth login --login-id` |
-| `hotbed auth set NAME [--token-file -] [--repo OWNER/REPO]` | Store a centralized git access token on the controller (headless/CI alternative to `auth login`) |
-| `hotbed auth ls [--host HOST]` | List centralized git credentials configured on the controller (metadata only; secrets are never returned) |
-| `hotbed auth rm NAME` | Remove a centralized git credential from the controller |
-| `hotbed auth token REPO_URL` | Mint a short-lived git access token from the controller (auto-refreshing expiring OAuth tokens) |
-| `hotbed auth api PATH [-X METHOD] [--body JSON]` | Proxy a GitHub REST or GraphQL API call through the controller's credentials |
-| `hotbed step add\|set\|ls\|show\|rm [-p PROJECT]` | The project's setup steps (default: the session's project), and which each node's newest base ran |
-| `hotbed project rebuild PROJECT` | Every node builds the project's next base from nothing |
-| `hotbed project hosts PROJECT [HOST...]` | The nodes that keep the project's bases (none: every worker) |
-| `hotbed nodes` | The cluster's machines, and the build each runs; a worker that cannot open its storage (a ZFS pool not imported, its disk missing) is offline with the reason (`storageError`), waits for it, and starts once it opens |
-| `hotbed node show HOST` | Whether the node starts new work or holds it, and why: each signal (CPU pressure, memory pressure, memory reserved, disk free) against its limit, the work it held or made wait, and the placements that weighed it |
-| `hotbed node retire HOST` | Retire a node gone for good (its machine or VM deleted): it leaves `hotbed nodes`, the cockpit and placement; its history stays. Refused while it is online |
-| `hotbed config show [HOST]` | Show controller-managed cluster default and per-node worker/VM configuration (plus merged effective config when `HOST` is given) |
-| `hotbed config set [HOST] [--replace] [--if-revision N]` | Merge (or replace) controller-managed cluster defaults or per-node worker/VM configuration (VM tuning, managed guest kernels, `hotbed-guestd`, FUSE settings) from JSON on stdin or `--file` |
-| `hotbed config rm HOST \| --defaults` | Remove controller-managed per-node overrides for `HOST`, or clear cluster-wide defaults with `--defaults` |
-| `hotbed placements [--node HOST] [--session S]` | Where the controller put each workspace and why: what the run asked for (`--arch`, `--runtime`, `--mem-low`, `--mem`, `--fork`, `--no-sync`, or `any node`), every node's cost in parts, or why it was ruled out (kept a day; also recorded on each command in `ps --json` and the cockpit) |
-| `hotbed events [--node HOST] [--kind KIND ...]` | The cluster's events, newest first; `--kind hold --kind wait --kind unhold` is every time a node held work and why |
-| `hotbed daemon-logs [--source controller\|HOST] [--level warn\|error] [--since 1h] [-q Q] [-n N]` | Rotating WARN/ERROR slog logs from the controller and every worker, newest first (with rotation disk stats) |
-| `hotbed snapshot` | Everything the cockpit shows, as JSON |
-| `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
-| `hotbed system upgrade [HOST] [--force] [--dry-run]` | Explicitly upgrade host `cladefsd`, `firecracker`, and managed guest kernel binaries from controller config (`system.cladefsd`, `system.firecracker`, `vm.kernels`); drains and terminates live commands, shells, and workspaces on each node before restarting `cladefsd` |
-| `hotbed login [CONTROLLER] [--org ORG] [--no-open]` | Sign in to a WorkOS-enabled controller via one-time device code (works identically locally and over SSH, no localhost callback) |
-| `hotbed logout [CONTROLLER]` | Remove locally stored WorkOS credentials for a controller |
-| `hotbed whoami` | Show the signed-in user, active organization, role, and org memberships |
-| `hotbed org ls\|switch\|create\|members\|invite` | List, switch, or create WorkOS organizations (one isolated Controller DO per org), and view or invite org members |
-| `hotbed org join-token create\|ls\|rm` | Mint (`hbj_<org>.*`), list, or revoke org-scoped worker join tokens |
-| `hotbed org api-token create\|ls\|rm` | Mint (`hbu_<org>.*`), list, or revoke org-scoped personal API tokens for `HOTBED_TOKEN` |
-| `hotbed admin discover\|schema\|sql\|health\|gc\|cf-dos\|cf-logs\|cf-get` | Org-admin Explorer tools: discover org Durable Objects (`discover`), inspect SQLite schemas (`schema [-b BINDING] [--name N \| --id HEX \| --command CMD]`), run read-only SQL (`sql QUERY [-p PARAM ...] [--command CMD]`), check controller health (`health`), inspect tenant-scoped CladeFS R2 usage/GC (`gc [--action status\|dry_run_cell\|live_cell] [--cell CELL]`), and (cluster-owner only) list Cloudflare DO namespaces/objects (`cf-dos`), query Workers Observability (`cf-logs`), or GET Cloudflare Account REST endpoints (`cf-get PATH`) |
-| `hotbed api ENDPOINT [-X METHOD] [-f k=v] [-F k=v] [-d DATA] [--input FILE] [-H K:V] [-i] [--jq EXPR]` | Make an authenticated HTTP or ConnectRPC request to the controller (e.g. `hotbed api /healthz`, `hotbed api ClusterService/GetSnapshot --jq '.nodes \| length'`) |
-| `hotbed daemon [run\|install\|uninstall\|status]` | Unified local Hotbed host service: keeps an outbound `/ws/questions` stream open to wake idle local T3 Code threads when questions are answered or dismissed, runs a Mac's worker and machined (which runs its workspaces' VMs), and shows a native macOS menubar status app (`install` sets up one LaunchAgent on macOS or systemd user service on Linux, migrating away from legacy separate services) |
-
 ## Output
 
 Commands print concise plain text by default (formatted via Go templates declared on each RPC).
@@ -766,3 +366,4 @@ command's `url` is something else, the dev server it serves.
 Generated proto CLI reference: [references/commands.md](references/commands.md) (`hotbed skills get hotbed/references/commands.md`).
 Codes and what to do: [references/errors.md](references/errors.md) (`hotbed skills get hotbed/references/errors.md`).
 Setting up a cluster: [references/setup.md](references/setup.md) (`hotbed skills get hotbed/references/setup.md`).
+Every other command (sessions, projects, nodes, diagnostics, auth, config): [references/other-commands.md](references/other-commands.md) (`hotbed skills get hotbed/references/other-commands.md`).

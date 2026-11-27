@@ -24,6 +24,7 @@ import m0021 from "./0021_woozy_starfox.sql";
 import m0022 from "./0022_tokenless_board_claims.sql";
 import m0023 from "./0023_session_t3code_thread_url.sql";
 import m0024 from "./0024_colorful_odin.sql";
+import m0025 from "./0025_wandering_tarantula.sql";
 
 export default {
 	journal,
@@ -53,5 +54,6 @@ export default {
 		m0022,
 		m0023,
 		m0024,
+		m0025,
 	},
 };

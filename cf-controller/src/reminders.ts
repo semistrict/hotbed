@@ -16,11 +16,11 @@ export function setupStepsReminder(p?: Project | null): string {
 	return `Reminder: make sure project ${p.name} has setup steps (\`hotbed step ls -p ${p.name}\`, \`hotbed step add\`, \`hotbed step set\`; use \`--every-pull\` for dependency installs and builds) for common things like toolchain installs, dependencies, and pre-builds. ${standard}`;
 }
 
-// Where a lesson goes. Every always-on memory costs every session's context,
+// Where a lesson goes. Every memory's summary costs every session's context,
 // so the reminders below send a lesson to the place it will be found first
 // (its fix, the repo, a skill) and to memory only when it has no such home.
 const LESSON_HOMES =
-	'fix its cause, or write it where it will be found (the repo\'s AGENTS.md, a comment by the code, the tool\'s skill); save a memory only for what has no such home (a preference, a machine fact, a workaround naming its open bug): `hotbed memory ls -q WORD` for one to update, else `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`).';
+	'fix its cause, or write it where it will be found (the repo\'s AGENTS.md, a comment by the code, the tool\'s skill); save a memory only for what has no such home (a preference, a machine fact, a workaround naming its open bug): `hotbed memory ls -q WORD` for one to update, else `hotbed memory add --slug SLUG --summary "when it applies" --body "..." --rationale "..."` (MCP: `memory_add`).';
 
 export const MEMORY_FAILURE_REMINDER = `Reminder: if this failure revealed a reusable fix or quirk, ${LESSON_HOMES}`;
 

@@ -1,4 +1,4 @@
-import { MemoryMode, MemoryState } from "../api";
+import { MemoryState } from "../api";
 
 export type MemoryTab = "active" | "history" | "all";
 
@@ -15,6 +15,3 @@ export const MEMORY_TAB_STATES: Record<MemoryTab, MemoryState[]> = {
   ],
 };
 
-export function memoryModeLabel(mode: MemoryMode): string {
-  return mode === MemoryMode.ALWAYS ? "always-on" : "on-demand";
-}

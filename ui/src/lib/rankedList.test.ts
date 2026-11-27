@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { MemoryContentSchema, MemoryMode, MemorySchema, MemoryScope, MemoryState, QuestionSchema, QuestionState } from "../api";
+import { MemoryContentSchema, MemorySchema, MemoryScope, MemoryState, QuestionSchema, QuestionState } from "../api";
 import { TAB_STATES } from "./questions";
 import { dropAt, mergeLatestByRevision, placement, reorder } from "./rankedList";
 
@@ -13,7 +13,7 @@ function mkMemory(id: number, summary: string, state: MemoryState, revision: big
     state,
     revision,
     updatedAt: 100n,
-    content: create(MemoryContentSchema, { slug: "use-neon", summary, body: "details", mode: MemoryMode.ALWAYS }),
+    content: create(MemoryContentSchema, { slug: "use-neon", summary, body: "details" }),
   });
 }
 

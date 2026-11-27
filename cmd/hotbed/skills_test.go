@@ -16,8 +16,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/apicmd"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/skillspec"
+	"github.com/semistrict/hotbed/skills"
 )
 
 func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
@@ -85,19 +87,27 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 		t.Fatalf("addedOther = %+v", addedOther)
 	}
 
-	// 5. Session start in "test" outputs ALL relevant skill descriptors (global + test, NOT other).
+	// 5. Session start in "test" outputs ALL relevant skill descriptors: the
+	// CLI's built-in ones first, then the stored ones (global + test, NOT other).
 	started := &pb.Session{}
 	c.ok(started, "session", "start", "keen-fox")
-	if started.Skills == nil || len(started.Skills.Skills) != 2 {
-		t.Fatalf("session start skills = %+v, want 2 (global + test)", started.Skills)
+	builtins, err := skills.List()
+	if err != nil {
+		t.Fatal(err)
 	}
-	var gotNames []string
-	for _, d := range started.Skills.Skills {
-		gotNames = append(gotNames, d.Name)
+	var want, got []string
+	for _, b := range builtins {
+		want = append(want, "builtin "+b.Name)
 	}
-	slices.Sort(gotNames)
-	if !slices.Equal(gotNames, []string{"code-review", "release-prod"}) {
-		t.Errorf("session start skill names = %v, want [code-review release-prod]", gotNames)
+	want = append(want, "test release-prod", "global code-review")
+	for _, d := range started.GetSkills().GetSkills() {
+		got = append(got, skillScopeTag(d)+" "+d.Name)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("session start skills = %q, want %q", got, want)
+	}
+	if started.Skills.TotalActive != 2 {
+		t.Errorf("session start total active stored skills = %d, want 2", started.Skills.TotalActive)
 	}
 
 	// Plain-text session start prints skill descriptors cleanly.
@@ -108,10 +118,10 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 		t.Fatalf("plain session start failed (%d): %s", code, plainErr.String())
 	}
 	outStr := plainOut.String()
-	for _, want := range []string{"Skills (2", "[global] code-review", "[test] release-prod", "skill://global/code-review/SKILL.md"} {
-		if !strings.Contains(outStr, want) {
-			t.Errorf("plain session start missing %q:\n%s", want, outStr)
-		}
+	wantStored := "\n  [test] release-prod — Deploy the app safely.\n  [global] code-review — Review code changes for bugs and security issues.\n"
+	if !strings.HasPrefix(outStr, "wise-owl  project=test\n\nSkills (read one with `hotbed skills get NAME` when its description applies):\n  [builtin] hotbed — ") ||
+		!strings.Contains(outStr, wantStored) {
+		t.Errorf("plain session start = %q, want the built-in skills first, then%q", outStr, wantStored)
 	}
 
 	// --omit-skills suppresses skill descriptors on session start.
@@ -148,6 +158,18 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 	if !strings.Contains(gotBuiltin.Content, "hotbed session start") {
 		t.Errorf("skills get hotbed missing expected content")
 	}
+	// Every built-in skill reads by its name, and `skills ls -q` matches
+	// built-ins as it matches stored ones.
+	var gotQuestions skillsGetResult
+	c.ok(&gotQuestions, "skills", "get", "hotbed-questions")
+	if !strings.HasPrefix(gotQuestions.Content, "---\nname: hotbed-questions\n") {
+		t.Errorf("skills get hotbed-questions = %q, want the built-in skill", apicmd.Short(120, gotQuestions.Content))
+	}
+	var matched skillsListResult
+	c.ok(&matched, "skills", "ls", "-s", "brave-otter", "-q", "cron schedule")
+	if len(matched.Builtin) != 1 || matched.Builtin[0].Name != "hotbed-schedules" {
+		t.Errorf("skills ls -q 'cron schedule' built-ins = %+v, want only hotbed-schedules", matched.Builtin)
+	}
 
 	shown := &pb.Skill{}
 	c.ok(shown, "skills", "show", "code-review")
@@ -183,8 +205,8 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 	// Archived skill no longer appears on session start.
 	afterArch := &pb.Session{}
 	c.ok(afterArch, "session", "start", "calm-lynx")
-	if afterArch.Skills == nil || len(afterArch.Skills.Skills) != 1 || afterArch.Skills.Skills[0].Name != "code-review" {
-		t.Errorf("after archive session skills = %+v, want only code-review", afterArch.Skills)
+	if got := storedSkillNames(afterArch); !slices.Equal(got, []string{"code-review"}) {
+		t.Errorf("after archive session stored skills = %q, want only code-review", got)
 	}
 
 	restored := &pb.Skill{}
@@ -502,4 +524,16 @@ func osPipeOrIOPipe(t *testing.T) (*os.File, *os.File) {
 		w.Close()
 	})
 	return r, w
+}
+
+// storedSkillNames names the controller's skills a session start briefed,
+// leaving out the CLI's built-in ones.
+func storedSkillNames(sess *pb.Session) []string {
+	var out []string
+	for _, d := range sess.GetSkills().GetSkills() {
+		if d.Scope != pb.SkillScope_SKILL_SCOPE_BUILTIN {
+			out = append(out, d.Name)
+		}
+	}
+	return out
 }

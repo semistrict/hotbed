@@ -5310,12 +5310,11 @@ var (
 
 // MemoryServiceClient is a client for the hotbed.v1.MemoryService service.
 type MemoryServiceClient interface {
-	// Save a new memory or supersede/consolidate existing memories
-	// (--supersede ID). Automatically approved and active immediately. Defaults
-	// to the active session's project; pass --global for cross-project learnings.
-	// When --mode is omitted, omitting --body saves a short always-on rule
-	// (<= 240 chars) and passing --body/--body-file saves an on-demand playbook
-	// fetched with `hotbed memory get`.
+	// Save a new memory, or supersede/consolidate existing ones (--supersede
+	// ID). Approved and active at once. Defaults to the active session's
+	// project; pass --global for cross-project learnings. Give a --summary that
+	// says when it applies (session start lists it) and the --body/--body-file
+	// an agent reads with `hotbed memory get` once it does.
 	ProposeMemory(context.Context, *v1.ProposeMemoryRequest) (*v1.Memory, error)
 	// List memories (compact metadata without full body). Defaults to approved
 	// memories for global + active project (or global only outside a project).
@@ -5326,7 +5325,7 @@ type MemoryServiceClient interface {
 	// Show one memory with its full body, provenance, supersession links, and
 	// complete revision history.
 	ShowMemory(context.Context, *v1.ShowMemoryRequest) (*v1.Memory, error)
-	// Edit a memory in any way (slug, title, summary, body, mode, tags, scope,
+	// Edit a memory in any way (slug, title, summary, body, tags, scope,
 	// repo, or rationale). Unspecified fields stay unchanged unless
 	// --replace-content or a clear flag is passed.
 	ReviseMemory(context.Context, *v1.ReviseMemoryRequest) (*v1.Memory, error)
@@ -5349,12 +5348,11 @@ func NewMemoryServiceClient(client *connect.Client) MemoryServiceClient {
 
 // MemoryServiceHandler is an implementation of the hotbed.v1.MemoryService service.
 type MemoryServiceHandler interface {
-	// Save a new memory or supersede/consolidate existing memories
-	// (--supersede ID). Automatically approved and active immediately. Defaults
-	// to the active session's project; pass --global for cross-project learnings.
-	// When --mode is omitted, omitting --body saves a short always-on rule
-	// (<= 240 chars) and passing --body/--body-file saves an on-demand playbook
-	// fetched with `hotbed memory get`.
+	// Save a new memory, or supersede/consolidate existing ones (--supersede
+	// ID). Approved and active at once. Defaults to the active session's
+	// project; pass --global for cross-project learnings. Give a --summary that
+	// says when it applies (session start lists it) and the --body/--body-file
+	// an agent reads with `hotbed memory get` once it does.
 	ProposeMemory(context.Context, *v1.ProposeMemoryRequest) (*v1.Memory, error)
 	// List memories (compact metadata without full body). Defaults to approved
 	// memories for global + active project (or global only outside a project).
@@ -5365,7 +5363,7 @@ type MemoryServiceHandler interface {
 	// Show one memory with its full body, provenance, supersession links, and
 	// complete revision history.
 	ShowMemory(context.Context, *v1.ShowMemoryRequest) (*v1.Memory, error)
-	// Edit a memory in any way (slug, title, summary, body, mode, tags, scope,
+	// Edit a memory in any way (slug, title, summary, body, tags, scope,
 	// repo, or rationale). Unspecified fields stay unchanged unless
 	// --replace-content or a clear flag is passed.
 	ReviseMemory(context.Context, *v1.ReviseMemoryRequest) (*v1.Memory, error)

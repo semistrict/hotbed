@@ -45,6 +45,21 @@ type sessionStartCmd struct {
 }
 
 func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
+	sess, err := c.start(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	if !c.OmitSkills {
+		if sess, err = withBuiltinSkills(sess); err != nil {
+			return nil, err
+		}
+	}
+	return sessionStarted{sess}, nil
+}
+
+// start starts the session, or takes up the one a concurrent start bound
+// here first, and binds it.
+func (c *sessionStartCmd) start(ctx context.Context, d deps) (*pb.Session, error) {
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
@@ -870,15 +885,15 @@ type runCmd struct {
 	controllerClient
 	sessionFlag
 	repoFlag
-	Args   []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
-	NoSync      bool   `help:"Do not sync the checkout this is run in: the run then stays in the workspace the session has, whose state lives on its node alone."`
-	NoCapture   bool   `name:"no-capture" xor:"capture" help:"Do not auto-capture this run's disk state as the project's shared warm base."`
-	CaptureBase bool   `name:"capture-base" xor:"capture" help:"Start a capture-enabled workspace and upload its disk as the project's shared warm base once this run succeeds."`
-	Fresh       bool   `help:"Ignore the project's cached warm base and start from the bare OS base image."`
-	Fork        bool   `help:"Run in a throwaway workspace of its own: a new one, forked from the project's base with this checkout synced in, and deleted, with whatever the command left in it, once the command ends. It neither waits for the session's workspace nor changes it."`
-	Detach bool     `help:"Return once the command is queued; it runs until it ends, hotbed stop, or a time limit given. For dev servers and long jobs: it needs --mem (unless an earlier run of the same command says), and runs in a terminal in a VM; read it with hotbed output."`
-	Port   int      `help:"Port a dev server listens on, for its URL."`
-	Wait   string   `help:"How long to wait on the command before leaving it running, detached (exit 125): it runs on, its output kept whole for hotbed output to read. Such as 10m; 0 to wait until it ends (default: 2m; with --soft-limit, until that pauses it)."`
+	Args        []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
+	NoSync      bool     `help:"Do not sync the checkout this is run in: the run then stays in the workspace the session has, whose state lives on its node alone."`
+	NoCapture   bool     `name:"no-capture" xor:"capture" help:"Do not auto-capture this run's disk state as the project's shared warm base."`
+	CaptureBase bool     `name:"capture-base" xor:"capture" help:"Start a capture-enabled workspace and upload its disk as the project's shared warm base once this run succeeds."`
+	Fresh       bool     `help:"Ignore the project's cached warm base and start from the bare OS base image."`
+	Fork        bool     `help:"Run in a throwaway workspace of its own: a new one, forked from the project's base with this checkout synced in, and deleted, with whatever the command left in it, once the command ends. It neither waits for the session's workspace nor changes it."`
+	Detach      bool     `help:"Return once the command is queued; it runs until it ends, hotbed stop, or a time limit given. For dev servers and long jobs: it needs --mem (unless an earlier run of the same command says), and runs in a terminal in a VM; read it with hotbed output."`
+	Port        int      `help:"Port a dev server listens on, for its URL."`
+	Wait        string   `help:"How long to wait on the command before leaving it running, detached (exit 125): it runs on, its output kept whole for hotbed output to read. Such as 10m; 0 to wait until it ends (default: 2m; with --soft-limit, until that pauses it)."`
 	// MaxOutput bounds what prints as the command runs.
 	MaxOutput string `name:"max-output" default:"32K" help:"Print at most this much of its output as it runs, such as 64K; past it, the rest is kept whole, its last lines print as it ends, and hotbed output reads all of it. 0 to print it all."`
 	TTY       bool   `name:"tty" xor:"tty" help:"Run it in a terminal for its input too: it reads what hotbed send types, and a prompt waits for an answer. vm runtime only. (By default a detached run in a VM gets a terminal for its output only: tools draw progress and color, hotbed output settles what they redraw, and a prompt fails at once.)"`

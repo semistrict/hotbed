@@ -486,7 +486,6 @@ export const memories = sqliteTable(
 		scopeKey: text("scope_key").notNull().default(""),
 		repo: text("repo").notNull().default(""),
 		slug: text("slug").notNull(),
-		mode: text("mode").notNull(),
 		state: text("state").notNull(),
 		rank: integer("rank").notNull().default(0),
 		proposedBy: text("proposed_by").notNull().default(""),
@@ -499,7 +498,7 @@ export const memories = sqliteTable(
 		uniqueIndex("memories_approved_slug")
 			.on(t.scopeKey, t.slug)
 			.where(sql`${t.state} = 'MEMORY_STATE_APPROVED'`),
-		index("memories_scope_state").on(t.projectId, t.state, t.mode, t.rank, t.updatedAt),
+		index("memories_scope_state").on(t.projectId, t.state, t.rank, t.updatedAt),
 		index("memories_state_updated").on(t.state, t.updatedAt, t.id),
 	],
 );

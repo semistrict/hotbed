@@ -176,6 +176,13 @@
 			"when": 1795808918762,
 			"tag": "0024_colorful_odin",
 			"breakpoints": true
+		},
+		{
+			"idx": 25,
+			"version": "6",
+			"when": 1795811102193,
+			"tag": "0025_wandering_tarantula",
+			"breakpoints": true
 		}
 	]
 }

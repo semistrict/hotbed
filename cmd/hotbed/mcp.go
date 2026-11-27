@@ -65,11 +65,9 @@ type mcpServer struct {
 	// alive is how long the session is kept alive: while the server serves.
 	alive context.Context
 
-	mu       sync.Mutex
-	session  string             // empty until started, and again once it ends
-	reminder string             // setup reminder from the latest StartSession
-	memories *pb.MemoryBriefing // compact memory briefing from the latest StartSession
-	skills   *pb.SkillBriefing  // active skill descriptors from the latest StartSession
+	mu      sync.Mutex
+	session string      // empty until started, and again once it ends
+	started *pb.Session // the latest StartSession's answer, with the built-in skills
 	// kept counts the sessions started: a keep-alive goes on only while
 	// its session is the latest, so a session resumed is kept by one.
 	kept   int
@@ -92,25 +90,17 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 	s.alive = alive
 	// Started now, before the client asks for anything; if the controller
 	// cannot be reached, each tool call tries again.
-	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, questions for the user, cross-agent memories, and agent skills (MCP Skills Extension `io.modelcontextprotocol/skills` + `resources/read`). Read `hotbed skills get hotbed` (or `skill://builtin/hotbed/SKILL.md`) for how hotbed works. A reusable lesson goes where it will be found: its fix, the repo's AGENTS.md, a comment by the code, or a skill; save a memory (`memory_add`) only for what has none of those (a preference, a machine fact, a workaround naming its open bug), updating one that covers it (`memory_ls`)."
-	var skillBriefing *pb.SkillBriefing
+	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, questions for the user, cross-agent memories, and agent skills (MCP Skills Extension `io.modelcontextprotocol/skills` + `resources/read`). How to use hotbed itself is in its built-in skills (`hotbed skills ls`). A reusable lesson goes where it will be found: its fix, the repo's AGENTS.md, a comment by the code, or a skill; save a memory (`memory_add`) only for what has none of those (a preference, a machine fact, a workaround naming its open bug), updating one that covers it (`memory_ls`)."
+	var started *pb.Session
 	if id, err := s.ensure(ctx); err != nil {
 		fmt.Fprintf(s.d.stderr, "hotbed mcp: no session yet: %v\n", toAPIError(err))
 	} else {
 		instructions += fmt.Sprintf(" The tools act as session %s, which hotbed commands run here use too.", id)
 		s.mu.Lock()
-		reminder := s.reminder
-		memories := s.memories
-		skillBriefing = s.skills
+		started = s.started
 		s.mu.Unlock()
-		if memText := formatMemoryBriefingForInstructions(memories); memText != "" {
-			instructions += "\n\n" + memText
-		}
-		if skillText := formatSkillBriefingForInstructions(skillBriefing); skillText != "" {
-			instructions += "\n\n" + skillText
-		}
-		if reminder != "" {
-			instructions += "\n\n" + reminder
+		if b := formatBriefing(started, mcpBriefing); b != "" {
+			instructions += "\n\n" + b
 		}
 	}
 	defer s.end()
@@ -138,7 +128,7 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 		})
 	}
 
-	if err := s.registerSkills(server, skillBriefing); err != nil {
+	if err := s.registerSkills(server, started.GetSkills()); err != nil {
 		return err
 	}
 
@@ -171,6 +161,9 @@ func (s *mcpServer) registerSkills(server *mcp.Server, initial *pb.SkillBriefing
 	}
 	if initial != nil {
 		for _, d := range initial.Skills {
+			if d.Scope == pb.SkillScope_SKILL_SCOPE_BUILTIN {
+				continue // added above, with their files
+			}
 			uri := d.Uri
 			server.AddResource(&mcp.Resource{
 				URI:         uri,
@@ -636,10 +629,11 @@ func (s *mcpServer) ensure(ctx context.Context) (string, error) {
 			return "", api.Errorf(api.CodeInternal, "started session %s, but could not bind it to %s: %v", sess.Id, place, err)
 		}
 	}
+	if sess, err = withBuiltinSkills(sess); err != nil {
+		return "", err
+	}
 	s.session = sess.Id
-	s.reminder = sess.GetReminder()
-	s.memories = sess.GetMemories()
-	s.skills = sess.GetSkills()
+	s.started = sess
 	s.kept++
 	go s.keepAlive(s.alive, sess.Id, s.kept)
 	return s.session, nil
@@ -715,60 +709,4 @@ func (s *mcpServer) end() {
 	if err != nil && api.CodeOf(err) != api.CodeNotFound {
 		fmt.Fprintf(s.d.stderr, "hotbed mcp: could not end session %s: %v\n", id, strings.TrimSpace(toAPIError(err).Error()))
 	}
-}
-
-func formatMemoryBriefingForInstructions(b *pb.MemoryBriefing) string {
-	if b == nil || (len(b.Always) == 0 && len(b.OnDemand) == 0) {
-		return ""
-	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Memories (%d always-on, %d on-demand — fetch details with tool `memory_get` or `hotbed memory get SLUG`):", len(b.Always), len(b.OnDemand))
-	scopeTag := func(e *pb.MemoryIndexEntry) string {
-		s := e.Project
-		if s == "" {
-			s = "global"
-		}
-		if e.Repo != "" {
-			s += "/" + e.Repo
-		}
-		return s
-	}
-	if len(b.Always) > 0 {
-		sb.WriteString("\nAlways-on:")
-		for _, e := range b.Always {
-			fmt.Fprintf(&sb, "\n  [%s] %s: %s", scopeTag(e), e.Slug, e.Summary)
-		}
-	}
-	if b.OmittedAlways > 0 {
-		fmt.Fprintf(&sb, "\n  (+%d more always-on memories — call `memory_ls` with mode=always)", b.OmittedAlways)
-	}
-	if len(b.OnDemand) > 0 {
-		sb.WriteString("\nOn-demand (read when relevant):")
-		for _, e := range b.OnDemand {
-			fmt.Fprintf(&sb, "\n  [%s] %s — %s", scopeTag(e), e.Slug, e.Summary)
-		}
-	}
-	if b.OmittedOnDemand > 0 {
-		fmt.Fprintf(&sb, "\n  (+%d more on-demand memories — call `memory_ls`)", b.OmittedOnDemand)
-	}
-	return sb.String()
-}
-
-func formatSkillBriefingForInstructions(b *pb.SkillBriefing) string {
-	if b == nil || len(b.Skills) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Skills (%d — load via MCP `skills/get` + `resources/read` or `hotbed skills get NAME`):", len(b.Skills))
-	for _, e := range b.Skills {
-		scope := e.Project
-		if scope == "" {
-			scope = "global"
-		}
-		if e.Repo != "" {
-			scope += "/" + e.Repo
-		}
-		fmt.Fprintf(&sb, "\n  [%s] %s — %s (%s)", scope, e.Name, e.Description, e.Uri)
-	}
-	return sb.String()
 }

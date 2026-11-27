@@ -13,7 +13,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   clients,
   MEMORY_ORDER_FROM_SLUG,
-  MemoryMode,
   MemoryScope,
   MemoryState,
   placeBefore,
@@ -30,7 +29,7 @@ import { Card, Empty } from "../components/Panel";
 import { SortableList } from "../components/SortableList";
 import { FromLine, StampLine } from "../components/StampLine";
 import { T3ThreadTag } from "../components/T3ThreadTag";
-import { MEMORY_TAB_STATES, memoryModeLabel, type MemoryTab } from "../lib/memories";
+import { MEMORY_TAB_STATES, type MemoryTab } from "../lib/memories";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
 import { mergeLatestByRevision, useOptimisticReorder } from "../lib/rankedList";
@@ -40,7 +39,6 @@ import { PageTitle } from "../components/PageTitle";
 export interface MemoriesSearch {
   tab?: MemoryTab;
   scope?: "all" | "global" | "project";
-  mode?: "all" | "always" | "on-demand";
   sort?: MemoryOrderSlug;
   q?: string;
 }
@@ -69,10 +67,6 @@ const STATE_TAG: Record<MemoryState, { text: string; className: string }> = {
   [MemoryState.WITHDRAWN]: { text: "⊘ withdrawn", className: "text-faint" },
 };
 
-const MODE_ITEMS = [
-  { value: String(MemoryMode.ALWAYS), label: "Always-on (inline rule)" },
-  { value: String(MemoryMode.ON_DEMAND), label: "On-demand (index + get)" },
-];
 const ALL_REPOS = "__all_repos__";
 const GLOBAL = "__global__";
 
@@ -136,7 +130,6 @@ function MemoriesView({ s }: { s: Snapshot }) {
 
   const tab: MemoryTab = search.tab ?? "active";
   const scopeSlug = search.scope ?? "all";
-  const modeSlug = search.mode ?? "all";
   const canRank = tab === "active";
   const availableSorts = useMemo(() => (canRank ? SORTS : SORTS.filter((o) => o.sort !== "rank")), [canRank]);
   const sortItems = useMemo(() => availableSorts.map((o) => ({ value: o.sort, label: o.label })), [availableSorts]);
@@ -163,8 +156,6 @@ function MemoriesView({ s }: { s: Snapshot }) {
 
   const scopeFilter =
     scopeSlug === "global" ? MemoryScope.GLOBAL : scopeSlug === "project" ? MemoryScope.PROJECT : MemoryScope.UNSPECIFIED;
-  const modeFilter =
-    modeSlug === "always" ? MemoryMode.ALWAYS : modeSlug === "on-demand" ? MemoryMode.ON_DEMAND : MemoryMode.UNSPECIFIED;
 
   const scopeFilterItems = useMemo(
     () => [
@@ -174,16 +165,8 @@ function MemoriesView({ s }: { s: Snapshot }) {
     ],
     [project],
   );
-  const modeFilterItems = useMemo(
-    () => [
-      { value: "all", label: "all modes" },
-      { value: "always", label: "always-on" },
-      { value: "on-demand", label: "on-demand" },
-    ],
-    [],
-  );
 
-  const key = ["memories", project, tab, scopeSlug, modeSlug, sort, queryText] as const;
+  const key = ["memories", project, tab, scopeSlug, sort, queryText] as const;
   const move = useOptimisticReorder<"memories", ListMemoriesResponse>({
     key,
     field: "memories",
@@ -200,7 +183,6 @@ function MemoriesView({ s }: { s: Snapshot }) {
         projectScope: scopeFilter === MemoryScope.GLOBAL ? { case: undefined } : projectScope(project),
         scope: scopeFilter,
         states: MEMORY_TAB_STATES[tab],
-        mode: modeFilter,
         query: queryText,
         order: MEMORY_ORDER_FROM_SLUG[sort],
       }),
@@ -217,8 +199,8 @@ function MemoriesView({ s }: { s: Snapshot }) {
     return rawMemories ? mergeLatestByRevision(seenRef.current.map, rawMemories, MEMORY_TAB_STATES[tab]) : [];
   }, [rawMemories, tab, project]);
 
-  const movable = canRank && sort === "rank" && !queryText && scopeSlug === "all" && modeSlug === "all";
-  const hasFilters = Boolean(queryText || scopeSlug !== "all" || modeSlug !== "all");
+  const movable = canRank && sort === "rank" && !queryText && scopeSlug === "all";
+  const hasFilters = Boolean(queryText || scopeSlug !== "all");
   const now = Number(s.now);
 
   const counts: Partial<Record<MemoryTab, number>> = {
@@ -299,28 +281,6 @@ function MemoriesView({ s }: { s: Snapshot }) {
           </div>
 
           <div className="flex items-center gap-1.5">
-            <span>mode</span>
-            <Select
-              items={modeFilterItems}
-              value={modeSlug}
-              onValueChange={(v) =>
-                v && navigate({ search: { ...search, tab, mode: v === "all" ? undefined : (v as "always" | "on-demand") } })
-              }
-            >
-              <SelectTrigger size="sm" aria-label="Filter by mode" className="bg-card font-mono text-[11.5px] text-foreground">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="font-mono text-[11.5px]">
-                {modeFilterItems.map((item) => (
-                  <SelectItem key={item.value} value={item.value} className="text-[11.5px]">
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex items-center gap-1.5">
             <span>sort</span>
             <Select items={sortItems} value={sort} onValueChange={(v) => v && navigate({ search: { ...search, tab, sort: v as MemoryOrderSlug } })}>
               <SelectTrigger size="sm" aria-label="Sort memories" className="bg-card font-mono text-[11.5px] text-foreground">
@@ -360,7 +320,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
                 size="sm"
                 onClick={() => {
                   setSearchInput("");
-                  void navigate({ search: { ...search, tab, q: undefined, scope: undefined, mode: undefined }, replace: true });
+                  void navigate({ search: { ...search, tab, q: undefined, scope: undefined }, replace: true });
                 }}
                 className="font-mono text-[11.5px]"
               >
@@ -382,7 +342,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
         />
       )}
       {tab === "active" && !movable && memories.length > 1 && (
-        <p className="font-mono text-[11px] text-faint">Sort by startup order (with all scopes, all modes, and no search filter) to drag and reorder.</p>
+        <p className="font-mono text-[11px] text-faint">Sort by startup order (with all scopes and no search filter) to drag and reorder.</p>
       )}
     </div>
   );
@@ -451,25 +411,8 @@ function MemoryCard({
     },
     onSettled: settle,
   });
-  const toggleMode = useMutation({
-    mutationFn: async () => {
-      const current = hasFull ? full : await clients.memories.showMemory({ ref: String(m.id) });
-      const c = current.content;
-      const nextMode = c?.mode === MemoryMode.ALWAYS ? MemoryMode.ON_DEMAND : MemoryMode.ALWAYS;
-      return clients.memories.reviseMemory({
-        id: m.id,
-        content: {
-          mode: nextMode,
-          ...(nextMode === MemoryMode.ON_DEMAND && !c?.body?.trim() ? { body: c?.summary ?? "" } : {}),
-        },
-        ifRevision: current.revision,
-      });
-    },
-    onSettled: settle,
-  });
-
-  const busy = promote.isPending || archive.isPending || restore.isPending || remove.isPending || toggleMode.isPending;
-  const actionError = promote.error ?? archive.error ?? restore.error ?? remove.error ?? toggleMode.error;
+  const busy = promote.isPending || archive.isPending || restore.isPending || remove.isPending;
+  const actionError = promote.error ?? archive.error ?? restore.error ?? remove.error;
   const muted = m.state === MemoryState.ARCHIVED || m.state === MemoryState.WITHDRAWN || m.state === MemoryState.SUPERSEDED;
   const isProjectScoped = m.scope === MemoryScope.PROJECT && m.project !== "";
 
@@ -499,13 +442,6 @@ function MemoryCard({
                 {remoteName(m.repo)}
               </span>
             )}
-            <span
-              className={`rounded-md px-1.5 py-px font-mono text-[10px] ${
-                content?.mode === MemoryMode.ALWAYS ? "bg-ember-wash text-primary" : "border border-border text-muted-foreground"
-              }`}
-            >
-              {memoryModeLabel(content?.mode ?? MemoryMode.ON_DEMAND)}
-            </span>
             <span className={`font-mono text-[10.5px] ${tag.className}`}>{tag.text}</span>
             {m.supersededBy > 0 && (
               <Link to="/memories/$id" params={{ id: String(m.supersededBy) }} className="font-mono text-[10.5px] text-primary hover:underline">
@@ -624,18 +560,6 @@ function MemoryCard({
                     size="xs"
                     variant="ghost"
                     disabled={busy}
-                    onClick={() => toggleMode.mutate()}
-                    className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
-                  >
-                    {toggleMode.isPending
-                      ? "Switching…"
-                      : `Switch to ${content?.mode === MemoryMode.ALWAYS ? "on-demand" : "always-on"}`}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="ghost"
-                    disabled={busy}
                     onClick={() => archive.mutate()}
                     className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
                   >
@@ -708,7 +632,6 @@ function MemoryCard({
 interface MemoryDraft {
   slug: string;
   title: string;
-  mode: MemoryMode;
   /** A project's name, or GLOBAL. */
   scope: string;
   /** A repo of that project, or ALL_REPOS. */
@@ -724,7 +647,6 @@ function draftOfMemory(m: Memory): MemoryDraft {
   return {
     slug: c?.slug ?? "",
     title: c?.title ?? "",
-    mode: c?.mode || MemoryMode.ON_DEMAND,
     scope: m.scope === MemoryScope.GLOBAL || !m.project ? GLOBAL : m.project,
     repo: m.repo || ALL_REPOS,
     summary: c?.summary ?? "",
@@ -735,10 +657,14 @@ function draftOfMemory(m: Memory): MemoryDraft {
 }
 
 function newMemoryDraft(project: string | null): MemoryDraft {
-  return { slug: "", title: "", mode: MemoryMode.ALWAYS, scope: project ?? GLOBAL, repo: ALL_REPOS, summary: "", body: "", tags: "", rationale: "" };
+  return { slug: "", title: "", scope: project ?? GLOBAL, repo: ALL_REPOS, summary: "", body: "", tags: "", rationale: "" };
 }
 
-/** Writing a new memory, or rewriting one: its content, scope, repo, delivery mode and rationale. */
+/**
+ * Writing a new memory, or rewriting one: its content, scope, repo and
+ * rationale. Like a skill, a memory is a summary every session start lists
+ * and a body read once the summary applies; both are required.
+ */
 function MemoryForm(
   props: { s: Snapshot; onDone: () => void } & ({ mode: "create"; defaultProject: string | null } | { mode: "edit"; memory: Memory }),
 ) {
@@ -750,13 +676,12 @@ function MemoryForm(
 
   const isGlobal = d.scope === GLOBAL;
   const projectRepos = isGlobal ? [] : (s.projects.find((p) => p.name === d.scope)?.repos ?? []);
-  const always = d.mode === MemoryMode.ALWAYS;
-  const maxSummary = always ? 240 : 280;
+  const maxSummary = 280;
   const summaryLen = Array.from(d.summary).length;
   const summaryTooLong = summaryLen > maxSummary;
-  const missingBody = !always && !d.body.trim();
+  const missingBody = !d.body.trim();
   const invalid = !d.slug.trim() || !d.summary.trim() || summaryTooLong || missingBody;
-  const validationHint = summaryTooLong ? `Summary exceeds ${maxSummary} chars.` : missingBody ? "Body is required for on-demand memories." : null;
+  const validationHint = summaryTooLong ? `Summary exceeds ${maxSummary} chars.` : missingBody ? "Body is required." : null;
 
   // A repo stays chosen only while the newly chosen project still has it.
   const chooseScope = (scope: string) => {
@@ -771,7 +696,6 @@ function MemoryForm(
         title: d.title.trim(),
         summary: d.summary.trim(),
         body: d.body,
-        mode: d.mode,
         tags: d.tags
           .split(",")
           .map((t) => t.trim().toLowerCase())
@@ -818,7 +742,6 @@ function MemoryForm(
         />
         <FormSelect label="Scope" items={scopeItems} value={d.scope} onChange={chooseScope} />
         {projectRepos.length > 0 && <FormSelect label="Repo" items={repoItems} value={d.repo} onChange={(repo) => set({ repo })} mono />}
-        <FormSelect label="Delivery mode" items={MODE_ITEMS} value={String(d.mode)} onChange={(v) => set({ mode: Number(v) as MemoryMode })} />
       </div>
 
       <Input value={d.title} onChange={(e) => set({ title: e.target.value })} placeholder="Title (optional)" className="bg-background/60 text-[12.5px]" aria-label="Title" />
@@ -828,7 +751,7 @@ function MemoryForm(
           rows={2}
           value={d.summary}
           onChange={(e) => set({ summary: e.target.value })}
-          placeholder={always ? "Concise rule returned on every session start" : "1-line description + when-to-read trigger"}
+          placeholder="One line: what it is about and when to read it (listed on every session start)"
           className="min-h-14 bg-background/60 text-[12.5px]"
           aria-label="Summary"
           required
@@ -841,7 +764,7 @@ function MemoryForm(
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <span className="font-mono text-[10.5px] text-muted-foreground">
-            Body (markdown{always ? ", optional for always-on" : ", required for on-demand"})
+            Body (markdown, read with hotbed memory get once the summary applies)
           </span>
           <Button type="button" size="xs" variant="ghost" onClick={() => setPreview((v) => !v)} className="font-mono text-[11px] text-muted-foreground hover:text-foreground">
             {preview ? "Edit markdown" : "Preview markdown"}
@@ -856,7 +779,7 @@ function MemoryForm(
             rows={Math.min(16, Math.max(4, d.body.split("\n").length + 1))}
             value={d.body}
             onChange={(e) => set({ body: e.target.value })}
-            placeholder={always ? "Optional rationale / examples (markdown)" : "Full details, commands, examples… (required for on-demand)"}
+            placeholder="The memory itself: details, commands, examples…"
             className="bg-background/60 font-mono text-[12px]"
             aria-label="Body"
           />

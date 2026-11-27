@@ -3,8 +3,6 @@ import {
 	MemoryBudgetSchema,
 	MemoryChangeSchema,
 	MemoryIndexEntrySchema,
-	MemoryMode,
-	MemoryModeSchema,
 	MemoryOrder,
 	MemorySchema,
 	MemoryScope,
@@ -38,7 +36,6 @@ import {
 import type { ProjectStore } from "./projects.ts";
 
 const stateName = (s: MemoryState): string => enumName(MemoryStateSchema, s);
-const modeName = (m: MemoryMode): string => enumName(MemoryModeSchema, m);
 
 const TRAIL = { table: "memory_changes", key: "memory_id" };
 
@@ -79,10 +76,10 @@ export class MemoryStore {
 		return m.scope === MemoryScope.PROJECT ? this.projects.idByName(m.project) : null;
 	}
 
-	static readonly BRIEFING_ALWAYS_MAX_COUNT = 20;
-	static readonly BRIEFING_ALWAYS_MAX_BYTES = 4096;
-	static readonly BRIEFING_ON_DEMAND_MAX_COUNT = 30;
-	static readonly BRIEFING_ON_DEMAND_MAX_BYTES = 4096;
+	// Every session start lists these summaries, so they bound what memory
+	// costs each session's context.
+	static readonly BRIEFING_MAX_COUNT = 40;
+	static readonly BRIEFING_MAX_BYTES = 8192;
 
 	propose(opts: {
 		scope: MemoryScope;
@@ -139,13 +136,12 @@ export class MemoryStore {
 			// Insert initially in PROPOSED state so we obtain item.id before freeing
 			// superseded targets' slugs in the unique approved-slug index.
 			item.id = this.sql.insert(
-				`INSERT INTO memories (project_id, scope_key, repo, slug, mode, state, rank, proposed_by, proposed_at, updated_at, search_text, doc)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+				`INSERT INTO memories (project_id, scope_key, repo, slug, state, rank, proposed_by, proposed_at, updated_at, search_text, doc)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
 				pid,
 				scopeKey,
 				opts.repo,
 				opts.content.slug,
-				modeName(opts.content.mode),
 				stateName(MemoryState.PROPOSED),
 				item.rank,
 				opts.by.session,
@@ -301,7 +297,6 @@ export class MemoryStore {
 		scope: MemoryScope;
 		project: string;
 		allProjects: boolean;
-		mode: MemoryMode;
 		tag: string;
 		query: string;
 		order: MemoryOrder;
@@ -334,11 +329,6 @@ export class MemoryStore {
 			} else {
 				clauses.push("m.scope_key = ''");
 			}
-		}
-
-		if (filter.mode !== MemoryMode.UNSPECIFIED) {
-			clauses.push("m.mode = ?");
-			args.push(modeName(filter.mode));
 		}
 
 		const q = filter.query.trim().toLowerCase();
@@ -392,14 +382,13 @@ export class MemoryStore {
 	}
 
 	/**
-	 * The startup index for `project` (global + that project): what a session
-	 * start admits under the count/byte caps, what it omits, and the budget
-	 * those add up to. The one place the caps are applied, so the briefing and
-	 * the cockpit's budget bar cannot disagree.
+	 * The startup index for `project` (global + that project): the summaries a
+	 * session start lists under the count/byte caps, how many it omits, and
+	 * the budget those add up to. The one place the caps are applied, so the
+	 * briefing and the cockpit's budget bar cannot disagree.
 	 */
 	private startupIndex(project: string): {
-		always: MemoryIndexEntry[];
-		onDemand: MemoryIndexEntry[];
+		entries: MemoryIndexEntry[];
 		budget: MemoryBudget;
 		totalApproved: number;
 	} {
@@ -413,13 +402,10 @@ export class MemoryStore {
 			)
 			.toArray();
 
-		const always: MemoryIndexEntry[] = [];
-		const onDemand: MemoryIndexEntry[] = [];
+		const entries: MemoryIndexEntry[] = [];
 		const budget = create(MemoryBudgetSchema, {
-			alwaysMaxCount: MemoryStore.BRIEFING_ALWAYS_MAX_COUNT,
-			alwaysMaxBytes: MemoryStore.BRIEFING_ALWAYS_MAX_BYTES,
-			onDemandMaxCount: MemoryStore.BRIEFING_ON_DEMAND_MAX_COUNT,
-			onDemandMaxBytes: MemoryStore.BRIEFING_ON_DEMAND_MAX_BYTES,
+			maxCount: MemoryStore.BRIEFING_MAX_COUNT,
+			maxBytes: MemoryStore.BRIEFING_MAX_BYTES,
 		});
 		const enc = new TextEncoder();
 
@@ -427,43 +413,31 @@ export class MemoryStore {
 			const m = this.decodeRow(r);
 			const c = m.content;
 			if (!c) continue;
-			const entry = create(MemoryIndexEntrySchema, {
-				id: m.id,
-				slug: c.slug,
-				scope: m.scope,
-				project: m.project,
-				repo: m.repo,
-				mode: c.mode,
-				summary: c.summary,
-				hasBody: c.body.trim().length > 0,
-				revision: m.revision,
-				updatedAt: m.updatedAt,
-			});
 			const entryBytes = enc.encode(`${c.slug}: ${c.summary}`).byteLength;
-			if (c.mode === MemoryMode.ALWAYS) {
-				if (
-					budget.alwaysCount < budget.alwaysMaxCount &&
-					(budget.alwaysCount === 0 || budget.alwaysBytes + entryBytes <= budget.alwaysMaxBytes)
-				) {
-					always.push(entry);
-					budget.alwaysCount++;
-					budget.alwaysBytes += entryBytes;
-				} else {
-					budget.omittedAlways++;
-				}
-			} else if (
-				budget.onDemandCount < budget.onDemandMaxCount &&
-				(budget.onDemandCount === 0 || budget.onDemandBytes + entryBytes <= budget.onDemandMaxBytes)
+			if (
+				budget.count >= budget.maxCount ||
+				(budget.count > 0 && budget.bytes + entryBytes > budget.maxBytes)
 			) {
-				onDemand.push(entry);
-				budget.onDemandCount++;
-				budget.onDemandBytes += entryBytes;
-			} else {
-				budget.omittedOnDemand++;
+				budget.omitted++;
+				continue;
 			}
+			entries.push(
+				create(MemoryIndexEntrySchema, {
+					id: m.id,
+					slug: c.slug,
+					scope: m.scope,
+					project: m.project,
+					repo: m.repo,
+					summary: c.summary,
+					revision: m.revision,
+					updatedAt: m.updatedAt,
+				}),
+			);
+			budget.count++;
+			budget.bytes += entryBytes;
 		}
 
-		return { always, onDemand, budget, totalApproved: approvedRows.length };
+		return { entries, budget, totalApproved: approvedRows.length };
 	}
 
 	/** What a session start for `project` recalls, within the startup caps. */
@@ -472,7 +446,7 @@ export class MemoryStore {
 	}
 
 	briefing(project: string): MemoryBriefing {
-		const { always, onDemand, budget, totalApproved } = this.startupIndex(project);
+		const { entries, budget, totalApproved } = this.startupIndex(project);
 		const pendingProposals = num(
 			this.sql
 				.exec(
@@ -485,10 +459,8 @@ export class MemoryStore {
 		);
 
 		return create(MemoryBriefingSchema, {
-			always,
-			onDemand,
-			omittedAlways: budget.omittedAlways,
-			omittedOnDemand: budget.omittedOnDemand,
+			entries,
+			omitted: budget.omitted,
 			totalApproved,
 			pendingProposals,
 		});
@@ -574,13 +546,12 @@ export class MemoryStore {
 		stored.cockpitUrl = "";
 		this.sql.exec(
 			`UPDATE memories
-			 SET project_id = ?, scope_key = ?, repo = ?, slug = ?, mode = ?, state = ?, rank = ?, updated_at = ?, search_text = ?, doc = ?
+			 SET project_id = ?, scope_key = ?, repo = ?, slug = ?, state = ?, rank = ?, updated_at = ?, search_text = ?, doc = ?
 			 WHERE id = ?`,
 			pid,
 			scopeKey,
 			item.repo,
 			item.content?.slug ?? "",
-			modeName(item.content?.mode ?? MemoryMode.ON_DEMAND),
 			stateName(item.state),
 			item.rank,
 			item.updatedAt,

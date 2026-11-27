@@ -5,7 +5,6 @@ import {
 	GetMemoriesResponseSchema,
 	ListMemoriesResponseSchema,
 	MemoryContentSchema,
-	MemoryMode,
 	MemoryProvenanceSchema,
 	MemoryScope,
 	MemoryService,
@@ -26,8 +25,7 @@ import { checkRevision, projectRepo } from "./project-items.ts";
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TAG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const MAX_TITLE_RUNES = 120;
-const MAX_ALWAYS_SUMMARY_RUNES = 240;
-const MAX_ON_DEMAND_SUMMARY_RUNES = 280;
+const MAX_SUMMARY_RUNES = 280;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_TAGS = 10;
 const DIRTY_KEPT = 20;
@@ -70,10 +68,14 @@ function normalizeSupersedes(ids: number[]): number[] {
 	return out;
 }
 
+// A memory is like a skill: the summary, which every session start lists,
+// says when it applies; the body, read with `hotbed memory get`, is the
+// memory itself. Both are required, so no memory spends every session's
+// context on detail only some sessions need.
 function validateContent(c?: MemoryContent): MemoryContent {
 	if (!c) {
 		throw hotbedError(ErrorCode.InvalidArgs, "memory content is required").withSuggestion(
-			"pass --slug SLUG --summary SUMMARY [--body BODY] [--mode always|on_demand]",
+			"pass --slug SLUG --summary SUMMARY --body BODY",
 		);
 	}
 	const slug = c.slug.trim().toLowerCase();
@@ -87,42 +89,28 @@ function validateContent(c?: MemoryContent): MemoryContent {
 	if (Array.from(title).length > MAX_TITLE_RUNES) {
 		throw hotbedError(ErrorCode.InvalidArgs, `title is longer than ${MAX_TITLE_RUNES} characters`);
 	}
-	const body = c.body.trim();
-	const mode =
-		c.mode === MemoryMode.UNSPECIFIED ? (body ? MemoryMode.ON_DEMAND : MemoryMode.ALWAYS) : c.mode;
-	if (mode !== MemoryMode.ALWAYS && mode !== MemoryMode.ON_DEMAND) {
-		throw hotbedError(
-			ErrorCode.InvalidArgs,
-			`unknown memory mode ${String(c.mode)}`,
-		).withSuggestion("use --mode always or --mode on_demand");
-	}
 	const summary = c.summary.trim();
 	if (!summary) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
-			"summary is required: the compact rule (for always) or 1-line description/trigger (for on-demand)",
-		);
+			"summary is required: one line saying what the memory is about and when to read it",
+		).withSuggestion('pass --summary "..."');
 	}
-	const maxSummary =
-		mode === MemoryMode.ALWAYS ? MAX_ALWAYS_SUMMARY_RUNES : MAX_ON_DEMAND_SUMMARY_RUNES;
 	const summaryRunes = Array.from(summary).length;
-	if (summaryRunes > maxSummary) {
+	if (summaryRunes > MAX_SUMMARY_RUNES) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
-			`summary is ${summaryRunes} characters (max ${maxSummary} for ${mode === MemoryMode.ALWAYS ? "always" : "on-demand"} mode)`,
+			`summary is ${summaryRunes} characters (max ${MAX_SUMMARY_RUNES})`,
 		).withSuggestion(
-			mode === MemoryMode.ALWAYS
-				? "keep always-on rules crisp (<= 240 chars), or pass --body for an on-demand memory"
-				: "keep the index summary to one concise line and put full details in --body",
+			"keep the summary to one line saying when it applies, and put the rest in --body",
 		);
 	}
-	if (mode === MemoryMode.ON_DEMAND && !body) {
+	const body = c.body.trim();
+	if (!body) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
-			"on-demand memories require --body (or --body-file) with the full details",
-		).withSuggestion(
-			"pass --body TEXT, --body-file PATH, or omit --mode / use --mode always for a short inline rule",
-		);
+			"body is required: the memory itself, read with `hotbed memory get` once its summary applies",
+		).withSuggestion("pass --body TEXT or --body-file PATH (- for stdin)");
 	}
 	const bodyBytes = new TextEncoder().encode(body).byteLength;
 	if (bodyBytes > MAX_BODY_BYTES) {
@@ -132,14 +120,7 @@ function validateContent(c?: MemoryContent): MemoryContent {
 		);
 	}
 	const tags = normalizeTags(c.tags);
-	return create(MemoryContentSchema, {
-		slug,
-		title,
-		summary,
-		body,
-		mode,
-		tags,
-	});
+	return create(MemoryContentSchema, { slug, title, summary, body, tags });
 }
 
 function mergeContent(
@@ -148,7 +129,6 @@ function mergeContent(
 	opts?: {
 		replaceContent?: boolean;
 		clearTitle?: boolean;
-		clearBody?: boolean;
 		replaceTags?: boolean;
 	},
 ): MemoryContent {
@@ -161,11 +141,9 @@ function mergeContent(
 		if (patch.title.trim()) out.title = patch.title;
 		if (patch.summary.trim()) out.summary = patch.summary;
 		if (patch.body.trim()) out.body = patch.body;
-		if (patch.mode !== MemoryMode.UNSPECIFIED) out.mode = patch.mode;
 		if (patch.tags.length > 0) out.tags = normalizeTags(patch.tags);
 	}
 	if (opts?.clearTitle) out.title = "";
-	if (opts?.clearBody) out.body = "";
 	if (opts?.replaceTags) out.tags = normalizeTags(patch?.tags ?? []);
 	return validateContent(out);
 }
@@ -360,7 +338,6 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				scope: req.scope,
 				project,
 				allProjects,
-				mode: req.mode,
 				tag: req.tag,
 				query: req.query,
 				order: req.order,
@@ -454,7 +431,6 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				item.content = mergeContent(item.content!, req.content, {
 					replaceContent: req.replaceContent,
 					clearTitle: req.clearTitle,
-					clearBody: req.clearBody,
 					replaceTags: req.replaceTags,
 				});
 
