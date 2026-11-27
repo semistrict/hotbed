@@ -3,10 +3,13 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -217,4 +220,175 @@ func TestSyncGuestClock(t *testing.T) {
 	if called {
 		t.Fatal("expected no clock step for invalid HOTBED_NOW")
 	}
+}
+
+func TestConfigureGuestMGLRU(t *testing.T) {
+	sysRoot := t.TempDir()
+	lruDir := filepath.Join(sysRoot, "kernel", "mm", "lru_gen")
+	if err := os.MkdirAll(lruDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	enabledPath := filepath.Join(lruDir, "enabled")
+	ttlPath := filepath.Join(lruDir, "min_ttl_ms")
+	if err := os.WriteFile(enabledPath, []byte("0x0000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ttlPath, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configureGuestMGLRU(nil, sysRoot)
+
+	if got, _ := os.ReadFile(enabledPath); string(got) != "y\n" {
+		t.Fatalf("lru_gen/enabled = %q, want %q", got, "y\n")
+	}
+	if got, _ := os.ReadFile(ttlPath); string(got) != "1000\n" {
+		t.Fatalf("lru_gen/min_ttl_ms = %q, want %q", got, "1000\n")
+	}
+
+	// Already-enabled MGLRU and non-zero min_ttl_ms are left untouched.
+	if err := os.WriteFile(enabledPath, []byte("0x0007\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ttlPath, []byte("500\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configureGuestMGLRU(nil, sysRoot)
+	if got, _ := os.ReadFile(enabledPath); string(got) != "0x0007\n" {
+		t.Fatalf("already-enabled lru_gen/enabled overwritten: %q", got)
+	}
+	if got, _ := os.ReadFile(ttlPath); string(got) != "500\n" {
+		t.Fatalf("non-zero min_ttl_ms overwritten: %q", got)
+	}
+}
+
+func TestBuildLinuxSwapHeader(t *testing.T) {
+	for _, pageSize := range []int{4096, 16384} {
+		diskSize := int64(256 << 20)
+		hdr, err := buildLinuxSwapHeader(diskSize, pageSize)
+		if err != nil {
+			t.Fatalf("buildLinuxSwapHeader(%d): %v", pageSize, err)
+		}
+		if len(hdr) != pageSize {
+			t.Fatalf("len(hdr) = %d, want %d", len(hdr), pageSize)
+		}
+		if got := binary.LittleEndian.Uint32(hdr[1024:1028]); got != 1 {
+			t.Errorf("version = %d, want 1", got)
+		}
+		wantLast := uint32(diskSize/int64(pageSize) - 1)
+		if got := binary.LittleEndian.Uint32(hdr[1028:1032]); got != wantLast {
+			t.Errorf("last_page = %d, want %d", got, wantLast)
+		}
+		if got := string(hdr[pageSize-10 : pageSize]); got != "SWAPSPACE2" {
+			t.Errorf("magic = %q, want SWAPSPACE2", got)
+		}
+	}
+}
+
+func TestConfigureGuestZramSwap(t *testing.T) {
+	t.Run("provisions zram with lz4 fallback on EINVAL", func(t *testing.T) {
+		var writes []string
+		var formattedDev string
+		var formattedSize int64
+		var swaponDev string
+		var swaponFlags int
+		ops := zramSwapOps{
+			readFile: func(path string) ([]byte, error) {
+				switch path {
+				case "/proc/meminfo":
+					return []byte("MemTotal:       18874368 kB\nSwapTotal:             0 kB\n"), nil
+				case "/sys/class/zram-control/hot_add":
+					return []byte("0\n"), nil
+				default:
+					return nil, os.ErrNotExist
+				}
+			},
+			writeFile: func(path string, data []byte, _ os.FileMode) error {
+				val := strings.TrimSpace(string(data))
+				writes = append(writes, path+"="+val)
+				if path == "/sys/block/zram0/comp_algorithm" && val == "zstd" {
+					return syscall.EINVAL
+				}
+				return nil
+			},
+			stat:     func(string) (os.FileInfo, error) { return nil, nil },
+			modprobe: func(string) error { return errors.New("unexpected modprobe") },
+			formatSwap: func(devPath string, diskSize int64, _ int) error {
+				formattedDev, formattedSize = devPath, diskSize
+				return nil
+			},
+			swapon: func(devPath string, flags int) error {
+				swaponDev, swaponFlags = devPath, flags
+				return nil
+			},
+			pageSize:   func() int { return 4096 },
+			waitForDev: func(string) error { return nil },
+		}
+		if err := configureGuestZramSwapWithOps(nil, ops); err != nil {
+			t.Fatalf("configureGuestZramSwapWithOps: %v", err)
+		}
+		wantSize := int64(9 << 30) // half of 18 GiB
+		if formattedDev != "/dev/zram0" || formattedSize != wantSize {
+			t.Fatalf("formatSwap = (%q, %d), want (/dev/zram0, %d)", formattedDev, formattedSize, wantSize)
+		}
+		if swaponDev != "/dev/zram0" || swaponFlags != swapFlagPrefer|(zramSwapPriority<<swapFlagPrioShift) {
+			t.Fatalf("swapon = (%q, %#x)", swaponDev, swaponFlags)
+		}
+		wantWrites := []string{
+			"/sys/block/zram0/comp_algorithm=zstd",
+			"/sys/block/zram0/comp_algorithm=lz4",
+			fmt.Sprintf("/sys/block/zram0/disksize=%d", wantSize),
+		}
+		if !slices.Equal(writes, wantWrites) {
+			t.Fatalf("writes = %v, want %v", writes, wantWrites)
+		}
+	})
+
+	t.Run("skips when swap already present", func(t *testing.T) {
+		ops := zramSwapOps{
+			readFile: func(path string) ([]byte, error) {
+				if path == "/proc/meminfo" {
+					return []byte("MemTotal:       4194304 kB\nSwapTotal:      1048576 kB\n"), nil
+				}
+				t.Fatalf("unexpected read %s", path)
+				return nil, nil
+			},
+		}
+		if err := configureGuestZramSwapWithOps(nil, ops); err != nil {
+			t.Fatalf("configureGuestZramSwapWithOps: %v", err)
+		}
+	})
+
+	t.Run("cleans up zram device via hot_remove on swapon failure", func(t *testing.T) {
+		var removed string
+		ops := zramSwapOps{
+			readFile: func(path string) ([]byte, error) {
+				switch path {
+				case "/proc/meminfo":
+					return []byte("MemTotal:       4194304 kB\nSwapTotal:             0 kB\n"), nil
+				case "/sys/class/zram-control/hot_add":
+					return []byte("3\n"), nil
+				default:
+					return nil, os.ErrNotExist
+				}
+			},
+			writeFile: func(path string, data []byte, _ os.FileMode) error {
+				if path == "/sys/class/zram-control/hot_remove" {
+					removed = strings.TrimSpace(string(data))
+				}
+				return nil
+			},
+			stat:       func(string) (os.FileInfo, error) { return nil, nil },
+			formatSwap: func(string, int64, int) error { return nil },
+			swapon:     func(string, int) error { return syscall.EPERM },
+			pageSize:   func() int { return 4096 },
+			waitForDev: func(string) error { return nil },
+		}
+		if err := configureGuestZramSwapWithOps(nil, ops); err == nil {
+			t.Fatal("expected swapon error")
+		}
+		if removed != "3" {
+			t.Fatalf("hot_remove = %q, want %q", removed, "3")
+		}
+	})
 }

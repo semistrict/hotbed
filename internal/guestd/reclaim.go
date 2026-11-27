@@ -14,6 +14,33 @@ func parseMeminfoSwapTotal(raw string) int64 {
 	return parseMeminfoField(raw, "SwapTotal:")
 }
 
+// parseSwapsDiskBytes sums the sizes (in bytes) of non-zram swap devices from
+// /proc/swaps. In-guest zram lives inside guest RAM, so hotbed's host-driven
+// balloon reclaim must treat zram-only guests as swapless (swappiness=0) to
+// avoid double-compressing guest anonymous pages into guest zram instead of
+// freeing RAM for virtio-balloon.
+func parseSwapsDiskBytes(raw string) int64 {
+	var total int64
+	for i, line := range strings.Split(raw, "\n") {
+		if i == 0 {
+			continue // header: Filename Type Size Used Priority
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		if strings.HasPrefix(fields[0], "/dev/zram") {
+			continue
+		}
+		kb, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || kb <= 0 {
+			continue
+		}
+		total += kb * 1024
+	}
+	return total
+}
+
 // parseMeminfoCleanFileBytes parses clean, reclaimable file-backed page cache
 // bytes from /proc/meminfo text: Active(file) + Inactive(file) - Dirty - Writeback.
 // Using Active(file)+Inactive(file) excludes tmpfs/Shmem (which lives on the

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 )
@@ -17,7 +18,45 @@ import (
 const guestCgroupRoot = "/sys/fs/cgroup/hotbed"
 
 type cmdCgroup struct {
+	// path is the command's delegated root cgroup (/sys/fs/cgroup/hotbed/<id>):
+	// hierarchical stats, freeze, kill, reclaim, and limits live here.
 	path string
+	// leaf is the sub-cgroup (/sys/fs/cgroup/hotbed/<id>/main) the command's
+	// initial process starts in so path has no internal processes and can
+	// delegate +cpu +memory +pids +io to user-created sibling cgroups.
+	leaf string
+}
+
+// cgroupRootDelegatedFiles are chowned on the command's root cgroup directory
+// (matching systemd Delegate=yes, plus memory.reclaim) while leaving root's
+// memory.low/memory.high/cpu.weight limits intact.
+var cgroupRootDelegatedFiles = []string{
+	"cgroup.procs",
+	"cgroup.threads",
+	"cgroup.subtree_control",
+	"cgroup.type",
+	"memory.reclaim",
+}
+
+// cgroupLeafDelegatedFiles are chowned on the command's leaf cgroup directory
+// so the command user can govern and reclaim its own cgroup as well as any
+// sibling/child cgroups it creates under path.
+var cgroupLeafDelegatedFiles = []string{
+	"cgroup.procs",
+	"cgroup.threads",
+	"cgroup.subtree_control",
+	"cgroup.type",
+	"memory.reclaim",
+	"memory.high",
+	"memory.max",
+	"memory.low",
+	"memory.min",
+	"memory.swap.max",
+	"memory.swap.high",
+	"memory.oom.group",
+	"cpu.weight",
+	"cpu.max",
+	"pids.max",
 }
 
 // hasCgroupV2 reports whether cgroup v2 is mounted and writable for hotbed-guestd.
@@ -54,24 +93,61 @@ func createCmdCgroup(id string, req *guestdv1.StartCommandRequest) *cmdCgroup {
 	if req.GetMemoryHigh() > 0 {
 		_ = os.WriteFile(filepath.Join(p, "memory.high"), []byte(strconv.FormatInt(req.GetMemoryHigh(), 10)), 0o644)
 	}
-	return &cmdCgroup{path: p}
+	// Enable controllers on p before placing any process in a child cgroup so
+	// cgroup v2's no-internal-processes rule allows delegated child cgroups
+	// (e.g. cladefsd's governed daemon + simulated VM cgroups) to use memory.*.
+	_ = os.WriteFile(filepath.Join(p, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0o644)
+	_ = os.WriteFile(filepath.Join(p, "cgroup.subtree_control"), []byte("+io"), 0o644)
+
+	leaf := filepath.Join(p, "main")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		leaf = p
+	}
+	if (req.GetUid() > 0 || req.GetGid() > 0) && os.Geteuid() == 0 {
+		delegateCgroup(p, leaf, int(req.GetUid()), int(req.GetGid()), os.Chown)
+	}
+	return &cmdCgroup{path: p, leaf: leaf}
+}
+
+func delegateCgroup(rootDir, leafDir string, uid, gid int, chown func(string, int, int) error) {
+	_ = chown(rootDir, uid, gid)
+	for _, name := range cgroupRootDelegatedFiles {
+		_ = chown(filepath.Join(rootDir, name), uid, gid)
+	}
+	if leafDir == "" || leafDir == rootDir {
+		return
+	}
+	_ = chown(leafDir, uid, gid)
+	for _, name := range cgroupLeafDelegatedFiles {
+		_ = chown(filepath.Join(leafDir, name), uid, gid)
+	}
+}
+
+func (c *cmdCgroup) attachDir() string {
+	if c == nil {
+		return ""
+	}
+	if c.leaf != "" {
+		return c.leaf
+	}
+	return c.path
 }
 
 func (c *cmdCgroup) addPID(pid int) error {
 	if c == nil {
 		return nil
 	}
-	return os.WriteFile(filepath.Join(c.path, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o644)
+	return os.WriteFile(filepath.Join(c.attachDir(), "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o644)
 }
 
-// attachCgroupAttr configures attr to spawn the child directly inside c via
-// CLONE_INTO_CGROUP (Linux 5.7+), eliminating the start-to-addPID race.
+// attachCgroupAttr configures attr to spawn the child directly inside c's leaf
+// cgroup via CLONE_INTO_CGROUP (Linux 5.7+), eliminating the start-to-addPID race.
 // The caller must invoke the returned cleanup function after cmd.Start returns.
 func attachCgroupAttr(attr *syscall.SysProcAttr, c *cmdCgroup) (bool, func()) {
 	if c == nil || attr == nil {
 		return false, func() {}
 	}
-	fd, err := syscall.Open(c.path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	fd, err := syscall.Open(c.attachDir(), syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return false, func() {}
 	}
@@ -101,12 +177,12 @@ func (c *cmdCgroup) killAll() {
 	_ = os.WriteFile(filepath.Join(c.path, "cgroup.kill"), []byte("1"), 0o644)
 }
 
-func guestSwapTotalBytes() int64 {
-	b, err := os.ReadFile("/proc/meminfo")
+func guestDiskSwapTotalBytes() int64 {
+	b, err := os.ReadFile("/proc/swaps")
 	if err != nil {
 		return 0
 	}
-	return parseMeminfoSwapTotal(string(b))
+	return parseSwapsDiskBytes(string(b))
 }
 
 func guestCleanFileBytes() int64 {
@@ -152,7 +228,7 @@ func (c *cmdCgroup) reclaim(n int64) error {
 	if c == nil || n <= 0 {
 		return nil
 	}
-	payload, ok := planReclaim(c.path, n, guestSwapTotalBytes())
+	payload, ok := planReclaim(c.path, n, guestDiskSwapTotalBytes())
 	if !ok {
 		return nil
 	}
@@ -189,7 +265,41 @@ func (c *cmdCgroup) remove() {
 	if c == nil {
 		return
 	}
-	_ = os.Remove(c.path)
+	// Remove child cgroups (main + any delegated child cgroups created by the
+	// command) bottom-up; retry briefly while cgroup.kill reaps exiting tasks.
+	for i := range 10 {
+		if err := removeCgroupTree(c.path); err == nil || errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if i < 9 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// removeCgroupTree removes a cgroup v2 directory hierarchy bottom-up using
+// os.Remove on directories only (kernfs control files cannot be unlinked).
+func removeCgroupTree(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	var firstErr error
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		if err := removeCgroupTree(filepath.Join(root, ent.Name())); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := os.Remove(root); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (c *cmdCgroup) stats() cmdCgroupStats {

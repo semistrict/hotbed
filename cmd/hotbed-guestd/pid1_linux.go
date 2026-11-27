@@ -4,6 +4,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 type pid1Mount struct {
@@ -270,6 +274,246 @@ func configureGuestSysctls(log *slog.Logger, procRoot string) {
 	}
 }
 
+// configureGuestMGLRU enables Linux MGLRU and sets a 1s thrashing protection
+// window when the guest kernel exposes /sys/kernel/mm/lru_gen (required by
+// cladefsd's governed memory mode and beneficial for general guest reclaim).
+func configureGuestMGLRU(log *slog.Logger, sysRoot string) {
+	lruDir := filepath.Join(sysRoot, "kernel", "mm", "lru_gen")
+	enabledPath := filepath.Join(lruDir, "enabled")
+	if raw, err := os.ReadFile(enabledPath); err == nil {
+		if v, perr := strconv.ParseUint(strings.TrimSpace(string(raw)), 0, 64); perr == nil && v == 0 {
+			if werr := os.WriteFile(enabledPath, []byte("y\n"), 0o644); werr != nil && log != nil {
+				log.Warn("enable guest MGLRU failed", "path", enabledPath, "err", werr)
+			}
+		}
+	}
+	ttlPath := filepath.Join(lruDir, "min_ttl_ms")
+	if raw, err := os.ReadFile(ttlPath); err == nil && strings.TrimSpace(string(raw)) == "0" {
+		if werr := os.WriteFile(ttlPath, []byte("1000\n"), 0o644); werr != nil && log != nil {
+			log.Warn("set guest MGLRU min_ttl_ms failed", "path", ttlPath, "err", werr)
+		}
+	}
+}
+
+const (
+	zramSwapSlabBytes = 16 << 20
+	zramSwapMinBytes  = 256 << 20
+	swapFlagPrefer    = 0x8000
+	swapFlagPrioShift = 0
+	zramSwapPriority  = 100
+)
+
+type zramSwapOps struct {
+	readFile    func(path string) ([]byte, error)
+	writeFile   func(path string, data []byte, perm os.FileMode) error
+	stat        func(path string) (os.FileInfo, error)
+	modprobe    func(module string) error
+	formatSwap  func(devPath string, diskSize int64, pageSize int) error
+	swapon      func(devPath string, flags int) error
+	pageSize    func() int
+	waitForDev  func(devPath string) error
+}
+
+var defaultZramSwapOps = zramSwapOps{
+	readFile:  os.ReadFile,
+	writeFile: os.WriteFile,
+	stat:      os.Stat,
+	modprobe: func(module string) error {
+		bin, err := exec.LookPath("modprobe")
+		if err != nil {
+			return err
+		}
+		return exec.Command(bin, module).Run()
+	},
+	formatSwap: formatSwapDevice,
+	swapon:     swaponSyscall,
+	pageSize:   os.Getpagesize,
+	waitForDev: func(devPath string) error {
+		for range 100 {
+			if _, err := os.Stat(devPath); err == nil {
+				return nil
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return fmt.Errorf("%s did not appear", devPath)
+	},
+}
+
+func swaponSyscall(devPath string, flags int) error {
+	pathBytes, err := syscall.BytePtrFromString(devPath)
+	if err != nil {
+		return err
+	}
+	_, _, errno := syscall.Syscall(syscall.SYS_SWAPON, uintptr(unsafe.Pointer(pathBytes)), uintptr(flags), 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// buildLinuxSwapHeader builds a Linux swap_header v1 page for a device of
+// diskSize bytes on a kernel with pageSize-byte pages (4 KiB or 16 KiB).
+func buildLinuxSwapHeader(diskSize int64, pageSize int) ([]byte, error) {
+	if pageSize < 4096 || pageSize&(pageSize-1) != 0 {
+		return nil, fmt.Errorf("invalid page size %d", pageSize)
+	}
+	pages := diskSize / int64(pageSize)
+	if pages < 10 {
+		return nil, fmt.Errorf("swap device too small: %d bytes (%d pages)", diskSize, pages)
+	}
+	hdr := make([]byte, pageSize)
+	// union swap_header.info starts at byte 1024 (after bootbits[1024]):
+	// version (u32), last_page (u32), nr_badpages (u32), sws_uuid[16].
+	binary.LittleEndian.PutUint32(hdr[1024:1028], 1)
+	binary.LittleEndian.PutUint32(hdr[1028:1032], uint32(pages-1))
+	binary.LittleEndian.PutUint32(hdr[1032:1036], 0)
+	if _, err := rand.Read(hdr[1036:1052]); err != nil {
+		return nil, err
+	}
+	hdr[1042] = (hdr[1042] & 0x0f) | 0x40 // UUID v4
+	hdr[1044] = (hdr[1044] & 0x3f) | 0x80 // RFC 4122 variant
+	copy(hdr[pageSize-10:pageSize], "SWAPSPACE2")
+	return hdr, nil
+}
+
+func formatSwapDevice(devPath string, diskSize int64, pageSize int) error {
+	hdr, err := buildLinuxSwapHeader(diskSize, pageSize)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(devPath, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(hdr); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+func parseMeminfoKB(raw, prefix string) int64 {
+	for _, line := range strings.Split(raw, "\n") {
+		rest, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return 0
+		}
+		n, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil || n <= 0 {
+			return 0
+		}
+		if len(fields) >= 2 && strings.EqualFold(fields[1], "kB") {
+			return n * 1024
+		}
+		return n
+	}
+	return 0
+}
+
+// zramSwapSize returns the logical zram swap size for a guest with memTotal
+// bytes of RAM: half of MemTotal rounded up to 16 MiB, at least 256 MiB
+// (matching cladefsd --setup-host so SwapTotal comfortably exceeds its ~1/8
+// governed swap floor even after swap-header overhead).
+func zramSwapSize(memTotal int64) int64 {
+	half := memTotal / 2
+	aligned := ((half + zramSwapSlabBytes - 1) / zramSwapSlabBytes) * zramSwapSlabBytes
+	if aligned < zramSwapMinBytes {
+		return zramSwapMinBytes
+	}
+	return aligned
+}
+
+// configureGuestZramSwap provisions a zstd (fallback lz4) zram swap device
+// when the guest boots with no swap. Normal workloads allocate zero zram until
+// pressured, hotbed's own balloon-reclaim keeps swappiness=0 on zram-only
+// guests to avoid double-compressing into host zram, and in-guest governed
+// daemons (such as cladefsd) get SwapTotal >= floor without root setup.
+func configureGuestZramSwap(log *slog.Logger) {
+	if err := configureGuestZramSwapWithOps(log, defaultZramSwapOps); err != nil && log != nil {
+		log.Warn("configure guest zram swap failed", "err", err)
+	}
+}
+
+func configureGuestZramSwapWithOps(log *slog.Logger, ops zramSwapOps) error {
+	meminfoRaw, err := ops.readFile("/proc/meminfo")
+	if err != nil {
+		return nil
+	}
+	meminfo := string(meminfoRaw)
+	if parseMeminfoKB(meminfo, "SwapTotal:") > 0 {
+		return nil
+	}
+	memTotal := parseMeminfoKB(meminfo, "MemTotal:")
+	if memTotal <= 0 {
+		return nil
+	}
+
+	const hotAddPath = "/sys/class/zram-control/hot_add"
+	const hotRemovePath = "/sys/class/zram-control/hot_remove"
+	if _, err := ops.stat(hotAddPath); err != nil {
+		if err := ops.modprobe("zram"); err != nil {
+			if log != nil {
+				log.Debug("zram unavailable in guest kernel; skipping swap setup", "err", err)
+			}
+			return nil
+		}
+		if _, err := ops.stat(hotAddPath); err != nil {
+			return nil
+		}
+	}
+
+	devRaw, err := ops.readFile(hotAddPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", hotAddPath, err)
+	}
+	devNum, err := strconv.Atoi(strings.TrimSpace(string(devRaw)))
+	if err != nil || devNum < 0 {
+		return fmt.Errorf("invalid zram device number %q", strings.TrimSpace(string(devRaw)))
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = ops.writeFile(hotRemovePath, []byte(fmt.Sprintf("%d\n", devNum)), 0o644)
+		}
+	}()
+
+	sysDev := fmt.Sprintf("/sys/block/zram%d", devNum)
+	devPath := fmt.Sprintf("/dev/zram%d", devNum)
+	compPath := filepath.Join(sysDev, "comp_algorithm")
+	if err := ops.writeFile(compPath, []byte("zstd\n"), 0o644); err != nil {
+		if errors.Is(err, syscall.EINVAL) {
+			if err2 := ops.writeFile(compPath, []byte("lz4\n"), 0o644); err2 != nil {
+				return fmt.Errorf("set %s to lz4: %w", compPath, err2)
+			}
+		} else {
+			return fmt.Errorf("set %s to zstd: %w", compPath, err)
+		}
+	}
+
+	diskSize := zramSwapSize(memTotal)
+	sizePath := filepath.Join(sysDev, "disksize")
+	if err := ops.writeFile(sizePath, []byte(fmt.Sprintf("%d\n", diskSize)), 0o644); err != nil {
+		return fmt.Errorf("set %s to %d: %w", sizePath, diskSize, err)
+	}
+	if ops.waitForDev != nil {
+		if err := ops.waitForDev(devPath); err != nil {
+			return err
+		}
+	}
+	if err := ops.formatSwap(devPath, diskSize, ops.pageSize()); err != nil {
+		return fmt.Errorf("format swap %s: %w", devPath, err)
+	}
+	if err := ops.swapon(devPath, swapFlagPrefer|(zramSwapPriority<<swapFlagPrioShift)); err != nil {
+		return fmt.Errorf("swapon %s: %w", devPath, err)
+	}
+	cleanup = false
+	return nil
+}
+
 // runPID1Supervisor pivots onto the workspace rootfs (when booted from the
 // separate read-only tools disk), mounts Linux API filesystems, forks
 // hotbed-guestd as a child process (PID 2) with --no-pid1, and stays as PID 1
@@ -330,11 +574,9 @@ func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	// Bare devtmpfs creates /dev/fuse, /dev/userfaultfd, /dev/kvm, and
 	// /dev/net/tun as 0600 root:root (no udev); open them to workspace users.
 	fixDevPermissions(log, "/dev")
-	// Do not configure in-guest zram swap: the host already runs zstd zram
-	// (or disk swap) + proactive VM memory.reclaim, so guest zram would
-	// double-compress anonymous pages and make them 1:1 incompressible when
-	// reclaimed into host zram.
 	configureGuestSysctls(log, "/proc")
+	configureGuestMGLRU(log, "/sys")
+	configureGuestZramSwap(log)
 	// Ensure loopback is up (minimal Firecracker kernels leave lo DOWN).
 	if ipBin, err := exec.LookPath("ip"); err == nil {
 		_ = exec.Command(ipBin, "link", "set", "lo", "up").Run()

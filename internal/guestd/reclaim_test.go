@@ -41,6 +41,37 @@ func TestParseMeminfoSwapTotal(t *testing.T) {
 	}
 }
 
+func TestParseSwapsDiskBytes(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want int64
+	}{
+		{
+			name: "zram-only guest reports zero disk swap",
+			raw:  "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0                              partition\t9437180\t\t0\t\t100\n",
+			want: 0,
+		},
+		{
+			name: "mixed zram and disk swap counts only disk",
+			raw:  "Filename\tType\tSize\tUsed\tPriority\n/dev/zram0\tpartition\t8388604\t0\t100\n/swapfile\tfile\t2097148\t0\t-2\n",
+			want: 2097148 * 1024,
+		},
+		{
+			name: "empty swaps",
+			raw:  "Filename\tType\tSize\tUsed\tPriority\n",
+			want: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseSwapsDiskBytes(tc.raw); got != tc.want {
+				t.Fatalf("parseSwapsDiskBytes = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPlanReclaimSwaplessVsSwapped(t *testing.T) {
 	t.Run("swapless guest with only anon skips memory.reclaim", func(t *testing.T) {
 		cg := t.TempDir()
