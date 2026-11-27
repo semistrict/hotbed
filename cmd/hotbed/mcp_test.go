@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/skills"
 )
 
 // mcpClient is an agent's MCP client of hotbed mcp, run as the agent runs
@@ -365,4 +368,44 @@ func (c *cluster) getSession(id string, res *pb.GetSessionResponse) error {
 	}
 	proto.Merge(res, got)
 	return nil
+}
+
+// hotbed's built-in skills are compiled in, so hotbed mcp lists them in its
+// instructions even when it cannot start its session.
+func TestMCPInstructionsListBuiltinSkillsWithoutASession(t *testing.T) {
+	t.Parallel()
+	c := newControllerOnly(t)
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"code":"permission_denied","message":"not this one"}`)
+	}))
+	defer refusing.Close()
+	c.cli.controller = func() (string, error) { return refusing.URL, nil }
+	m := c.mcp()
+	defer m.stop()
+
+	instr := m.InitializeResult().Instructions
+	want := "\n  [builtin] hotbed-questions — " + mustBuiltin(t, "hotbed-questions").Description + " (skill://builtin/hotbed-questions/SKILL.md)"
+	if !strings.Contains(instr, "Skills (read one with `resources/read` of its URI, or `hotbed skills get NAME` when its description applies):") || !strings.Contains(instr, want) {
+		t.Errorf("instructions without a session = %q, want the built-in skills, such as %q", instr, want)
+	}
+	if strings.Contains(instr, "The tools act as session") {
+		t.Errorf("instructions name a session though none started: %q", instr)
+	}
+}
+
+func mustBuiltin(t *testing.T, name string) skills.Skill {
+	t.Helper()
+	list, err := skills.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range list {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("no built-in skill %s", name)
+	return skills.Skill{}
 }

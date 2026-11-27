@@ -165,10 +165,15 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 	if !strings.HasPrefix(gotQuestions.Content, "---\nname: hotbed-questions\n") {
 		t.Errorf("skills get hotbed-questions = %q, want the built-in skill", apicmd.Short(120, gotQuestions.Content))
 	}
-	var matched skillsListResult
-	c.ok(&matched, "skills", "ls", "-s", "brave-otter", "-q", "cron schedule")
-	if len(matched.Builtin) != 1 || matched.Builtin[0].Name != "hotbed-schedules" {
-		t.Errorf("skills ls -q 'cron schedule' built-ins = %+v, want only hotbed-schedules", matched.Builtin)
+	for _, args := range [][]string{
+		{"skills", "ls", "-s", "brave-otter", "-q", "cron schedule"},
+		{"skills", "ls", "--builtin", "-q", "cron schedule"},
+	} {
+		var matched skillsListResult
+		c.ok(&matched, args...)
+		if len(matched.Builtin) != 1 || matched.Builtin[0].Name != "hotbed-schedules" {
+			t.Errorf("%q built-ins = %+v, want only hotbed-schedules", args, matched.Builtin)
+		}
 	}
 
 	shown := &pb.Skill{}
@@ -394,9 +399,16 @@ func TestMCPSkillsExtensionSEP2640AndResources(t *testing.T) {
 		t.Errorf("extension settings = %#v, want directoryRead=true", extRaw)
 	}
 
-	// 2. Instructions include the relevant skill descriptors (and NOT other-only).
-	if !strings.Contains(initRes.Instructions, "pdf-processing") || !strings.Contains(initRes.Instructions, "proj-only") {
-		t.Errorf("instructions missing active skills:\n%s", initRes.Instructions)
+	// 2. Instructions list each relevant skill with the URI to read it by
+	// (and NOT other-only): a scope tag such as [test/REPO] makes no URI.
+	for _, want := range []string{
+		"\n  [test] proj-only — Only for project test. (skill://test/proj-only/SKILL.md)",
+		"\n  [global] pdf-processing — Extract, fill, and assemble PDF documents. (skill://global/pdf-processing/SKILL.md)",
+		" (skill://builtin/hotbed/SKILL.md)",
+	} {
+		if !strings.Contains(initRes.Instructions, want) {
+			t.Errorf("instructions missing %q:\n%s", want, initRes.Instructions)
+		}
 	}
 	if strings.Contains(initRes.Instructions, "other-only") {
 		t.Errorf("instructions leaked another project's skill:\n%s", initRes.Instructions)

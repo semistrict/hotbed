@@ -94,14 +94,18 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 	var started *pb.Session
 	if id, err := s.ensure(ctx); err != nil {
 		fmt.Fprintf(s.d.stderr, "hotbed mcp: no session yet: %v\n", toAPIError(err))
+		// The built-in skills need no controller: list them all the same.
+		if started, err = withBuiltinSkills(&pb.Session{}); err != nil {
+			return err
+		}
 	} else {
 		instructions += fmt.Sprintf(" The tools act as session %s, which hotbed commands run here use too.", id)
 		s.mu.Lock()
 		started = s.started
 		s.mu.Unlock()
-		if b := formatBriefing(started, mcpBriefing); b != "" {
-			instructions += "\n\n" + b
-		}
+	}
+	if b := formatBriefing(started, mcpBriefing); b != "" {
+		instructions += "\n\n" + b
 	}
 	defer s.end()
 

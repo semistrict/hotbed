@@ -178,14 +178,14 @@ func (c *skillsLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	if c.Builtin {
-		return skillsListResult{Skills: []*pb.Skill{}, Builtin: builtins}, nil
+		return skillsListResult{Skills: []*pb.Skill{}, Builtin: matchingBuiltins(builtins, c.Query)}, nil
 	}
 	cl, cp, ok, err := tryControllerClients(d)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return skillsListResult{Skills: []*pb.Skill{}, Builtin: builtins}, nil
+		return skillsListResult{Skills: []*pb.Skill{}, Builtin: matchingBuiltins(builtins, c.Query)}, nil
 	}
 
 	req := &pb.ListSkillsRequest{

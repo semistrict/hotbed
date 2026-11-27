@@ -50,6 +50,9 @@ func builtinSkillURI(name string) string { return "skill://builtin/" + name + "/
 // briefingHints says how the reader loads what the briefing lists.
 type briefingHints struct {
 	skill, memory, moreMemories string
+	// skillURIs puts each skill's URI after it, for an MCP client to read
+	// it by: a scope tag does not make one (a repo's skill is in its project).
+	skillURIs bool
 }
 
 var (
@@ -59,9 +62,10 @@ var (
 		moreMemories: "`hotbed memory ls`",
 	}
 	mcpBriefing = briefingHints{
-		skill:        "`resources/read` of skill://SCOPE/NAME/SKILL.md, or `hotbed skills get NAME`",
+		skill:        "`resources/read` of its URI, or `hotbed skills get NAME`",
 		memory:       "tool `memory_get`",
 		moreMemories: "tool `memory_ls`",
+		skillURIs:    true,
 	}
 )
 
@@ -89,6 +93,9 @@ func formatBriefing(sess *pb.Session, h briefingHints) string {
 		fmt.Fprintf(&sb, "Skills (read one with %s when its description applies):", h.skill)
 		for _, s := range sk {
 			fmt.Fprintf(&sb, "\n  [%s] %s — %s", skillScopeTag(s), s.Name, s.Description)
+			if h.skillURIs {
+				fmt.Fprintf(&sb, " (%s)", s.Uri)
+			}
 		}
 		parts = append(parts, sb.String())
 	}
