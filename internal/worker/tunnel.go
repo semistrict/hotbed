@@ -397,6 +397,7 @@ func serveTunnelOnceWithTimeouts(
 				reqs = make(chan []byte, 64)
 				sending[req.ID] = reqs
 			}
+			callSend := whileLive(connCtx, sendMsg)
 			wg.Add(1)
 			go func(r tunnelDownMessage) {
 				defer wg.Done()
@@ -407,11 +408,26 @@ func serveTunnelOnceWithTimeouts(
 					inflightMu.Unlock()
 				}()
 				if reqs != nil {
-					dispatchTunnelClientStream(callCtx, handler, r.ID, r.Procedure, reqs, sendMsg)
+					dispatchTunnelClientStream(callCtx, handler, r.ID, r.Procedure, reqs, callSend)
 					return
 				}
-				dispatchTunnelRPC(callCtx, handler, r, sendMsg)
+				dispatchTunnelRPC(callCtx, handler, r, callSend)
 			}(req)
+		}
+	}
+}
+
+// whileLive is send for the calls of a connection whose context is ctx,
+// saying nothing once the connection is ending (the worker halting): its
+// calls are canceled with it, and their handlers return as ones whose
+// client went away do, often cleanly, so an rpc_end would tell the
+// controller that a call ended as it should, ending its client's stream as
+// if it had. The controller fails the calls of a connection that closed as
+// WorkerUnreachable, which their clients ride out.
+func whileLive(ctx context.Context, send func(tunnelUpMessage)) func(tunnelUpMessage) {
+	return func(m tunnelUpMessage) {
+		if ctx.Err() == nil {
+			send(m)
 		}
 	}
 }

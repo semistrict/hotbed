@@ -317,3 +317,50 @@ func TestTunnelEndsWithAPipeOpen(t *testing.T) {
 		t.Fatal("serveTunnelOnce never returned after its connection ended with a pipe open")
 	}
 }
+
+// quitOnCancel serves FollowLog as the worker's does when its client goes:
+// it returns cleanly once its context is canceled, saying it has started.
+type quitOnCancel struct {
+	hotbedv1connect.UnimplementedWorkspaceServiceHandler
+	started chan struct{}
+}
+
+func (q quitOnCancel) FollowLog(ctx context.Context, _ *pb.FollowLogRequest, _ hotbedv1connect.WorkspaceServiceFollowLogServerStream) error {
+	close(q.started)
+	<-ctx.Done()
+	return nil
+}
+
+// A call canceled while its handler runs by its tunnel connection ending
+// (the worker halting) sends nothing more: its handler returning cleanly
+// must not reach the controller as an rpc_end, which ended the client's
+// stream as if it had ended as it should instead of failing it as
+// WorkerUnreachable for the client to ride out.
+func TestTunnelEndingConnectionSendsNothingMore(t *testing.T) {
+	svc := quitOnCancel{started: make(chan struct{})}
+	srv := httpx.NewServer()
+	hotbedv1connect.RegisterWorkspaceServiceHandler(srv, svc)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, srv)
+	handler := httpx.WithStaticPeer(httpx.Peer{NodeID: "cf:cluster-1", Hostname: "controller"}, mux)
+
+	connCtx, endConn := context.WithCancel(t.Context())
+	callCtx, cancelCall := context.WithCancel(connCtx)
+	defer cancelCall()
+	body, _ := proto.Marshal(&pb.FollowLogRequest{Id: "c-1", Follow: true})
+	var sent []tunnelUpMessage
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		dispatchTunnelRPC(callCtx, handler, tunnelDownMessage{
+			Type: "rpc_req", ID: "s1", Procedure: hotbedv1connect.WorkspaceServiceFollowLogProcedure,
+			Body: base64.StdEncoding.EncodeToString(body), Stream: true,
+		}, whileLive(connCtx, func(m tunnelUpMessage) { sent = append(sent, m) }))
+	}()
+	<-svc.started
+	endConn()
+	<-done
+	if len(sent) != 0 {
+		t.Errorf("the worker sent %+v about the canceled call, want nothing", sent)
+	}
+}
