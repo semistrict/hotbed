@@ -184,8 +184,6 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs: [test-linux, test-linux-root, test-macos, test-cf-controller]
-    outputs:
-      published: ${{ steps.publish.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -207,11 +205,7 @@ jobs:
               -o "out/hotbed-guestd-${p%/*}-${p#*/}" ./cmd/hotbed-guestd
           done
           (cd out && sha256sum hotbed-* > SHA256SUMS)
-      # Temporarily non-fatal: GitHub refuses the token with HTTP 403 (issue #2).
-      # Revert to a failing step once releases publish again.
       - name: Publish
-        id: publish
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -220,12 +214,7 @@ jobs:
           # The newest 20 builds are kept.
           gh release list --limit 200 --json tagName --jq '.[20:][].tagName' |
             xargs -r -n1 gh release delete --cleanup-tag --yes
-      - name: Warn that no release was published
-        if: steps.publish.outcome != 'success'
-        run: |
-          echo "::warning::build-${{ github.run_number }} was not published (issue #2); nodes stay on the previous build"
       - name: Upload release checksums
-        if: steps.publish.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: release-sha256sums
@@ -284,7 +273,6 @@ jobs:
   deploy-cf-controller-release:
     runs-on: ubuntu-latest
     needs: [deploy-cf-controller, release]
-    if: needs.release.outputs.published == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
