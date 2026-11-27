@@ -31,9 +31,12 @@ func (s *streamer) serve(ctx context.Context, send func() error) error {
 	if err := send(); err != nil {
 		return err
 	}
+	// A caller's deadline reaches the server too: ending with its error,
+	// not cleanly, keeps a stream whose relay died from looking finished
+	// whichever side sees the deadline first.
 	if s.keepalive == 0 {
 		<-ctx.Done()
-		return nil
+		return ctx.Err()
 	}
 	end := time.After(s.hold)
 	tick := time.NewTicker(s.keepalive)
@@ -41,7 +44,7 @@ func (s *streamer) serve(ctx context.Context, send func() error) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return ctx.Err()
 		case <-end:
 			return nil
 		case <-tick.C:
