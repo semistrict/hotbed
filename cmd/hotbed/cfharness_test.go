@@ -58,7 +58,10 @@ func stopCFHarness() {
 
 // testServerConfig replaces controller.ServerConfig in clusterOpts.server.
 type testServerConfig struct {
-	WakeWait             time.Duration
+	WakeWait time.Duration
+	// ReconnectWait is how long the controller waits for a disconnected
+	// worker before a call to it fails (default 5s).
+	ReconnectWait        time.Duration
 	AllowLocalRepos      *bool
 	Builds               *buildCache
 	Build                int64

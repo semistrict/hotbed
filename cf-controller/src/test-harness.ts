@@ -119,6 +119,8 @@ export async function handleTestHarness(
 interface ConfigBody {
 	/** Caps placement's capacity and upgrade waits (ControllerContext.placementWaitCapMs). */
 	wakeWaitMs?: number;
+	/** How long a call waits for a disconnected worker (WorkerTunnelHub.reconnectWaitMs). */
+	reconnectWaitMs?: number;
 	allowLocalRepos?: boolean;
 	/** false pauses the DO alarm's maintenance (TestOverrides.maintenancePaused). */
 	maintenanceAlarm?: boolean;
@@ -149,6 +151,9 @@ async function configure(host: TestHarnessHost, b: ConfigBody) {
 	if (typeof b.wakeWaitMs === "number") {
 		o.placementWaitCapMs = b.wakeWaitMs;
 		host.runtime().ctrl.placementWaitCapMs = b.wakeWaitMs;
+	}
+	if (typeof b.reconnectWaitMs === "number") {
+		host.tunnel.reconnectWaitMs = b.reconnectWaitMs;
 	}
 	if (typeof b.maintenanceAlarm === "boolean") {
 		o.maintenancePaused = !b.maintenanceAlarm;

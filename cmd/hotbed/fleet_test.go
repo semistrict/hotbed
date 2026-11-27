@@ -335,6 +335,9 @@ func (c *cluster) applyServerConfig() {
 	if c.serverCfg.WakeWait > 0 {
 		payload["wakeWaitMs"] = c.serverCfg.WakeWait.Milliseconds()
 	}
+	if c.serverCfg.ReconnectWait > 0 {
+		payload["reconnectWaitMs"] = c.serverCfg.ReconnectWait.Milliseconds()
+	}
 	if c.serverCfg.AllowLocalRepos != nil {
 		payload["allowLocalRepos"] = *c.serverCfg.AllowLocalRepos
 	}

@@ -140,7 +140,12 @@ func TestAttachFollowLogGivesUpAfterFollowRideOut(t *testing.T) {
 	followRideOut = 2 * time.Second
 	t.Cleanup(func() { followRideOut = prev })
 
-	c := newCluster(t)
+	// Every call the controller relays to the halted worker first waits its
+	// reconnect wait for the worker to come back: at its 5s default, the two
+	// such calls a give-up makes (GetCommand, FollowLog) on top of
+	// followRideOut came close to the test's 15s, and a loaded machine
+	// went past it. What is tested is the CLI's ride-out, not that wait.
+	c := newClusterWith(t, clusterOpts{server: func(cfg *testServerConfig) { cfg.ReconnectWait = 200 * time.Millisecond }})
 	c.cli.rideOut = 500 * time.Millisecond
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "gone-elk")

@@ -201,7 +201,12 @@ export class WorkerTunnelHub {
 	private readonly pending = new Map<string, PendingCall>();
 	private readonly pipes = new Map<string, PipeHandlers & { nodeId: string; ws: WebSocket }>();
 	private readonly connectWaiters = new Map<string, Set<() => void>>();
-	private readonly reconnectWaitMs: number;
+	/**
+	 * How long a call waits for a disconnected worker to reconnect before
+	 * failing WorkerUnreachable. Tests shorten it (POST /__test/config
+	 * reconnectWaitMs) to measure the caller's own ride-out.
+	 */
+	reconnectWaitMs: number;
 
 	constructor(ctx: DurableObjectState, reconnectWaitMs = DEFAULT_RECONNECT_WAIT_MS) {
 		this.ctx = ctx;
