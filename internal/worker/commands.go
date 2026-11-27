@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -652,16 +653,45 @@ func (e *Engine) reservation(c *command) int64 {
 	return max(base, c.rec.PeakHeldBytes)
 }
 
+// charge splits c's reservation into what is owed in full, its guarantee or
+// what it has held, and the growth its estimate (or a default) still expects
+// past that. Call with e.mu held.
+func (e *Engine) charge(c *command) (owed, growth int64) {
+	r := e.reservation(c)
+	owed = min(r, max(c.cmd().Limits.GetMemoryLowBytes(), c.rec.PeakHeldBytes))
+	return owed, r - owed
+}
+
 // reserved is the memory the node keeps for the commands that reserve it,
 // base builds and work alike. Call with e.mu held.
-func (e *Engine) reserved() int64 {
-	var n int64
+func (e *Engine) reserved() int64 { return e.reservedWith(nil) }
+
+// reservedWith is reserved with extra, a queued command, admitted too (nil
+// for none). What commands hold or are guaranteed is summed; the growth they
+// are still expected to make is pooled, as the root of the sum of its
+// squares: the node keeps room for the largest to reach its estimate, and
+// for others beside it, but not for every one to peak at once. Estimates
+// overshoot (ubu1's runs peaked at a median 62% of theirs) and runs peak at
+// different times, so summing them in full kept a node half idle behind
+// memory no run was using. A guarantee (--mem-low, a base build's) is never
+// pooled: it is memory.low, owed whatever the others do. Call with e.mu held.
+func (e *Engine) reservedWith(extra *command) int64 {
+	var owed int64
+	var squares float64
+	add := func(c *command) {
+		o, g := e.charge(c)
+		owed += o
+		squares += float64(g) * float64(g)
+	}
 	for _, c := range e.commands {
 		if reserves(c.cmd().State) {
-			n += e.reservation(c)
+			add(c)
 		}
 	}
-	return n
+	if extra != nil && !reserves(extra.cmd().State) {
+		add(extra)
+	}
+	return owed + int64(math.Sqrt(squares))
 }
 
 // admitLimit is the memory reservations may take: the work slice's memory
@@ -718,23 +748,6 @@ func (e *Engine) reportedMemUsedLocked(mem sysinfo.Mem) int64 {
 		return max(0, r-min(r, avail))
 	}
 	return used
-}
-
-// fitsReservation reports whether a command reserving want bytes fits alongside
-// reserved bytes already held against a node admitLimit of limit. When existing
-// reservations already fill or exceed limit (reserved > 0 && room <= 0), even a
-// want == 0 command cannot start: every real command consumes memory, and a
-// reservation equal to limit (such as a base freshen capped at admitLimit) claims
-// the whole node until it finishes.
-func fitsReservation(want, reserved, limit int64) bool {
-	room := limit - reserved
-	if want > room {
-		return false
-	}
-	if reserved > 0 && room <= 0 {
-		return false
-	}
-	return true
 }
 
 // memoryBudgetBytes returns the effective memory ceiling in bytes for a
@@ -1419,18 +1432,17 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	if e.diskLow() {
 		return "disk", fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
 	}
-	want := e.reservation(c)
+	// Reservations that already fill the limit hold even a command that
+	// reserves nothing: every real command uses memory, and one reserving
+	// the whole limit (a base build capped at it) claims the node until it
+	// ends.
 	limit := e.admitLimit()
 	reserved := e.reserved()
-	room := limit - reserved
-	if !fitsReservation(want, reserved, limit) {
-		if room <= 0 {
-			if want > 0 {
-				return "memory", fmt.Sprintf("waiting for memory: needs %s, but running commands hold or are guaranteed %s (limit %s)", gib(want), gib(reserved), gib(limit))
-			}
-			return "memory", fmt.Sprintf("waiting for memory: running commands hold or are guaranteed %s (limit %s)", gib(reserved), gib(limit))
+	if with := e.reservedWith(c); with > limit || (reserved > 0 && reserved >= limit) {
+		if want := e.reservation(c); want > 0 {
+			return "memory", fmt.Sprintf("waiting for memory: needs %s, and running commands hold, are guaranteed or expect %s (%s with it, limit %s)", gib(want), gib(reserved), gib(with), gib(limit))
 		}
-		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running commands hold or are guaranteed", gib(want), gib(room))
+		return "memory", fmt.Sprintf("waiting for memory: running commands hold, are guaranteed or expect %s (limit %s)", gib(reserved), gib(limit))
 	}
 	var memTotal, memUsed, swapTotal, swapFree int64
 	if hasMem {

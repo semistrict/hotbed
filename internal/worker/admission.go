@@ -182,7 +182,7 @@ func (e *Engine) admission() *pb.Admission {
 		{
 			Name: "memory-reserved", Value: float64(e.reserved()), Limit: float64(e.admitLimit()), Unit: "bytes",
 			Holding: waiting["memory"] > 0, Waiting: waiting["memory"],
-			Detail: "held at most or guaranteed by running and parked commands, base builds too, of the work slice's memory budget",
+			Detail: "held at most or guaranteed by running and parked commands, base builds too, plus the growth their estimates still expect, pooled (not all peak at once), of the work slice's memory budget",
 		},
 		{
 			Name: "disk-free", Value: float64(e.disk.GetFreeBytes()), Limit: float64(e.minFreeBytes()), Unit: "bytes", Floor: true,
