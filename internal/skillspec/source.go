@@ -70,9 +70,50 @@ func isLocalPath(input string) bool {
 	return filepath.IsAbs(input) ||
 		strings.HasPrefix(input, "./") ||
 		strings.HasPrefix(input, "../") ||
+		strings.HasPrefix(input, "~/") ||
+		strings.HasPrefix(input, `~\`) ||
 		input == "." ||
 		input == ".." ||
+		input == "~" ||
 		winAbsRe.MatchString(input)
+}
+
+func resolveLocalPath(input, cwd string) (string, error) {
+	resolved := input
+	if resolved == "~" || strings.HasPrefix(resolved, "~/") || strings.HasPrefix(resolved, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory for %q: %w", input, err)
+		}
+		if resolved == "~" {
+			resolved = home
+		} else {
+			resolved = filepath.Join(home, resolved[2:])
+		}
+	}
+	if !filepath.IsAbs(resolved) {
+		if cwd == "" {
+			var err error
+			cwd, err = os.Getwd()
+			if err != nil {
+				return "", err
+			}
+		}
+		resolved = filepath.Join(cwd, resolved)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func hasExplicitRemotePrefix(input string) bool {
+	lower := strings.ToLower(input)
+	return strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "ssh://") ||
+		strings.HasPrefix(lower, "git://") ||
+		strings.HasPrefix(lower, "file://") ||
+		strings.HasPrefix(lower, "github:") ||
+		strings.HasPrefix(lower, "gitlab:") ||
+		strings.HasPrefix(lower, "git@")
 }
 
 // SanitizeSubpath rejects path traversal ("..") segments in a source subpath.
@@ -331,24 +372,32 @@ func ParseSource(input, cwd, ghHostOverride string) (*ParsedSource, error) {
 	}
 
 	if isLocalPath(input) {
-		resolved := input
-		if !filepath.IsAbs(resolved) {
-			if cwd == "" {
-				var err error
-				cwd, err = os.Getwd()
-				if err != nil {
-					return nil, err
-				}
-			}
-			resolved = filepath.Join(cwd, resolved)
+		resolved, err := resolveLocalPath(input, cwd)
+		if err != nil {
+			return nil, err
 		}
-		resolved = filepath.Clean(resolved)
 		return &ParsedSource{
 			Type:          SourceLocal,
 			URL:           resolved,
 			LocalPath:     resolved,
 			OriginalInput: orig,
 		}, nil
+	}
+
+	// If input isn't an explicit URL/scheme and matches an existing local directory
+	// (or SKILL.md file) relative to cwd — e.g. `hotbed skills add my-skill` or
+	// `hotbed skills add skills/my-skill` — upload from that local path directly.
+	if !hasExplicitRemotePrefix(input) && !strings.ContainsAny(input, "@#") {
+		if candidate, err := resolveLocalPath(input, cwd); err == nil {
+			if info, serr := os.Stat(candidate); serr == nil && (info.IsDir() || strings.EqualFold(filepath.Base(candidate), "SKILL.md")) {
+				return &ParsedSource{
+					Type:          SourceLocal,
+					URL:           candidate,
+					LocalPath:     candidate,
+					OriginalInput: orig,
+				}, nil
+			}
+		}
 	}
 
 	ghHost := gitHubHost(ghHostOverride)

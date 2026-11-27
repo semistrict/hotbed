@@ -80,9 +80,10 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 		t.Fatalf("sk2.Source = %+v, want original_name=deploy-app", sk2.Source)
 	}
 
-	// 4. Install a skill scoped to "other" project so we can verify project isolation.
+	// 4. Upload a skill scoped to "other" project using the `upload` alias and a bare relative dir (no "./" prefix).
+	c.cli.getwd = func() (string, error) { return srcDir, nil }
 	var addedOther skillsAddResult
-	c.ok(&addedOther, "skills", "add", srcDir, "-p", "other", "-s", "deploy-app")
+	c.ok(&addedOther, "skills", "upload", "skills/deploy-app", "-p", "other")
 	if len(addedOther.Installed) != 1 || addedOther.Installed[0].Project != "other" {
 		t.Fatalf("addedOther = %+v", addedOther)
 	}

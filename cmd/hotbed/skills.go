@@ -74,7 +74,7 @@ type skillsCmd struct {
 	Ls      skillsLsCmd      `cmd:"" aliases:"list" help:"List skills stored in hotbed (global + active project) and built-in guides."`
 	Get     skillsGetCmd     `cmd:"" help:"Print a skill's SKILL.md or a supporting file (by name, scope/name, ID, or skill:// URI)."`
 	Show    skillsShowCmd    `cmd:"" help:"Show a skill's full metadata, file manifest (with SHA-256 digests), source provenance, and history."`
-	Add     skillsAddCmd     `cmd:"" help:"Install skill(s) into hotbed from any npx skills source (owner/repo, GitHub/GitLab/Git URL, local dir, well-known URL, or archive)."`
+	Add     skillsAddCmd     `cmd:"" aliases:"upload" help:"Upload or install skill(s) into hotbed from a local directory or any npx skills source (owner/repo, GitHub/GitLab/Git URL, well-known URL, or archive)."`
 	Install skillsInstallCmd `cmd:"" aliases:"i" help:"Install built-in guides (default), a source, or hotbed skills (--from-hotbed) into local coding agent directories."`
 	Find    skillsFindCmd    `cmd:"" help:"Search for skills on skills.sh."`
 	Check   skillsCheckCmd   `cmd:"" help:"Check hotbed skills installed from upstream sources for available updates."`

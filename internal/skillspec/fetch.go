@@ -81,14 +81,19 @@ func FetchSource(ctx context.Context, client *http.Client, input string, opts Fe
 
 	switch parsed.Type {
 	case SourceLocal:
-		info, err := os.Stat(parsed.LocalPath)
+		localPath := parsed.LocalPath
+		info, err := os.Stat(localPath)
 		if err != nil {
-			return nil, fmt.Errorf("local path %q: %w", parsed.LocalPath, err)
+			return nil, fmt.Errorf("local path %q: %w", localPath, err)
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("local path %q is not a directory", parsed.LocalPath)
+			if strings.EqualFold(filepath.Base(localPath), "SKILL.md") {
+				localPath = filepath.Dir(localPath)
+			} else {
+				return nil, fmt.Errorf("local path %q is not a directory or SKILL.md file", localPath)
+			}
 		}
-		skills, err := DiscoverSkills(parsed.LocalPath, "", discOpts)
+		skills, err := DiscoverSkills(localPath, "", discOpts)
 		if err != nil {
 			return nil, err
 		}
@@ -96,8 +101,8 @@ func FetchSource(ctx context.Context, client *http.Client, input string, opts Fe
 			Parsed:     parsed,
 			Skills:     skills,
 			SourceType: string(SourceLocal),
-			Source:     parsed.LocalPath,
-			SourceURL:  parsed.LocalPath,
+			Source:     localPath,
+			SourceURL:  localPath,
 		}, nil
 
 	case SourceGitHub, SourceGitLab, SourceGit:

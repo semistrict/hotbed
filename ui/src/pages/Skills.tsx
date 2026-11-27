@@ -9,7 +9,6 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import {
   clients,
   SKILL_ORDER_FROM_SLUG,
@@ -51,7 +50,7 @@ const TABS: { tab: SkillsTab; label: string; empty: string }[] = [
   {
     tab: "active",
     label: "Active",
-    empty: "No active skills yet. Install one with `hotbed skills add owner/repo` or create one here.",
+    empty: "No active skills yet. Upload a local directory (`hotbed skills upload ./my-skill`) or install from GitHub (`hotbed skills add owner/repo`).",
   },
   { tab: "archived", label: "Archived", empty: "No archived skills." },
   { tab: "all", label: "All", empty: "No skills yet." },
@@ -64,9 +63,6 @@ const SORTS: { sort: SkillOrderSlug; label: string }[] = [
   { sort: "updated", label: "recently changed" },
   { sort: "name", label: "name" },
 ];
-
-const GLOBAL = "__global__";
-const ALL_REPOS = "__all_repos__";
 
 function formatBytes(n: number | bigint): string {
   const b = Number(n);
@@ -137,7 +133,6 @@ function SkillsView({ s }: { s: Snapshot }) {
   const search = useSearch({ from: "/skills" });
   const navigate = useNavigate({ from: "/skills" });
   const [project] = useProject();
-  const [creating, setCreating] = useState(false);
 
   const tab: SkillsTab = search.tab ?? "active";
   const scopeSlug = search.scope ?? "all";
@@ -216,19 +211,8 @@ function SkillsView({ s }: { s: Snapshot }) {
     <div className="space-y-6 [overflow-anchor:auto]">
       <PageTitle
         title="Skills"
-        sub={`Agent Skills for ${project ? `global + ${project}` : "global + every project"}. Every active skill descriptor is announced on hotbed session start and served over MCP (SEP-2640).`}
-        right={
-          <Button type="button" onClick={() => setCreating((v) => !v)} className="text-[12.5px]">
-            {creating ? "Cancel" : "+ New skill"}
-          </Button>
-        }
+        sub={`Agent Skills for ${project ? `global + ${project}` : "global + every project"}. Upload from a local dir (\`hotbed skills upload ./dir\`) or install with \`hotbed skills add owner/repo\`; active descriptors are announced on session start and served over MCP (SEP-2640).`}
       />
-
-      {creating && (
-        <Card>
-          <NewSkillForm s={s} defaultProject={project} onDone={() => setCreating(false)} />
-        </Card>
-      )}
 
       <div className="rise flex flex-wrap items-center gap-2.5">
         <div className="max-w-full overflow-x-auto no-scrollbar">
@@ -628,167 +612,5 @@ function SkillCard({
         </div>
       </div>
     </Card>
-  );
-}
-
-function NewSkillForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProject: string | null; onDone: () => void }) {
-  const settle = useSettleSkills();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [scope, setScope] = useState<string>(defaultProject ?? GLOBAL);
-  const [repo, setRepo] = useState<string>(ALL_REPOS);
-  const [tags, setTags] = useState("");
-  const [rationale, setRationale] = useState("");
-  const [body, setBody] = useState("# Instructions\n\nDescribe step-by-step guidance for agents using this skill.\n");
-
-  const isGlobal = scope === GLOBAL;
-  const projectRepos = isGlobal ? [] : (s.projects.find((p) => p.name === scope)?.repos ?? []);
-  const scopeItems = [
-    { value: GLOBAL, label: "Global (all projects)" },
-    ...s.projects.map((p) => ({ value: p.name, label: `Project: ${p.name}` })),
-  ];
-  const repoItems = [
-    { value: ALL_REPOS, label: `All repos in ${scope}` },
-    ...projectRepos.map((r) => ({ value: r, label: remoteName(r) })),
-  ];
-
-  const cleanName = name.trim().toLowerCase();
-  const invalid = !cleanName || !description.trim();
-
-  const save = useMutation({
-    mutationFn: () => {
-      const skillMd = `---\nname: ${cleanName}\ndescription: ${JSON.stringify(description.trim())}\n---\n\n${body}`;
-      const bytes = new TextEncoder().encode(skillMd);
-      return clients.skills.putSkill({
-        name: cleanName,
-        files: [{ path: "SKILL.md", content: bytes, mimeType: "text/markdown" }],
-        global: isGlobal,
-        project: isGlobal ? "" : scope,
-        repo: isGlobal || repo === ALL_REPOS ? "" : repo,
-        tags: tags
-          .split(",")
-          .map((t) => t.trim().toLowerCase())
-          .filter(Boolean),
-        rationale: rationale.trim(),
-        frontmatterJson: JSON.stringify({ name: cleanName, description: description.trim() }),
-      });
-    },
-    onSuccess: onDone,
-    onSettled: settle,
-  });
-
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!invalid) save.mutate();
-      }}
-      className="space-y-3"
-    >
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="space-y-1">
-          <span className="font-mono text-[11px] text-muted-foreground">Name (lowercase kebab-case)</span>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="code-review"
-            className="bg-background font-mono text-[12px]"
-          />
-        </label>
-        <label className="space-y-1">
-          <span className="font-mono text-[11px] text-muted-foreground">Scope</span>
-          <Select
-            items={scopeItems}
-            value={scope}
-            onValueChange={(v) => {
-              if (!v) return;
-              setScope(v);
-              setRepo(ALL_REPOS);
-            }}
-          >
-            <SelectTrigger className="w-full bg-background font-mono text-[12px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="font-mono text-[12px]">
-              {scopeItems.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-      </div>
-
-      {!isGlobal && projectRepos.length > 0 && (
-        <label className="block space-y-1">
-          <span className="font-mono text-[11px] text-muted-foreground">Repo (optional)</span>
-          <Select items={repoItems} value={repo} onValueChange={(v) => v && setRepo(v)}>
-            <SelectTrigger className="w-full bg-background font-mono text-[12px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="font-mono text-[12px]">
-              {repoItems.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-      )}
-
-      <label className="block space-y-1">
-        <span className="font-mono text-[11px] text-muted-foreground">Description (shown on session start & MCP skills/list)</span>
-        <Input
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="What this skill does and when an agent should load it."
-          className="bg-background text-[12.5px]"
-        />
-      </label>
-
-      <label className="block space-y-1">
-        <span className="font-mono text-[11px] text-muted-foreground">SKILL.md body</span>
-        <Textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={8}
-          className="bg-background font-mono text-[12px]"
-        />
-      </label>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="space-y-1">
-          <span className="font-mono text-[11px] text-muted-foreground">Tags (comma-separated, optional)</span>
-          <Input
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="review, security"
-            className="bg-background font-mono text-[12px]"
-          />
-        </label>
-        <label className="space-y-1">
-          <span className="font-mono text-[11px] text-muted-foreground">Rationale (optional)</span>
-          <Input
-            value={rationale}
-            onChange={(e) => setRationale(e.target.value)}
-            placeholder="Why this skill exists"
-            className="bg-background text-[12px]"
-          />
-        </label>
-      </div>
-
-      {save.error && <div className="font-mono text-[11.5px] text-critical">{String(save.error)}</div>}
-
-      <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" disabled={invalid || save.isPending} className="text-[12px]">
-          {save.isPending ? "Saving…" : "Save skill"}
-        </Button>
-        <Button type="button" size="sm" variant="ghost" onClick={onDone} className="font-mono text-[11.5px]">
-          Cancel
-        </Button>
-      </div>
-    </form>
   );
 }

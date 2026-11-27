@@ -18,7 +18,8 @@ and never stored on the controller. Their source is `skills/` in the hotbed repo
 hotbed skills add vercel-labs/agent-skills --list            # preview skills in source
 hotbed skills add vercel-labs/agent-skills -s frontend-design -g
 hotbed skills add owner/repo@my-skill -p myproj              # project-scoped skill
-hotbed skills add ./local-skills --rename custom-name        # rename SKILL.md frontmatter on install
+hotbed skills upload ./my-skill -g                           # upload skill(s) from a local directory (alias of `skills add`)
+hotbed skills add ./local-skills --rename custom-name        # upload local dir & rename SKILL.md frontmatter
 hotbed skills add owner/repo --local -a claude-code -a codex # also install into local agent dirs
 hotbed skills install --from-hotbed -g -a claude-code        # materialize active hotbed skills locally
 
@@ -36,4 +37,4 @@ hotbed skills archive REF [--reason "..."] / restore REF / rm REF / move REF --f
 ```
 
 - **`hotbed skills install` (no arguments)** still installs the built-in skills into `~/.claude/skills` offline (used by `hotbed upgrade`). Passing a source (`hotbed skills install owner/repo`) delegates to `skills add`, matching `npx skills install`.
-- **Cockpit `/skills`:** browse, inspect every supporting file, create new skills, promote, archive/restore, reorder, and delete skills from the web UI.
+- **Cockpit `/skills`:** browse, inspect every supporting file, promote, archive/restore, reorder, and delete skills from the web UI (add/install skills via the CLI).

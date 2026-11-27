@@ -55,6 +55,46 @@ func TestParseSourceFormats(t *testing.T) {
 	}
 }
 
+func TestParseAndFetchLocalDirVariants(t *testing.T) {
+	t.Parallel()
+	cwd := t.TempDir()
+	skillDir := filepath.Join(cwd, "skills", "my-local-skill")
+	if err := os.MkdirAll(filepath.Join(skillDir, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-local-skill\ndescription: Uploaded from a local directory.\n---\n\n# Local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "references", "guide.md"), []byte("Guide content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare relative dir ("skills"), two-segment relative dir ("skills/my-local-skill"),
+	// and direct SKILL.md path all resolve and upload as local skills rather than GitHub shorthand.
+	for _, input := range []string{"skills", "skills/my-local-skill", "./skills/my-local-skill/SKILL.md"} {
+		res, err := FetchSource(t.Context(), nil, input, FetchOptions{Cwd: cwd})
+		if err != nil {
+			t.Fatalf("FetchSource(%q) err: %v", input, err)
+		}
+		if res.SourceType != string(SourceLocal) {
+			t.Errorf("FetchSource(%q) sourceType = %q, want %q", input, res.SourceType, SourceLocal)
+		}
+		if len(res.Skills) != 1 || res.Skills[0].Name != "my-local-skill" || len(res.Skills[0].Files) != 2 {
+			t.Errorf("FetchSource(%q) skills = %+v, want 1 skill with 2 files", input, res.Skills)
+		}
+	}
+
+	// Tilde path expands against home directory.
+	gotHome, err := ParseSource("~/my-skills", cwd, "github.com")
+	if err != nil {
+		t.Fatalf("ParseSource(~/my-skills) err: %v", err)
+	}
+	home, _ := os.UserHomeDir()
+	if gotHome.Type != SourceLocal || gotHome.LocalPath != filepath.Join(home, "my-skills") {
+		t.Errorf("ParseSource(~/my-skills) = %+v", gotHome)
+	}
+}
+
 func TestFrontmatterParseRenameAndHash(t *testing.T) {
 	t.Parallel()
 	md := []byte("---\nname: pdf-tools\ndescription: Extract and merge PDFs.\nlicense: MIT\nmetadata:\n  author: acme\n  date: 2026-11-27\n---\n\n# PDF Tools\nUse carefully.\n")
