@@ -446,14 +446,14 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 
 	wsUbu1, err := workspaces.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
 		SessionId: "brave-otter",
-		Placement: &pb.Placement{Node: "ubu1"},
+		Placement: &pb.Placement{Arch: "amd64"},
 	})
 	if err != nil {
 		return fmt.Errorf("create ubu1 workspace: %w", err)
 	}
 	wsAsahi, err := workspaces.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
 		SessionId: "calm-heron",
-		Placement: &pb.Placement{Node: "asahimbp"},
+		Placement: &pb.Placement{Arch: "arm64"},
 	})
 	if err != nil {
 		return fmt.Errorf("create asahimbp workspace: %w", err)
