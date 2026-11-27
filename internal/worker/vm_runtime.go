@@ -416,8 +416,8 @@ func (e *Engine) applyViaRuntime(ctx context.Context, wsID, repo, bundlePath, co
 	var uid, gid int
 	if e.cred != nil {
 		uid, gid = int(e.cred.Uid), int(e.cred.Gid)
-	} else if e.cfg.BaseImage != nil {
-		sp := e.cfg.BaseImage.Spec.Normalized()
+	} else {
+		sp := e.cfg.BaseSpec.Normalized()
 		uid, gid = sp.UID, sp.GID
 	}
 	return e.cfg.Runtime.ApplySync(ctx, wsID, runtime.SyncSpec{

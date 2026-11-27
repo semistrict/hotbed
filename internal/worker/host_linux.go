@@ -83,11 +83,14 @@ func prepareHost(ctx context.Context, h hostPrep) error {
 	}
 	// Other work's writes to the volumes are kept quiet beside a
 	// measurement too: capped on a block device (btrfs's), held back on a
-	// ZFS pool, which no cap reaches.
-	if z, ok := h.store.(storage.Pooled); ok {
-		benchOpts.Pool = z.Dataset()
-	} else {
-		benchOpts.StoreDisk = h.store.Path("")
+	// ZFS pool, which no cap reaches. A worker that keeps no volumes (a VM
+	// worker's) has none to quiet.
+	switch s := h.store.(type) {
+	case storage.Pooled:
+		benchOpts.Pool = s.Dataset()
+	case storage.NoVolumes:
+	default:
+		benchOpts.StoreDisk = s.Path("")
 	}
 	if h.cfg.Bench != nil {
 		iso, err := bench.New(*h.cfg.Bench, benchOpts)
@@ -107,7 +110,3 @@ func hostUnits() Units { return Systemd{} }
 
 // hostSystem measures the machine as commands in slice get it.
 func hostSystem(slice string) System { return &Linux{Slice: slice} }
-
-// warmsBaseImage: a Linux worker keeps the shared base rootfs its chroot
-// workspaces and tracers start from.
-const warmsBaseImage = true

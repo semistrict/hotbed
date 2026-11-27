@@ -7,14 +7,19 @@ import (
 )
 
 // SystemdWorkerUnit renders the systemd unit file for hotbed-worker.service.
+// A worker whose state directory is on ZFS (zfs) starts once ZFS mounted it.
 // When zfsImportPre is non-empty (file-backed ZFS pool on Linux), it runs as
 // ExecStartPre so the pool imports before hotbed serve starts.
-func SystemdWorkerUnit(binaryPath, stateDir, zfsImportPre string) string {
+func SystemdWorkerUnit(binaryPath, stateDir string, zfs bool, zfsImportPre string) string {
+	deps := "network-online.target"
+	if zfs {
+		deps += " zfs-mount.service"
+	}
 	var b strings.Builder
 	b.WriteString("[Unit]\n")
 	b.WriteString("Description=hotbed worker\n")
-	b.WriteString("After=network-online.target zfs-mount.service\n")
-	b.WriteString("Wants=network-online.target zfs-mount.service\n\n")
+	fmt.Fprintf(&b, "After=%s\n", deps)
+	fmt.Fprintf(&b, "Wants=%s\n\n", deps)
 	b.WriteString("[Service]\n")
 	if zfsImportPre != "" {
 		fmt.Fprintf(&b, "ExecStartPre=-%s\n", zfsImportPre)

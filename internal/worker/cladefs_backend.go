@@ -729,12 +729,7 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 
 	prepare := func(bgCtx context.Context) {
 		start := e.now()
-		var baseSpec baseimage.Spec
-		var prov baseimage.Provisioner
-		if e.cfg.BaseImage != nil {
-			baseSpec = e.cfg.BaseImage.Spec
-			prov = e.cfg.BaseImage.Provision
-		}
+		baseSpec, prov := e.cfg.BaseSpec, e.baseProvisioner()
 		heads, err := e.remoteHeads(bgCtx, p)
 		var baseRes ensureBaseResult
 		if err == nil {

@@ -131,7 +131,7 @@ func TestSyncAppliesInTheChroot(t *testing.T) {
 	}
 	e := &Engine{cfg: EngineConfig{
 		Dir: dir, User: name, Units: Systemd{},
-		BaseImage: &baseimage.Manager{Spec: baseimage.Spec{User: name, UID: uid, GID: gid, Home: "/home/" + name}},
+		BaseSpec: baseimage.Spec{User: name, UID: uid, GID: gid, Home: "/home/" + name},
 	}}
 	received, _, err := e.receiveBundle("ws1", bytes.NewReader(bundle), 1<<30)
 	if err != nil {

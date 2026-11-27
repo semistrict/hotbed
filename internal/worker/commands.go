@@ -1584,17 +1584,11 @@ func (e *Engine) runtimeChrootDir() string {
 	if e.cred != nil {
 		return fmt.Sprintf("/run/user/%d", e.cred.Uid)
 	}
-	if e.cfg.BaseImage != nil {
-		return fmt.Sprintf("/run/user/%d", e.cfg.BaseImage.Spec.Normalized().UID)
-	}
-	return "/run/user/1000"
+	return fmt.Sprintf("/run/user/%d", e.cfg.BaseSpec.Normalized().UID)
 }
 
 func (e *Engine) chrootHome() string {
-	if e.cfg.BaseImage != nil {
-		return e.cfg.BaseImage.Spec.Normalized().Home
-	}
-	return WorkPath + "/.hotbed/home"
+	return e.cfg.BaseSpec.Normalized().Home
 }
 
 func isPriorityProperty(p string) bool {

@@ -55,7 +55,7 @@ func TestCommandsRunChrootedWithPerfmonAndTraceFS(t *testing.T) {
 // the worker runs the same helpers on the host, and root of a sandbox may
 // write a read-write idmapped bind of root's files.
 func TestGitAuthIsReadOnlyInARootfs(t *testing.T) {
-	e := &Engine{cfg: EngineConfig{BaseImage: &baseimage.Manager{}}, gitAuth: stubGitAuth{dir: "/var/lib/hotbed/git-auth"}}
+	e := &Engine{gitAuth: stubGitAuth{dir: "/var/lib/hotbed/git-auth"}}
 	var spec unit.Spec
 	e.inRootfs(&spec, "/vol/ws/a")
 	bind := unit.Bind{Source: "/var/lib/hotbed/git-auth", Target: gitauth.ChrootDir}
@@ -73,8 +73,9 @@ func (s stubGitAuth) HostEnv() []string   { return nil }
 func (s stubGitAuth) ChrootEnv() []string { return nil }
 func (s stubGitAuth) Close() error        { return nil }
 
-// NewEngine fails hard when BaseImage is nil rather than silently falling back
-// to host-root execution (board 7872).
+// NewEngine fails hard when BaseImage is nil on a worker without a VM
+// backend rather than silently falling back to host-root execution (board
+// 7872).
 func TestNewEngineRequiresBaseImage(t *testing.T) {
 	store := &fake.Store{Root: t.TempDir()}
 	if _, err := NewEngine(t.Context(), EngineConfig{

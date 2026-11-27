@@ -37,10 +37,6 @@ func hostUnits() Units { return nil }
 // hostSystem measures the Mac through sysctl(3).
 func hostSystem(string) System { return darwinSystem{} }
 
-// warmsBaseImage: a macOS worker has no chroot workspaces to keep a shared
-// base rootfs for.
-const warmsBaseImage = false
-
 // darwinSystem measures a Mac. macOS has no pressure stall information or
 // OOM kill count, and its CPU ticks are a Mach call (host_processor_info)
 // that a binary without cgo cannot make: those are errors.ErrUnsupported.

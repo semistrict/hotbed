@@ -136,8 +136,14 @@ type EngineConfig struct {
 	// ScratchDisk is where measurements keep their stores (the bench
 	// config's disk): chrooted commands see it at the same path.
 	ScratchDisk string
-	// BaseImage manages the shared worker rootfs snapshot that cold bases
-	// clone from. Required: every workspace and command runs in a rootfs clone.
+	// BaseSpec is the shared rootfs every workspace starts from, whichever
+	// runtime makes it: the image, user and IDs cladefsd builds base cells
+	// from. NewEngine sets it to BaseImage's Spec when BaseImage is set.
+	BaseSpec baseimage.Spec
+	// BaseImage keeps BaseSpec as a local volume snapshot that cold chroot
+	// and cladefs host-FUSE bases clone from. Nil only on a worker with a VM
+	// backend, whose workspaces are all cells cladefsd makes: it keeps no
+	// local rootfs.
 	BaseImage *baseimage.Manager
 	// GitAuth delegates centralized GitHub authentication from the controller to
 	// host git and all workspace commands (HTTPS credential helper, Git SSH
@@ -240,9 +246,15 @@ type Engine struct {
 	// being finalized outside e.mu so collectBases does not delete them
 	// mid-snapshot.
 	finalizingBases map[string]bool
-	workspaces      map[string]*workspace
-	commands        map[string]*command
-	usage           *pb.NodeUsage
+	// baseImages is the shared base image each base this worker built was
+	// cloned from, by base ID: the worker's own word, so GC and freshness
+	// checks need not trust project-controlled volume markers. It has a lock
+	// of its own (baseImagesMu), as callers both hold e.mu and do not.
+	baseImagesMu sync.Mutex
+	baseImages   map[string]string
+	workspaces   map[string]*workspace
+	commands     map[string]*command
+	usage        *pb.NodeUsage
 	// lastMem is the most recent sysinfo.Mem reading from Sample, kept so
 	// fallback memory checks pair total and used from the same domain (host
 	// or enclosing cgroup slice) instead of mixing slice limit with host use.
@@ -346,7 +358,17 @@ func (e *Engine) workRoot(vol string) string {
 
 // baseImageKey returns the configured shared base image key.
 func (e *Engine) baseImageKey() string {
-	return e.cfg.BaseImage.Spec.Key()
+	return e.cfg.BaseSpec.Key()
+}
+
+// baseProvisioner runs BaseSpec's provisioning script in a cladefs host-FUSE
+// base cell; nil on a worker without a local base image, whose VM backend
+// provisions inside the guest.
+func (e *Engine) baseProvisioner() baseimage.Provisioner {
+	if e.cfg.BaseImage == nil {
+		return nil
+	}
+	return e.cfg.BaseImage.Provision
 }
 
 type forkOutcome struct {
@@ -479,8 +501,14 @@ func (c *command) runtimeTarget() string {
 
 // NewEngine loads the worker's state from dir.
 func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
-	if cfg.BaseImage == nil {
-		return nil, errors.New("worker engine requires BaseImage")
+	switch {
+	case cfg.BaseImage == nil && cfg.VM == nil:
+		return nil, errors.New("worker engine requires BaseImage unless its workspaces are all VMs (a VM backend)")
+	case cfg.BaseImage == nil:
+	case cfg.BaseSpec == (baseimage.Spec{}):
+		cfg.BaseSpec = cfg.BaseImage.Spec
+	case cfg.BaseSpec != cfg.BaseImage.Spec:
+		return nil, errors.New("worker engine's BaseSpec differs from its BaseImage's Spec; set one")
 	}
 	if cfg.LogLimit == (cmdlog.Limit{}) {
 		cfg.LogLimit = DefaultLogLimit
@@ -528,6 +556,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		bgFreshenCancels: map[string]*bgFreshenHandle{},
 		bases:            map[string]*pb.Base{},
 		finalizingBases:  map[string]bool{},
+		baseImages:       map[string]string{},
 		workspaces:       map[string]*workspace{},
 		commands:         map[string]*command{},
 		usage:            &pb.NodeUsage{},
@@ -577,7 +606,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		if cred != nil {
 			uid, gid = int(cred.Uid), int(cred.Gid)
 		} else {
-			sp := cfg.BaseImage.Spec.Normalized()
+			sp := cfg.BaseSpec.Normalized()
 			uid, gid = sp.UID, sp.GID
 		}
 		e.guest = newGuestExecutor(e.bgCtx, e.cfg.Runtime, cfg.Units, uid, gid)

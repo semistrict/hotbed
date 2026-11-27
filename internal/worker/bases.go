@@ -9,12 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
-	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
-	"weak"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/baseimage"
@@ -26,55 +23,35 @@ import (
 	"github.com/semistrict/hotbed/internal/storage"
 )
 
-// engineBaseImages tracks each base ID's parent shared base-image key in
-// worker-owned state so GC and freshness checks do not need to trust
-// project-controlled volume markers for bases created during this worker's
-// lifetime. Keyed by weak.Pointer[Engine] with a GC cleanup so test engines
-// are never retained.
-var (
-	engineBaseImagesMu sync.Mutex
-	engineBaseImages   = map[weak.Pointer[Engine]]map[string]string{}
-)
+// errNoLocalBaseImage is a chroot base asked of a worker whose workspaces
+// are all VMs: it keeps no local base image to clone one from.
+var errNoLocalBaseImage = api.Errorf(api.CodePlatformNotSupported, "this worker keeps no local base image to build a chroot base from: its workspaces are all VMs").
+	WithSuggestion("create the workspace with --runtime vm")
 
+// setBaseImage records that base baseID was cloned from shared base image
+// key.
 func (e *Engine) setBaseImage(baseID, key string) {
 	if baseID == "" || key == "" {
 		return
 	}
-	wp := weak.Make(e)
-	engineBaseImagesMu.Lock()
-	defer engineBaseImagesMu.Unlock()
-	m := engineBaseImages[wp]
-	if m == nil {
-		m = map[string]string{}
-		engineBaseImages[wp] = m
-		runtime.AddCleanup(e, func(k weak.Pointer[Engine]) {
-			engineBaseImagesMu.Lock()
-			delete(engineBaseImages, k)
-			engineBaseImagesMu.Unlock()
-		}, wp)
-	}
-	m[baseID] = key
+	e.baseImagesMu.Lock()
+	defer e.baseImagesMu.Unlock()
+	e.baseImages[baseID] = key
 }
 
+// baseImageOf is the shared base image base baseID was cloned from, if this
+// worker built it.
 func (e *Engine) baseImageOf(baseID string) (string, bool) {
-	wp := weak.Make(e)
-	engineBaseImagesMu.Lock()
-	defer engineBaseImagesMu.Unlock()
-	m := engineBaseImages[wp]
-	if m == nil {
-		return "", false
-	}
-	k, ok := m[baseID]
-	return k, ok && k != ""
+	e.baseImagesMu.Lock()
+	defer e.baseImagesMu.Unlock()
+	k, ok := e.baseImages[baseID]
+	return k, ok
 }
 
 func (e *Engine) forgetBaseImage(baseID string) {
-	wp := weak.Make(e)
-	engineBaseImagesMu.Lock()
-	defer engineBaseImagesMu.Unlock()
-	if m := engineBaseImages[wp]; m != nil {
-		delete(m, baseID)
-	}
+	e.baseImagesMu.Lock()
+	defer e.baseImagesMu.Unlock()
+	delete(e.baseImages, baseID)
 }
 
 const (
@@ -324,6 +301,9 @@ func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int3
 }
 
 func (e *Engine) startFreshenWithOpts(ctx context.Context, p *pb.HostedProject, gen int32, prev *pb.Base, coldReason string, h heads, recipe string, optional bool) (*pb.Base, error) {
+	if prev == nil && e.cfg.BaseImage == nil {
+		return nil, errNoLocalBaseImage
+	}
 	createdAt := e.nowMs()
 	prepStart := e.now()
 	var phases []*pb.FreshenPhase
@@ -838,7 +818,7 @@ func readBaseImageMarkerSafe(volPath string) (string, bool) {
 // referenced by any warm, building, or finalizing project base. Snapshots that
 // still have storage clones (e.g. on ZFS) are skipped until those clones go.
 func (e *Engine) collectBaseImages(ctx context.Context) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || e.cfg.BaseImage == nil {
 		return
 	}
 	entries, err := os.ReadDir(e.cfg.Store.Path("baseimages"))

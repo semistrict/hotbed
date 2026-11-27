@@ -71,13 +71,24 @@ func TestCopyFileAtomic(t *testing.T) {
 }
 
 // The worker unit neither waits for nor pulls in tailscaled: a worker
-// needs no tailnet.
-func TestSystemdWorkerUnitNeedsNoTailscaled(t *testing.T) {
-	unit := SystemdWorkerUnit("/usr/local/bin/hotbed", "/var/lib/hotbed/worker", "")
-	if !strings.Contains(unit, "Wants=network-online.target zfs-mount.service\n") {
-		t.Fatalf("unit lacks its Wants= line:\n%s", unit)
-	}
-	if strings.Contains(unit, "tailscaled") || strings.Contains(unit, "Requires=") {
-		t.Fatalf("unit depends on tailscaled:\n%s", unit)
+// needs no tailnet. It waits for ZFS's mounts only when its state directory
+// is on ZFS.
+func TestSystemdWorkerUnitDependencies(t *testing.T) {
+	for _, c := range []struct {
+		zfs  bool
+		deps string
+	}{
+		{true, "network-online.target zfs-mount.service"},
+		{false, "network-online.target"},
+	} {
+		unit := SystemdWorkerUnit("/usr/local/bin/hotbed", "/var/lib/hotbed/worker", c.zfs, "")
+		for _, want := range []string{"After=" + c.deps + "\n", "Wants=" + c.deps + "\n"} {
+			if !strings.Contains(unit, want) {
+				t.Fatalf("zfs=%v: unit lacks %q:\n%s", c.zfs, want, unit)
+			}
+		}
+		if strings.Contains(unit, "tailscaled") || strings.Contains(unit, "Requires=") {
+			t.Fatalf("unit depends on tailscaled:\n%s", unit)
+		}
 	}
 }

@@ -199,7 +199,7 @@ func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) 
 	}
 
 	servicePath := filepath.Join(systemdUnitDir, linuxWorkerService)
-	unitText := SystemdWorkerUnit(binPath, stateDir, zfsImportPre)
+	unitText := SystemdWorkerUnit(binPath, stateDir, strings.HasPrefix(storageMode, "zfs"), zfsImportPre)
 	if err := os.WriteFile(servicePath, []byte(unitText), 0o644); err != nil {
 		return Result{}, fmt.Errorf("write %s: %w", servicePath, err)
 	}

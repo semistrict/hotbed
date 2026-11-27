@@ -69,9 +69,9 @@ func TestBundleOwner(t *testing.T) {
 		euid int
 		want owner
 	}{
-		"a rootfs's user":          {&Engine{cfg: EngineConfig{User: "dev", BaseImage: &baseimage.Manager{Spec: spec}}}, 0, owner{1001, 1002, true}},
-		"a rootfs's root":          {&Engine{cfg: EngineConfig{BaseImage: &baseimage.Manager{Spec: spec}}}, 0, owner{0, 0, false}},
-		"a worker that isn't root": {&Engine{cfg: EngineConfig{BaseImage: &baseimage.Manager{Spec: spec}}}, 501, owner{0, 0, false}},
+		"a rootfs's user":          {&Engine{cfg: EngineConfig{User: "dev", BaseSpec: spec}}, 0, owner{1001, 1002, true}},
+		"a rootfs's root":          {&Engine{cfg: EngineConfig{BaseSpec: spec}}, 0, owner{0, 0, false}},
+		"a worker that isn't root": {&Engine{cfg: EngineConfig{BaseSpec: spec}}, 501, owner{0, 0, false}},
 	} {
 		uid, gid, ok := c.e.bundleOwnerAs(c.euid)
 		if got := (owner{uid, gid, ok}); got != c.want {

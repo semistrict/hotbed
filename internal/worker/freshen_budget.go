@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/baseimage"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/statedir"
 )
@@ -876,12 +875,7 @@ func (e *Engine) runBackgroundOptionalFreshen(ctx context.Context, pf *pendingOp
 		Now:        e.now,
 		Background: true,
 	}
-	var baseSpec baseimage.Spec
-	var prov baseimage.Provisioner
-	if e.cfg.BaseImage != nil {
-		baseSpec = e.cfg.BaseImage.Spec
-		prov = e.cfg.BaseImage.Provision
-	}
+	baseSpec, prov := e.cfg.BaseSpec, e.baseProvisioner()
 
 	if b := e.cladefs(); b != nil && pf.runtime == b.Kind() {
 		res, err := b.ensureProjectBase(ctx, p, heads, pf.sharedBase, baseSpec, prov, e.sandboxEnv(), nil, e.startManagedFreshen, opts)

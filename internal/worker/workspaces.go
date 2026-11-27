@@ -1005,7 +1005,7 @@ func (e *Engine) bundleOwnerAs(euid int) (uid, gid int, ok bool) {
 	if euid != 0 || e.cfg.User == "" {
 		return 0, 0, false
 	}
-	spec := e.cfg.BaseImage.Spec.Normalized()
+	spec := e.cfg.BaseSpec.Normalized()
 	return spec.UID, spec.GID, true
 }
 
