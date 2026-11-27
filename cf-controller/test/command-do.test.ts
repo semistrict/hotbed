@@ -610,4 +610,139 @@ describe("CommandDO per-command SQLite storage via typed Workers RPC", () => {
 			ws.close(1000, "test done");
 		}
 	});
+
+	it("followLog does not serve an incomplete CommandDO prefix as clean EOF when the worker is unreachable", async () => {
+		const owner = makeClients(OWNER_TOKEN);
+		const nodeId = "node-follow-partial";
+		const hostname = "follow-partial-host";
+		const joiner = makeClients(JOIN_TOKEN, {
+			"X-Hotbed-Node-Id": nodeId,
+			"X-Hotbed-Host": hostname,
+		});
+		const joined = await joiner.cluster.join({});
+		const worker = makeClients(joined.workerToken, {
+			"X-Hotbed-Node-Id": nodeId,
+			"X-Hotbed-Host": hostname,
+		});
+		await worker.cluster.heartbeat({
+			clusterId: joined.clusterId,
+			resources: create(ResourcesSchema, { arch: "amd64", cpus: 4, memoryBytes: 4n << 30n }),
+		});
+
+		const cmdId = "cmd-follow-partial";
+		await worker.cluster.pushEvents({
+			clusterId: joined.clusterId,
+			epoch: "epoch-follow",
+			checkpoint: create(CheckpointSchema, {
+				seq: 1n,
+				commands: [
+					create(CommandSchema, {
+						id: cmdId,
+						workspaceId: "ws-follow",
+						nodeId,
+						state: CommandState.SUCCEEDED,
+						argv: "echo before && echo after",
+					}),
+				],
+			}),
+		});
+
+		const enc = new TextEncoder();
+		const before = enc.encode("before\n");
+		await worker.cluster.pushCommandOutput({
+			commandId: cmdId,
+			chunks: [
+				{
+					offset: 0n,
+					nextOffset: BigInt(before.byteLength),
+					receivedAt: 1_700_000_001_000n,
+					data: before,
+				},
+			],
+			eof: false,
+		});
+
+		// Connect a worker tunnel that answers FollowLog with unavailable
+		// (e.g. shutting down mid-drain), which maps to WorkerUnreachable immediately.
+		const wsRes = await SELF.fetch("https://controller.test/ws/worker", {
+			headers: {
+				Upgrade: "websocket",
+				Authorization: `Bearer ${joined.workerToken}`,
+				"X-Hotbed-Node-Id": nodeId,
+				"X-Hotbed-Host": hostname,
+			},
+		});
+		expect(wsRes.status).toBe(101);
+		const ws = wsRes.webSocket!;
+		ws.accept();
+		ws.addEventListener("message", (ev) => {
+			const raw = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+			if (raw === "pong") return;
+			const msg = JSON.parse(raw) as TunnelDownMessage;
+			if (msg.type !== "rpc_req" || msg.procedure !== "/hotbed.v1.WorkspaceService/FollowLog") {
+				return;
+			}
+			ws.send(
+				JSON.stringify({
+					type: "rpc_err",
+					id: msg.id,
+					code: "WORKER_UNREACHABLE",
+					message: "worker shutting down",
+					retryable: true,
+				} satisfies TunnelUpMessage),
+			);
+		});
+
+		try {
+			// Worker returns WorkerUnreachable while CommandDO only holds "before\n"
+			// with eof=false: FollowLog(follow=false, offset=7) must fail with
+			// WorkerUnreachable so drainLog retries instead of exiting 0 missing "after\n".
+			await expect(async () => {
+				for await (const _chunk of owner.workspaces.followLog({
+					id: cmdId,
+					offset: BigInt(before.byteLength),
+					follow: false,
+					wait: false,
+				})) {
+					// consume
+				}
+			}).rejects.toThrow();
+
+			// Once outputPusher delivers the remaining chunk with eof=true, FollowLog
+			// serves the complete tail from CommandDO even when the worker is unavailable.
+			const after = enc.encode("after\n");
+			await worker.cluster.pushCommandOutput({
+				commandId: cmdId,
+				chunks: [
+					{
+						offset: BigInt(before.byteLength),
+						nextOffset: BigInt(before.byteLength + after.byteLength),
+						receivedAt: 1_700_000_002_000n,
+						data: after,
+					},
+				],
+				eof: true,
+			});
+			const chunks: Uint8Array[] = [];
+			for await (const chunk of owner.workspaces.followLog({
+				id: cmdId,
+				offset: BigInt(before.byteLength),
+				follow: false,
+				wait: false,
+			})) {
+				chunks.push(chunk.data);
+			}
+			const decoded = new TextDecoder().decode(
+				chunks.reduce((acc, c) => {
+					const out = new Uint8Array(acc.length + c.length);
+					out.set(acc);
+					out.set(c, acc.length);
+					return out;
+				}, new Uint8Array()),
+			);
+			expect(decoded).toBe("after\n");
+		} finally {
+			ws.close(1000, "test done");
+		}
+	});
 });

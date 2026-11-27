@@ -110,7 +110,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	}
 	if req.Bench && e.cfg.Bench == nil {
 		return nil, api.Errorf(api.CodeInvalidArgs, "%s takes no measurements: its worker's config names no bench CPUs", e.cfg.Host).
-			WithSuggestion("hotbed nodes shows the nodes that do (benchCpus); hotbed run --bench goes only to them unless --node names another")
+			WithSuggestion("hotbed nodes shows the nodes that do (benchCpus); hotbed run --bench goes only to them")
 	}
 	kind := req.Kind
 	if kind == "" {
@@ -207,11 +207,11 @@ func (e *Engine) checkVMRequestLocked(req *pb.RunCommandRequest) error {
 	}
 	if cpus := e.resources.GetCpus(); req.VmCpus < 0 || req.VmCpus > cpus {
 		return api.Errorf(api.CodeInvalidArgs, "--vm-cpus %d: %s has %d CPUs", req.VmCpus, e.cfg.Host, cpus).
-			WithSuggestion(fmt.Sprintf("ask for 1 to %d, or pick a bigger node with --node (hotbed nodes lists them)", cpus))
+			WithSuggestion(fmt.Sprintf("ask for 1 to %d, or omit --vm-cpus (hotbed nodes lists each node's CPUs)", cpus))
 	}
 	if mem := e.resources.GetMemoryBytes(); req.VmMemoryBytes != 0 && (req.VmMemoryBytes < minVMMemory || req.VmMemoryBytes > mem) {
 		return api.Errorf(api.CodeInvalidArgs, "--vm-mem %s: a VM on %s takes %s to %s", gib(req.VmMemoryBytes), e.cfg.Host, gib(minVMMemory), gib(mem)).
-			WithSuggestion("ask for memory in that range, or pick a bigger node with --node (hotbed nodes lists them)")
+			WithSuggestion("ask for memory in that range, or omit --vm-mem (hotbed nodes lists each node's memory)")
 	}
 	return nil
 }
@@ -835,6 +835,7 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 	// removeUnit has removed the unit and read the rest of its output.
 	if st.VMExit != nil {
 		c.failure = "vm"
+		e.invalidateWorkspaceSyncLocked(cmd.WorkspaceId, "VM ended mid-run; sync state unknown")
 		e.end(c, failed, nil, vmExitReason(*st.VMExit))
 		return
 	}
@@ -866,6 +867,31 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 		state = failed
 	}
 	e.end(c, state, &code, "")
+}
+
+// invalidateWorkspaceSyncLocked clears the recorded synced tree/head on wsID's
+// repos so the next run or sync never skips syncing after an unclean VM exit
+// that may have lost unflushed guest writes (issue #17). BaseCommit is kept
+// because it describes the workspace's underlying base snapshot. Call with e.mu
+// held.
+func (e *Engine) invalidateWorkspaceSyncLocked(wsID, detail string) {
+	w, ok := e.workspaces[wsID]
+	if !ok {
+		return
+	}
+	ws := w.ws()
+	changed := false
+	for _, r := range ws.Repos {
+		if r.Tree != "" || r.Head != "" || r.FilesChanged != 0 {
+			r.Tree = ""
+			r.Head = ""
+			r.FilesChanged = 0
+			changed = true
+		}
+	}
+	if changed {
+		e.saveWorkspace(w, change{what: "sync-invalidated", detail: detail})
+	}
 }
 
 // vmExitReason says how the VM a command ran in ended under it: the command

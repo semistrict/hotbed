@@ -1403,6 +1403,23 @@ func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Seed a previously synced repo tree on workspace "a" so we verify
+			// that a VM exit invalidates recorded sync state (issue #17) while
+			// normal/OOM command exits leave it intact.
+			const baseSHA = "1111111111111111111111111111111111111111"
+			const syncedTree = "2222222222222222222222222222222222222222"
+			e.mu.Lock()
+			if w, ok := e.workspaces["a"]; ok {
+				w.ws().Repos = []*pb.WorkspaceRepo{{
+					Repo:         "app",
+					BaseCommit:   baseSHA,
+					Head:         syncedTree,
+					Tree:         syncedTree,
+					FilesChanged: 5,
+				}}
+			}
+			e.mu.Unlock()
+
 			c := e.newCommand(&pb.CommandRecord{
 				Command: &pb.Command{
 					Id:          tc.id,
@@ -1417,6 +1434,21 @@ func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
 
 			st := guestState(tc.status, unit.MemoryUse{Anon: tc.status.MemoryAnon, Swap: tc.status.MemorySwap})
 			e.observe(ctx, c, st, *now)
+
+			e.mu.Lock()
+			wsRepo := e.workspaces["a"].ws().Repos[0]
+			gotTree, gotHead, gotBase, gotChanged := wsRepo.Tree, wsRepo.Head, wsRepo.BaseCommit, wsRepo.FilesChanged
+			e.mu.Unlock()
+			if gotBase != baseSHA {
+				t.Fatalf("BaseCommit = %q, want %q", gotBase, baseSHA)
+			}
+			if tc.status.VMExit != nil {
+				if gotTree != "" || gotHead != "" || gotChanged != 0 {
+					t.Fatalf("VM exit must invalidate workspace sync: got tree=%q head=%q changed=%d", gotTree, gotHead, gotChanged)
+				}
+			} else if gotTree != syncedTree {
+				t.Fatalf("non-VM exit must keep synced tree %q, got %q", syncedTree, gotTree)
+			}
 
 			got := c.cmd()
 			if got.State != failed {

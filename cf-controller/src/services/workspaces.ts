@@ -764,7 +764,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						`all eligible nodes are currently full (${hosts.join(", ")}); queued at controller, waiting for any to free up`,
 						{
 							retryable: true,
-							suggestion: "hotbed run waits automatically; pass --node HOST to queue on one node",
+							suggestion: "hotbed run waits automatically until a node frees up",
 						},
 					);
 				}
@@ -1565,7 +1565,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 			}
 			const stored = await ctrl.commands.readOutputChunks(req.id, reqOffset);
-			if (!stored.hasOutput) throw failed;
+			// When the worker is merely unreachable (e.g. restarting mid-drain),
+			// only serve from CommandDO once outputPusher has written EOF; an
+			// incomplete prefix (hasOutput && !eof) would look like clean EOF to
+			// drainLog and silently drop the command's trailing output.
+			if (!stored.hasOutput || (codeOf(failed) === ErrorCode.WorkerUnreachable && !stored.eof)) {
+				throw failed;
+			}
 			for (const c of stored.chunks) {
 				let data = c.data;
 				// If caller requested a mid-chunk offset on normal (non-marker) data, slice to reqOffset.
