@@ -1,4 +1,5 @@
 import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
+import { codeToHttpStatus, errorToJson } from "@connectrpc/connect/protocol-connect";
 import { create } from "@bufbuild/protobuf";
 import { ErrorInfoSchema } from "./gen/hotbed/v1/hotbed_pb.ts";
 
@@ -154,6 +155,22 @@ export function toConnectError(err: unknown): ConnectError {
 	return new ConnectError(he.message, connectCodeFor(he.code), undefined, [
 		{ desc: ErrorInfoSchema, value: detail },
 	]);
+}
+
+/**
+ * err as a Connect unary error response carrying its hotbed.v1.ErrorInfo,
+ * for a gate in front of the Connect router (edge routing, DO auth), so Go
+ * clients (`api.FromConnect`) and connect-web decode the HotbedError and its
+ * HTTP status agrees with the code (`connectCodeFor`).
+ */
+export function connectErrorResponse(err: unknown, headers?: HeadersInit): Response {
+	const ce = toConnectError(err);
+	const h = new Headers(headers);
+	h.set("Content-Type", "application/json");
+	return new Response(JSON.stringify(errorToJson(ce, undefined)), {
+		status: codeToHttpStatus(ce.code),
+		headers: h,
+	});
 }
 
 export function fromWorkerError(host: string, err: unknown): HotbedError {

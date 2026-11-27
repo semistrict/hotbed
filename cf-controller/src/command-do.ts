@@ -12,6 +12,7 @@ import {
 	type CommandSample,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { extractLogLines, type TimedOutputChunk } from "./settle.ts";
+import { num, str } from "./sql-values.ts";
 import { KEEP_HISTORY_MS, MAX_COMMAND_SAMPLES } from "./store.ts";
 
 // Bounded per-CommandDO output storage: keep up to 32 MiB total (2 MiB head + 30 MiB tail)
@@ -47,14 +48,6 @@ export interface CommandOutputLinesResult {
 	hasOutput: boolean;
 }
 
-function sqlStr(v: SqlStorageValue | undefined): string {
-	return typeof v === "string" ? v : v === null || v === undefined ? "" : String(Number(v));
-}
-
-function sqlNum(v: SqlStorageValue | undefined): number {
-	return typeof v === "number" ? v : typeof v === "string" ? Number(v) : 0;
-}
-
 function toUint8Array(raw: SqlStorageValue | undefined): Uint8Array | null {
 	if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
 	return null;
@@ -68,6 +61,47 @@ export function commandDoName(clusterId: string, commandId: string): string {
 	return `cmd:${clusterId}:${commandId}`;
 }
 
+function createSchema(sql: SqlStorage): void {
+	sql.exec(`
+		CREATE TABLE IF NOT EXISTS command_meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS command_profile (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			node_id TEXT NOT NULL,
+			ended_at INTEGER NOT NULL,
+			doc BLOB NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS command_diagnostics (
+			seq INTEGER PRIMARY KEY,
+			node_id TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			doc TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS command_samples (
+			seq INTEGER PRIMARY KEY,
+			node_id TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			meta TEXT NOT NULL,
+			doc BLOB NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS command_output (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			tail INTEGER NOT NULL,
+			cut INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			doc BLOB NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS command_output_chunks (
+			offset INTEGER PRIMARY KEY,
+			next_offset INTEGER NOT NULL,
+			received_at INTEGER NOT NULL,
+			data BLOB NOT NULL
+		);
+	`);
+}
+
 /**
  * Per-command SQLite Durable Object storing heavy per-command data outside the
  * main ControllerDO: continuous eBPF profile, intervention diagnostics, kept
@@ -77,61 +111,31 @@ export function commandDoName(clusterId: string, commandId: string): string {
  * Each instance schedules its own DO alarm to deleteAll() after KEEP_HISTORY_MS.
  */
 export class CommandDO extends DurableObject<Env> {
-	private sql: SqlStorage;
+	private schemaReady = false;
 
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
-		this.sql = ctx.storage.sql;
-		void this.ctx.blockConcurrencyWhile(async () => {
-			this.ensureSchema();
-		});
+	/**
+	 * The command's SQLite, its tables created on first use: after a cold
+	 * start, and again after deleteAll() (clear, expiry) wiped them while this
+	 * instance stays alive. Expiry leaves no empty tables behind.
+	 */
+	private get sql(): SqlStorage {
+		const sql = this.ctx.storage.sql;
+		if (!this.schemaReady) {
+			createSchema(sql);
+			this.schemaReady = true;
+		}
+		return sql;
 	}
 
-	private ensureSchema(): void {
-		this.sql.exec(`
-			CREATE TABLE IF NOT EXISTS command_meta (
-				key TEXT PRIMARY KEY,
-				value TEXT NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS command_profile (
-				id INTEGER PRIMARY KEY CHECK (id = 1),
-				node_id TEXT NOT NULL,
-				ended_at INTEGER NOT NULL,
-				doc BLOB NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS command_diagnostics (
-				seq INTEGER PRIMARY KEY,
-				node_id TEXT NOT NULL,
-				created_at INTEGER NOT NULL,
-				doc TEXT NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS command_samples (
-				seq INTEGER PRIMARY KEY,
-				node_id TEXT NOT NULL,
-				created_at INTEGER NOT NULL,
-				meta TEXT NOT NULL,
-				doc BLOB NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS command_output (
-				id INTEGER PRIMARY KEY CHECK (id = 1),
-				tail INTEGER NOT NULL,
-				cut INTEGER NOT NULL,
-				updated_at INTEGER NOT NULL,
-				doc BLOB NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS command_output_chunks (
-				offset INTEGER PRIMARY KEY,
-				next_offset INTEGER NOT NULL,
-				received_at INTEGER NOT NULL,
-				data BLOB NOT NULL
-			);
-		`);
+	private async deleteAll(): Promise<void> {
+		await this.ctx.storage.deleteAll();
+		this.schemaReady = false;
 	}
 
 	private async scheduleExpiry(nowMs: number, ttlMs = KEEP_HISTORY_MS): Promise<void> {
 		const desired = Math.max(Date.now(), nowMs) + ttlMs;
 		const rows = this.sql.exec("SELECT value FROM command_meta WHERE key = 'expires_at'").toArray();
-		const current = rows.length > 0 ? sqlNum(rows[0].value) : 0;
+		const current = rows.length > 0 ? num(rows[0].value) : 0;
 		const nextExpiry = Math.max(current, desired);
 		if (nextExpiry > current) {
 			this.sql.exec(
@@ -147,7 +151,6 @@ export class CommandDO extends DurableObject<Env> {
 	}
 
 	async expireNowForTest(): Promise<void> {
-		this.ensureSchema();
 		const past = Date.now() - 1000;
 		this.sql.exec(
 			`INSERT INTO command_meta (key, value) VALUES ('expires_at', ?)
@@ -163,7 +166,6 @@ export class CommandDO extends DurableObject<Env> {
 		doc: Uint8Array;
 		nowMs?: number;
 	}): Promise<void> {
-		this.ensureSchema();
 		this.sql.exec(
 			`INSERT INTO command_profile (id, node_id, ended_at, doc) VALUES (1, ?, ?, ?)
 			 ON CONFLICT (id) DO UPDATE SET node_id = excluded.node_id, ended_at = excluded.ended_at, doc = excluded.doc`,
@@ -175,7 +177,6 @@ export class CommandDO extends DurableObject<Env> {
 	}
 
 	getProfile(): Uint8Array | null {
-		this.ensureSchema();
 		const rows = this.sql.exec("SELECT doc FROM command_profile WHERE id = 1").toArray();
 		if (rows.length === 0) return null;
 		return toUint8Array(rows[0].doc);
@@ -188,7 +189,6 @@ export class CommandDO extends DurableObject<Env> {
 		doc: string;
 		nowMs?: number;
 	}): Promise<void> {
-		this.ensureSchema();
 		this.sql.exec(
 			`INSERT INTO command_diagnostics (seq, node_id, created_at, doc) VALUES (?, ?, ?, ?)
 			 ON CONFLICT (seq) DO UPDATE SET node_id = excluded.node_id, created_at = excluded.created_at, doc = excluded.doc`,
@@ -201,21 +201,18 @@ export class CommandDO extends DurableObject<Env> {
 	}
 
 	getDiagnostic(seq: number): string | null {
-		this.ensureSchema();
 		const rows = this.sql.exec("SELECT doc FROM command_diagnostics WHERE seq = ?", seq).toArray();
-		return rows.length > 0 ? sqlStr(rows[0].doc) : null;
+		return rows.length > 0 ? str(rows[0].doc) : null;
 	}
 
 	listDiagnosticsAfter(afterSeq: number): string[] {
-		this.ensureSchema();
 		return this.sql
 			.exec("SELECT doc FROM command_diagnostics WHERE seq > ? ORDER BY seq", afterSeq)
 			.toArray()
-			.map((r) => sqlStr(r.doc));
+			.map((r) => str(r.doc));
 	}
 
 	hasDiagnostics(): boolean {
-		this.ensureSchema();
 		return this.sql.exec("SELECT 1 FROM command_diagnostics LIMIT 1").toArray().length > 0;
 	}
 
@@ -228,7 +225,6 @@ export class CommandDO extends DurableObject<Env> {
 		maxSamples?: number;
 		nowMs?: number;
 	}): Promise<void> {
-		this.ensureSchema();
 		const maxSamples = params.maxSamples ?? MAX_COMMAND_SAMPLES;
 		this.ctx.storage.transactionSync(() => {
 			this.sql.exec(
@@ -246,15 +242,13 @@ export class CommandDO extends DurableObject<Env> {
 	}
 
 	listSamples(): string[] {
-		this.ensureSchema();
 		return this.sql
 			.exec("SELECT meta FROM command_samples ORDER BY seq")
 			.toArray()
-			.map((r) => sqlStr(r.meta));
+			.map((r) => str(r.meta));
 	}
 
 	getSample(seq: number): Uint8Array | null {
-		this.ensureSchema();
 		const rows = this.sql.exec("SELECT doc FROM command_samples WHERE seq = ?", seq).toArray();
 		if (rows.length === 0) return null;
 		return toUint8Array(rows[0].doc);
@@ -266,7 +260,6 @@ export class CommandDO extends DurableObject<Env> {
 		doc: Uint8Array;
 		nowMs?: number;
 	}): Promise<void> {
-		this.ensureSchema();
 		const nowMs = params.nowMs ?? Date.now();
 		this.sql.exec(
 			`INSERT INTO command_output (id, tail, cut, updated_at, doc) VALUES (1, ?, ?, ?, ?)
@@ -280,14 +273,13 @@ export class CommandDO extends DurableObject<Env> {
 	}
 
 	getOutputLog(): StoredOutputLog | null {
-		this.ensureSchema();
 		const rows = this.sql.exec("SELECT tail, cut, doc FROM command_output WHERE id = 1").toArray();
 		if (rows.length === 0) return null;
 		const doc = toUint8Array(rows[0].doc);
 		if (!doc) return null;
 		return {
-			tail: sqlNum(rows[0].tail),
-			cut: sqlNum(rows[0].cut) !== 0,
+			tail: num(rows[0].tail),
+			cut: num(rows[0].cut) !== 0,
 			doc,
 		};
 	}
@@ -297,7 +289,6 @@ export class CommandDO extends DurableObject<Env> {
 		eof: boolean;
 		nowMs?: number;
 	}): Promise<{ ackedOffset: number }> {
-		this.ensureSchema();
 		const nowMs = params.nowMs ?? Date.now();
 		let ackedOffset = 0;
 		this.ctx.storage.transactionSync(() => {
@@ -323,12 +314,12 @@ export class CommandDO extends DurableObject<Env> {
 			const ackRows = this.sql
 				.exec("SELECT COALESCE(MAX(next_offset), 0) AS ack FROM command_output_chunks")
 				.toArray();
-			ackedOffset = ackRows.length > 0 ? sqlNum(ackRows[0].ack) : 0;
+			ackedOffset = ackRows.length > 0 ? num(ackRows[0].ack) : 0;
 			if (ackedOffset > 0) {
 				const prevRows = this.sql
 					.exec("SELECT value FROM command_meta WHERE key = 'output_acked_offset'")
 					.toArray();
-				const prev = prevRows.length > 0 ? sqlNum(prevRows[0].value) : 0;
+				const prev = prevRows.length > 0 ? num(prevRows[0].value) : 0;
 				if (ackedOffset > prev) {
 					this.sql.exec(
 						`INSERT INTO command_meta (key, value) VALUES ('output_acked_offset', ?)
@@ -348,7 +339,7 @@ export class CommandDO extends DurableObject<Env> {
 		const sizeRows = this.sql
 			.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS total FROM command_output_chunks")
 			.toArray();
-		const total = sizeRows.length > 0 ? sqlNum(sizeRows[0].total) : 0;
+		const total = sizeRows.length > 0 ? num(sizeRows[0].total) : 0;
 		if (total <= MAX_STORED_OUTPUT_BYTES) return;
 
 		const metaRows = this.sql
@@ -361,7 +352,7 @@ export class CommandDO extends DurableObject<Env> {
 		let headKeepEndIdx = 0;
 		let headBytes = 0;
 		for (let i = 0; i < metaRows.length; i++) {
-			const sz = sqlNum(metaRows[i].sz);
+			const sz = num(metaRows[i].sz);
 			if (headBytes + sz > KEEP_HEAD_OUTPUT_BYTES && i > 0) break;
 			headBytes += sz;
 			headKeepEndIdx = i;
@@ -369,16 +360,16 @@ export class CommandDO extends DurableObject<Env> {
 		let tailKeepStartIdx = metaRows.length - 1;
 		let tailBytes = 0;
 		for (let i = metaRows.length - 1; i > headKeepEndIdx; i--) {
-			const sz = sqlNum(metaRows[i].sz);
+			const sz = num(metaRows[i].sz);
 			if (tailBytes + sz > KEEP_TAIL_OUTPUT_BYTES && i < metaRows.length - 1) break;
 			tailBytes += sz;
 			tailKeepStartIdx = i;
 		}
 		if (tailKeepStartIdx <= headKeepEndIdx + 1) return;
 
-		const dropFromOffset = sqlNum(metaRows[headKeepEndIdx + 1].offset);
-		const dropToOffset = sqlNum(metaRows[tailKeepStartIdx - 1].offset);
-		const droppedNextOffset = sqlNum(metaRows[tailKeepStartIdx - 1].next_offset);
+		const dropFromOffset = num(metaRows[headKeepEndIdx + 1].offset);
+		const dropToOffset = num(metaRows[tailKeepStartIdx - 1].offset);
+		const droppedNextOffset = num(metaRows[tailKeepStartIdx - 1].next_offset);
 		const droppedBytes = Math.max(0, droppedNextOffset - dropFromOffset);
 		this.sql.exec(
 			"DELETE FROM command_output_chunks WHERE offset >= ? AND offset <= ?",
@@ -402,7 +393,6 @@ export class CommandDO extends DurableObject<Env> {
 	}
 
 	readOutputChunks(afterOffset = 0): CommandOutputStreamRead {
-		this.ensureSchema();
 		const eof =
 			this.sql.exec("SELECT 1 FROM command_meta WHERE key = 'output_eof' AND value = '1'").toArray()
 				.length > 0;
@@ -422,9 +412,9 @@ export class CommandDO extends DurableObject<Env> {
 			const data = toUint8Array(r.data);
 			if (!data) continue;
 			chunks.push({
-				offset: sqlNum(r.offset),
-				nextOffset: sqlNum(r.next_offset),
-				receivedAt: sqlNum(r.received_at),
+				offset: num(r.offset),
+				nextOffset: num(r.next_offset),
+				receivedAt: num(r.received_at),
 				data,
 			});
 		}
@@ -432,7 +422,6 @@ export class CommandDO extends DurableObject<Env> {
 	}
 
 	getOutputLines(tail = 2000, maxBytes = DEFAULT_LOG_LINES_MAX_BYTES): CommandOutputLinesResult {
-		this.ensureSchema();
 		const eof =
 			this.sql.exec("SELECT 1 FROM command_meta WHERE key = 'output_eof' AND value = '1'").toArray()
 				.length > 0;
@@ -447,11 +436,11 @@ export class CommandDO extends DurableObject<Env> {
 
 		// Read from the tail so a huge stored log never blows up DO memory.
 		const readBudget = Math.max(maxBytes * 2, 2 << 20);
-		const rows = this.sql
-			.exec(
-				"SELECT offset, next_offset, received_at, data FROM command_output_chunks ORDER BY offset DESC",
-			)
-			.toArray();
+		// The cursor reads rows as the loop asks: stopping at the budget leaves
+		// the older rest of the log unread.
+		const rows = this.sql.exec(
+			"SELECT offset, next_offset, received_at, data FROM command_output_chunks ORDER BY offset DESC",
+		);
 		const picked: TimedOutputChunk[] = [];
 		let totalBytes = 0;
 		let trimmedEarly = false;
@@ -464,9 +453,9 @@ export class CommandDO extends DurableObject<Env> {
 			}
 			totalBytes += data.byteLength;
 			picked.push({
-				offset: sqlNum(r.offset),
-				nextOffset: sqlNum(r.next_offset),
-				receivedAt: sqlNum(r.received_at),
+				offset: num(r.offset),
+				nextOffset: num(r.next_offset),
+				receivedAt: num(r.received_at),
 				data,
 			});
 		}
@@ -483,18 +472,17 @@ export class CommandDO extends DurableObject<Env> {
 
 	async clear(): Promise<void> {
 		await this.ctx.storage.deleteAlarm();
-		await this.ctx.storage.deleteAll();
+		await this.deleteAll();
 	}
 
 	override async alarm(): Promise<void> {
-		this.ensureSchema();
 		const rows = this.sql.exec("SELECT value FROM command_meta WHERE key = 'expires_at'").toArray();
-		const expiresAt = rows.length > 0 ? sqlNum(rows[0].value) : 0;
+		const expiresAt = rows.length > 0 ? num(rows[0].value) : 0;
 		if (expiresAt > 0 && Date.now() < expiresAt) {
 			await this.ctx.storage.setAlarm(expiresAt);
 			return;
 		}
-		await this.ctx.storage.deleteAll();
+		await this.deleteAll();
 	}
 }
 

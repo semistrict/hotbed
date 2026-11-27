@@ -20,6 +20,7 @@ import {
 	WorkerFreshenConfigSchema,
 	WorkerVMConfigSchema,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
+import { handleGcRoute, type GcFetch } from "../src/gc.ts";
 import worker from "../src/index.ts";
 import type { ControllerEnv } from "../src/controller-do.ts";
 import {
@@ -1857,5 +1858,46 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		const sessB = await sessAdminB.startSession({ agent: "agent-b", project: "proj-b" });
 		const gotB = await sessAdminB.getSession({ id: sessB.id });
 		expect(gotB.idleTimeoutSeconds).toBe(3600n);
+	});
+
+	it("restricts cluster GC to organization admins: viewers and members of the default org are refused", async () => {
+		const testEnv = makeWorkOSEnv({
+			DEFAULT_ORG_ID: "org_gc_default",
+			GC_WORKER: undefined,
+			GC_WORKER_URL: "https://gc.example.test",
+			GC_TOKEN: "gc-secret-token",
+		});
+		const nowSec = Math.floor(Date.now() / 1000);
+		const mkJwt = (sub: string, role: string) =>
+			signJwt({ sub, org_id: "org_gc_default", role, exp: nowSec + 3600 });
+		const gcCalls: string[] = [];
+		const gcFetch: GcFetch = async (input) => {
+			gcCalls.push(input);
+			return Response.json({ enqueued: 1, sweepStartedMs: 1, shreddedTenants: [] });
+		};
+		const gc = async (token: string, path: string) => {
+			const req = new Request(`https://controller.test${path}`, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}` },
+			});
+			return handleGcRoute(req, new URL(req.url), testEnv, gcFetch);
+		};
+
+		for (const role of ["viewer", "member"]) {
+			const token = await mkJwt(`user_gc_${role}`, role);
+			for (const path of ["/api/gc/sweep", "/api/gc/cell/0/atzpk00005"]) {
+				const res = await gc(token, path);
+				expect(res?.status, `${role} ${path}`).toBe(403);
+				expect(await res!.json()).toEqual({
+					message: "cluster GC is restricted to organization admins",
+				});
+			}
+		}
+		expect(gcCalls).toEqual([]);
+
+		const admin = await mkJwt("user_gc_admin", "admin");
+		const res = await gc(admin, "/api/gc/sweep");
+		expect(res?.status).toBe(200);
+		expect(gcCalls).toEqual(["https://gc.example.test/sweep"]);
 	});
 });

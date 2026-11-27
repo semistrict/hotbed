@@ -3,8 +3,8 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createFetchClient } from "@connectrpc/connect/protocol";
 import { createTransport } from "@connectrpc/connect/protocol-connect";
-import { describe, expect, it } from "vite-plus/test";
-import { commandDoName } from "../src/command-do.ts";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { commandDoName, type CommandDO } from "../src/command-do.ts";
 import type { ControllerEnv } from "../src/controller-do.ts";
 import {
 	ClusterService,
@@ -404,5 +404,68 @@ describe("CommandDO per-command SQLite storage via typed Workers RPC", () => {
 		expect(tables).not.toContain("command_profiles");
 		expect(tables).not.toContain("command_diagnostics");
 		expect(tables).not.toContain("command_samples");
+	});
+
+	it("reads stored output from the tail only up to its byte budget", async () => {
+		const testEnv = env as unknown as ControllerEnv;
+		const stub = testEnv.COMMAND.getByName(commandDoName("cluster-test", "cmd-budget"));
+		const chunkBytes = 256 << 10;
+		const chunkCount = 40;
+		const line = `${"x".repeat(1023)}\n`;
+		const chunks = Array.from({ length: chunkCount }, (_, i) => ({
+			offset: i * chunkBytes,
+			nextOffset: (i + 1) * chunkBytes,
+			receivedAt: 1_700_000_000_000 + i,
+			data: new TextEncoder().encode(line.repeat(chunkBytes / line.length)),
+		}));
+		for (let i = 0; i < chunkCount; i += 8) {
+			await stub.appendOutputChunks({ chunks: chunks.slice(i, i + 8), eof: i + 8 >= chunkCount });
+		}
+
+		const { rowsRead, result } = await runInDurableObject(stub, (instance: CommandDO, state) => {
+			const cursors: SqlStorageCursor<Record<string, SqlStorageValue>>[] = [];
+			const exec = state.storage.sql.exec.bind(state.storage.sql);
+			const spy = vi
+				.spyOn(state.storage.sql, "exec")
+				.mockImplementation((query: string, ...bindings: unknown[]) => {
+					const cursor = exec(query, ...bindings);
+					if (query.includes("ORDER BY offset DESC")) cursors.push(cursor);
+					return cursor;
+				});
+			try {
+				const result = instance.getOutputLines(10, 64 << 10);
+				return { rowsRead: cursors.map((c) => c.rowsRead), result };
+			} finally {
+				spy.mockRestore();
+			}
+		});
+		// The 2 MiB read budget is 8 chunks of 256 KiB; the ninth crosses it, and the cursor has read one row ahead.
+		expect(rowsRead).toEqual([10]);
+		expect(result.lines).toEqual(Array.from({ length: 10 }, () => "x".repeat(1023)));
+		expect(result.eof).toBe(true);
+	});
+
+	it("serves writes after clear() wiped the schema on a live instance", async () => {
+		const testEnv = env as unknown as ControllerEnv;
+		const stub = testEnv.COMMAND.getByName(commandDoName("cluster-test", "cmd-cleared"));
+		const data = new TextEncoder().encode("before\n");
+		await stub.appendOutputChunks({
+			chunks: [{ offset: 0, nextOffset: data.byteLength, receivedAt: 1, data }],
+			eof: true,
+		});
+		await stub.clear();
+		expect(await stub.getOutputLines()).toEqual({
+			lines: [],
+			lineTimestamps: [],
+			cut: false,
+			eof: false,
+			hasOutput: false,
+		});
+		const after = new TextEncoder().encode("after\n");
+		await stub.appendOutputChunks({
+			chunks: [{ offset: 0, nextOffset: after.byteLength, receivedAt: 2, data: after }],
+			eof: true,
+		});
+		expect((await stub.getOutputLines()).lines).toEqual(["after"]);
 	});
 });

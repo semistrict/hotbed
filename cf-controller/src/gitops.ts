@@ -63,6 +63,23 @@ const DISALLOWED_SCP_SCHEMES = new Set([
 	"ssh",
 ]);
 
+/** Whether s is an IP address with no zone, as Go's netip.ParseAddr reads one. */
+function isIPLiteral(s: string): boolean {
+	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+	if (v4) {
+		return v4.slice(1).every((p) => (p === "0" || !p.startsWith("0")) && Number(p) <= 255);
+	}
+	// The URL parser's IPv6 grammar refuses ":", "::::", "1::2::3" and zones;
+	// the character check keeps anything but an address out of the brackets.
+	if (!s.includes(":") || !/^[0-9a-fA-F:.]+$/.test(s)) return false;
+	try {
+		new URL(`http://[${s}]/`);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function validHost(host: string): boolean {
 	if (
 		!host ||
@@ -74,7 +91,7 @@ function validHost(host: string): boolean {
 	) {
 		return false;
 	}
-	return /^[a-zA-Z0-9.-]+$/.test(host) || /^[:0-9a-fA-F]+$/.test(host);
+	return isIPLiteral(host) || /^[a-zA-Z0-9.-]+$/.test(host);
 }
 
 /**
@@ -109,6 +126,12 @@ export function validateRepoURL(raw: string, allowLocal = false): void {
 	if (schemeIdx >= 0) {
 		const scheme = raw.slice(0, schemeIdx).toLowerCase();
 		if (scheme === "https" || scheme === "http" || scheme === "ssh") {
+			// The URL parser reads "https:///org/repo" as host "org" and a
+			// backslash as a slash; Go's url.Parse, the worker's, does neither.
+			const authority = raw.slice(schemeIdx + 3).split(/[/?#]/)[0];
+			if (!authority || authority.includes("\\")) {
+				throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" is missing a host`);
+			}
 			let u: URL;
 			try {
 				u = new URL(raw);
@@ -146,7 +169,12 @@ export function validateRepoURL(raw: string, allowLocal = false): void {
 					`repo URL "${raw}" uses disallowed file:// scheme`,
 				);
 			}
-			const u = new URL(raw);
+			let u: URL;
+			try {
+				u = new URL(raw);
+			} catch {
+				throw hotbedError(ErrorCode.InvalidArgs, `invalid file repo URL "${raw}"`);
+			}
 			if (u.host && u.host.toLowerCase() !== "localhost") {
 				throw hotbedError(
 					ErrorCode.InvalidArgs,
@@ -215,6 +243,12 @@ export function validateRepoURL(raw: string, allowLocal = false): void {
 			throw hotbedError(ErrorCode.InvalidArgs, `repo URL "${raw}" has invalid bracketed host`);
 		}
 		host = rest.slice(1, closeIdx);
+		if (!isIPLiteral(host)) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`repo URL "${raw}" has invalid IP literal "${host}"`,
+			);
+		}
 		pathPart = rest.slice(closeIdx + 2);
 	} else {
 		const c = rest.indexOf(":");

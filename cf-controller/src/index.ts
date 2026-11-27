@@ -1,13 +1,12 @@
 import { authenticateRequest, NOOP_TOKEN_LOOKUP, stripInternalAuthHeaders } from "./auth.ts";
 import { CommandDO } from "./command-do.ts";
 import { ControllerDO, type ControllerEnv } from "./controller-do.ts";
-import { ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
+import { connectErrorResponse, ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
 import { handleGcRoute } from "./gc.ts";
 import { TenantRegistryDO } from "./tenant-registry-do.ts";
 import { clearWorkOSSessionCookie } from "./workos.ts";
 import {
 	attachInternalAuth,
-	edgeConnectErrorResponse,
 	handleAuthRoute,
 	resolveEdgeRouting,
 	withSetCookie,
@@ -131,7 +130,7 @@ export default {
 			} catch (err) {
 				const he = fromUnknownError(err);
 				if (url.pathname.startsWith("/hotbed.v1.")) {
-					return edgeConnectErrorResponse(he);
+					return connectErrorResponse(he);
 				}
 				return Response.json(he.toJSON(), { status: 403 });
 			}
@@ -140,7 +139,7 @@ export default {
 					new Error("no active organization selected; choose or create an organization first"),
 				);
 				const res = url.pathname.startsWith("/hotbed.v1.")
-					? edgeConnectErrorResponse(he)
+					? connectErrorResponse(he)
 					: Response.json(he.toJSON(), { status: 403 });
 				return withSetCookie(res, routing.setCookie);
 			}
@@ -164,7 +163,7 @@ export default {
 				if (url.pathname.startsWith("/hotbed.v1.") && isRetryableDOError(err)) {
 					const msg = err instanceof Error ? err.message : String(err);
 					return withSetCookie(
-						edgeConnectErrorResponse(
+						connectErrorResponse(
 							hotbedError(ErrorCode.ControllerUnreachable, `controller restarted: ${msg}`, {
 								retryable: true,
 							}),

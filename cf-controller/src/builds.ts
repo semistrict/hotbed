@@ -115,7 +115,9 @@ export class BuildDistributor {
 	private controllerCommitOverride?: string;
 	private controllerSha256SumsOverride?: string;
 	private mockAssets = new Map<string, Uint8Array>();
-	private inflightRefresh: Promise<CachedRelease | null> | null = null;
+	// Only the resolved release and the last failure time live on the instance:
+	// an in-flight fetch Promise shared across concurrent DO requests makes
+	// workerd throw when another request awaits it (cf-controller/AGENTS.md).
 	private lastFailedAt = 0;
 
 	constructor(env: BuildsEnv, kv: MetaKV, waitUntil?: (promise: Promise<unknown>) => void) {
@@ -357,25 +359,14 @@ export class BuildDistributor {
 	}
 
 	async refreshIfStale(nowMs: number, force = false): Promise<CachedRelease | null> {
-		if (this.inflightRefresh) {
-			return this.inflightRefresh;
+		try {
+			const rel = await this.doRefresh(nowMs, force);
+			this.lastFailedAt = 0;
+			return rel;
+		} catch (err) {
+			this.lastFailedAt = nowMs;
+			throw err;
 		}
-		const p = this.doRefresh(nowMs, force)
-			.then((rel) => {
-				this.lastFailedAt = 0;
-				return rel;
-			})
-			.catch((err) => {
-				this.lastFailedAt = nowMs;
-				throw err;
-			})
-			.finally(() => {
-				if (this.inflightRefresh === p) {
-					this.inflightRefresh = null;
-				}
-			});
-		this.inflightRefresh = p;
-		return p;
 	}
 
 	private async doRefresh(nowMs: number, force: boolean): Promise<CachedRelease | null> {

@@ -17,13 +17,23 @@ const NO_TOP_FRAME = 0xffffffff;
 const MAX_SNAPSHOT_FUNCS = 200;
 const MAX_PROFILE_BYTES = 1 << 20;
 
+/**
+ * A frame as flamegraphs name it, as Go's flame.Label: a `;` would split the
+ * folded stack, and a kernel frame ends in `_[k]` (what `--query _[k]` finds).
+ */
 function frameLabel(f: ProfileFrame): string {
-	if (f.name) return f.name;
-	return f.module || "<unknown>";
+	let name = f.name.replaceAll(";", ":");
+	if (name === "") name = "[unknown]";
+	if (f.frameType === "kernel" && !name.endsWith("_[k]")) name += "_[k]";
+	return name;
 }
 
+/**
+ * What makes two frames one function, as Go's flame.Table keys them, so a
+ * finished command's frame table matches the worker's live one.
+ */
 function frameKey(f: ProfileFrame): string {
-	return `${f.name}\0${f.module}\0${f.frameType}\0${f.sourceFile}\0${f.sourceLine}`;
+	return `${f.name}\0${f.frameType}`;
 }
 
 function compareFrames(a: number[], b: number[]): number {
@@ -42,7 +52,7 @@ interface IndexedStack {
 /**
  * Applies GetProfileRequest filters (query, frameType, comm, fromMs, toMs, limit)
  * to a persisted CommandProfile stored in controller SQLite.
- * Mirrors internal/profiler.QueryProfile.
+ * Mirrors internal/profiler.QueryProfile, frame for frame.
  */
 export function queryProfile(raw: CommandProfile, req: GetProfileRequest): CommandProfile {
 	const q = req.query.trim().toLowerCase();

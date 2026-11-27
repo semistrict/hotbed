@@ -1,4 +1,4 @@
-import { authenticateRequest, NOOP_TOKEN_LOOKUP } from "./auth.ts";
+import { authenticateRequest, isOrgAdminCaller, NOOP_TOKEN_LOOKUP } from "./auth.ts";
 import type { ControllerEnv } from "./controller-do.ts";
 import { isWorkOSEnabled } from "./workos.ts";
 import { resolveEdgeRouting, withSetCookie } from "./workos-routes.ts";
@@ -42,18 +42,21 @@ async function authorizeGcRequest(
 			};
 		}
 
-		let isOwner = routing.caller?.role === "owner";
-		if (!isOwner) {
-			const caller = await authenticateRequest(request, env, NOOP_TOKEN_LOOKUP, {
+		// Every WorkOS user has role "owner"; cluster GC (sweeping, deleting
+		// cells) is for organization admins and the global OWNER_TOKEN alone.
+		const caller =
+			routing.caller ??
+			(await authenticateRequest(request, env, NOOP_TOKEN_LOOKUP, {
 				allowTopLevelNavigate: false,
-			});
-			isOwner = caller.role === "owner";
-		}
-		if (!isOwner) {
+			}));
+		if (!isOrgAdminCaller(caller)) {
 			return {
 				ok: false,
 				response: withSetCookie(
-					Response.json({ message: "authentication required" }, { status: 401 }),
+					Response.json(
+						{ message: "cluster GC is restricted to organization admins" },
+						{ status: 403 },
+					),
 					setCookie,
 				),
 			};

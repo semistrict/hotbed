@@ -1,3 +1,4 @@
+import { escapeHtml } from "./encoding.ts";
 import { bytesToHex, randomHex } from "./gitops.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
 
@@ -761,18 +762,15 @@ export async function authenticateWithOrgSelection(
 const RECENT_REFRESH_TTL_MS = 15_000;
 const MAX_RECENT_REFRESHES = 256;
 
-const inFlightRefreshes = new Map<
-	string,
-	Promise<Extract<AuthenticateResult, { kind: "authenticated" }>>
->();
-
+// Only resolved refreshes are cached: workerd forbids one request awaiting I/O
+// (a fetch Promise) another request started, so concurrent refreshes of the
+// same token each fetch on their own request.
 const recentRefreshes = new Map<
 	string,
 	{ result: Extract<AuthenticateResult, { kind: "authenticated" }>; expiresAt: number }
 >();
 
 export function resetWorkOSRefreshCache(): void {
-	inFlightRefreshes.clear();
 	recentRefreshes.clear();
 }
 
@@ -815,53 +813,41 @@ export async function authenticateWithRefreshToken(
 	if (cached) {
 		recentRefreshes.delete(key);
 	}
-	const existing = inFlightRefreshes.get(key);
-	if (existing) return existing;
+	const body: Record<string, unknown> = {
+		client_id: workosClientId(env),
+		client_secret: workosApiKey(env),
+		grant_type: "refresh_token",
+		refresh_token: params.refreshToken,
+	};
+	if (params.organizationId) body.organization_id = params.organizationId;
+	if (params.ipAddress) body.ip_address = params.ipAddress;
+	if (params.userAgent) body.user_agent = params.userAgent;
 
-	const promise = (async () => {
-		const body: Record<string, unknown> = {
-			client_id: workosClientId(env),
-			client_secret: workosApiKey(env),
-			grant_type: "refresh_token",
-			refresh_token: params.refreshToken,
-		};
-		if (params.organizationId) body.organization_id = params.organizationId;
-		if (params.ipAddress) body.ip_address = params.ipAddress;
-		if (params.userAgent) body.user_agent = params.userAgent;
-
-		const res = await fetch(`${workosApiBase(env)}/user_management/authenticate`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
-		const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-		if (!res.ok) {
-			const msg =
-				(typeof data.error_description === "string" && data.error_description) ||
-				(typeof data.message === "string" && data.message) ||
-				`WorkOS token refresh failed (HTTP ${res.status})`;
-			throw hotbedError(ErrorCode.NotAuthorized, msg);
-		}
-		const result = parseAuthSuccess(
-			data as {
-				user: RawWorkOSUser;
-				organization_id?: string | null;
-				access_token: string;
-				refresh_token: string;
-			},
-		);
-		const doneAt = Date.now();
-		pruneRecentRefreshes(doneAt);
-		recentRefreshes.set(key, { result, expiresAt: doneAt + RECENT_REFRESH_TTL_MS });
-		return result;
-	})();
-
-	inFlightRefreshes.set(key, promise);
-	try {
-		return await promise;
-	} finally {
-		inFlightRefreshes.delete(key);
+	const res = await fetch(`${workosApiBase(env)}/user_management/authenticate`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+	if (!res.ok) {
+		const msg =
+			(typeof data.error_description === "string" && data.error_description) ||
+			(typeof data.message === "string" && data.message) ||
+			`WorkOS token refresh failed (HTTP ${res.status})`;
+		throw hotbedError(ErrorCode.NotAuthorized, msg);
 	}
+	const result = parseAuthSuccess(
+		data as {
+			user: RawWorkOSUser;
+			organization_id?: string | null;
+			access_token: string;
+			refresh_token: string;
+		},
+	);
+	const doneAt = Date.now();
+	pruneRecentRefreshes(doneAt);
+	recentRefreshes.set(key, { result, expiresAt: doneAt + RECENT_REFRESH_TTL_MS });
+	return result;
 }
 
 export interface DeviceAuthStart {
@@ -1258,14 +1244,6 @@ export async function revokeOrganizationInvitation(
 }
 
 // ---- HTML Pages for Org Selection & Onboarding ------------------------
-
-function escapeHtml(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
-}
 
 export function renderOrgPickerPage(opts: {
 	email: string;

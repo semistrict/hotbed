@@ -16,7 +16,6 @@ import {
 	type AppliedStep,
 	type Base,
 	type BaseUsage,
-	type ClusterEvent,
 	type Command,
 	type CommandEvent,
 	type CommandUsage,
@@ -474,46 +473,19 @@ export function enrichFreshenLive(
 	return f;
 }
 
-const EV_BUILDING_GEN_RE = /^base (\S+) g(\d+) building (from nothing|from g\d+|from \S+) at (.+)$/;
-const EV_BUILDING_ID_RE = /^base (\S+) building (from nothing|from \S+) at (.+)$/;
-const EV_WARM_GEN_RE = /^base (\S+) g(\d+) warm · built in (.+)$/;
-const EV_WARM_ID_RE = /^base (\S+) warm · built in (.+)$/;
-const EV_DROPPED_GEN_RE = /^base (\S+) g(\d+) dropped: (.+)$/;
-const EV_FAILED_STEP_RE = /^base (\S+) failed at step (\S+) \(its log is command (\S+)\)$/;
-const EV_FAILED_GENERIC_RE =
-	/^base (\S+) failed(?: to freshen|: (.+)) \(its log is command (\S+)\)$/;
-
-function parseHumanDurationSeconds(raw: string): number {
-	const s = raw.trim();
-	const mMin = /^(\d+)m(\d+(?:\.\d+)?)s$/.exec(s);
-	if (mMin) return Number(mMin[1]) * 60 + Number(mMin[2]);
-	const mSec = /^(\d+(?:\.\d+)?)\s*s$/.exec(s);
-	if (mSec) return Number(mSec[1]);
-	const mMs = /^(\d+(?:\.\d+)?)\s*ms$/.exec(s);
-	if (mMs) return Number(mMs[1]) / 1000;
-	return 0;
-}
-
 /**
- * Synthesizes pre-upgrade BaseFreshen entries from live node_state and recent
- * cluster events for freshens that ran before the base_freshens table existed.
+ * Stored freshens as they stand now: each enriched with its node's live base,
+ * command, heartbeat and waiting workspaces, and an active one whose base and
+ * command have both left the node marked failed.
  */
-export function synthesizeLegacyFreshens(
+export function withLiveState(
 	stored: BaseFreshen[],
 	views: NodeView[],
-	events: ClusterEvent[],
 	nowMs: number,
 ): BaseFreshen[] {
-	const byId = new Map<string, BaseFreshen>();
-	const byNodeBase = new Map<string, string>();
-	for (const f of stored) {
-		byId.set(f.id, clone(BaseFreshenSchema, f));
-		if (f.baseId) byNodeBase.set(`${f.nodeId}:${f.baseId}`, f.id);
-	}
-
 	const hostById = new Map<string, string>();
-	const cmdById = new Map<string, { nodeId: string; cmd: Command }>();
-	const baseByKey = new Map<string, { nodeId: string; base: Base }>();
+	const cmdById = new Map<string, Command>();
+	const baseByKey = new Map<string, Base>();
 	const hbCmdById = new Map<string, CommandUsage>();
 	const hbBaseByKey = new Map<string, BaseUsage>();
 	const waitingByKey = new Map<string, string[]>();
@@ -521,11 +493,9 @@ export function synthesizeLegacyFreshens(
 	for (const nv of views) {
 		hostById.set(nv.node.id, nv.node.hostname);
 		for (const c of nv.commands) {
-			if (c.kind === "freshen") cmdById.set(c.id, { nodeId: nv.node.id, cmd: c });
+			if (c.kind === "freshen") cmdById.set(c.id, c);
 		}
-		for (const b of nv.bases) {
-			baseByKey.set(`${nv.node.id}:${b.id}`, { nodeId: nv.node.id, base: b });
-		}
+		for (const b of nv.bases) baseByKey.set(`${nv.node.id}:${b.id}`, b);
 		if (nv.online && nv.hb) {
 			for (const cu of nv.hb.commands) hbCmdById.set(cu.id, cu);
 			for (const bu of nv.hb.bases) hbBaseByKey.set(`${nv.node.id}:${bu.id}`, bu);
@@ -543,222 +513,20 @@ export function synthesizeLegacyFreshens(
 		}
 	}
 
-	// 1. Ensure every Base currently in node_state is represented.
-	for (const nv of views) {
-		for (const b of nv.bases) {
-			const id = freshenIdForBase(nv.node.id, b);
-			if (byId.has(id) || byNodeBase.has(`${nv.node.id}:${b.id}`)) continue;
-			const cmdInfo = b.command ? cmdById.get(b.command) : undefined;
-			const createdMs =
-				b.createdAt > 0n
-					? Number(b.createdAt)
-					: cmdInfo && cmdInfo.cmd.queuedAt > 0n
-						? Number(cmdInfo.cmd.queuedAt)
-						: b.builtAt !== undefined && b.builtAt > 0n
-							? Math.max(0, Number(b.builtAt) - Math.round(b.buildSeconds * 1000))
-							: nowMs;
-			let f = mergeBaseIntoFreshen(
-				null,
-				nv.node.id,
-				b,
-				b.state === BaseState.WARM
-					? "warm"
-					: b.state === BaseState.FAILED
-						? "failed"
-						: b.state === BaseState.STALE
-							? "stale"
-							: "building",
-				b.failureReason,
-				createdMs,
-			);
-			if (cmdInfo) {
-				f = mergeCommandIntoFreshen(f, nv.node.id, cmdInfo.cmd, "", "", nowMs);
-			}
-			byId.set(f.id, f);
-			byNodeBase.set(`${nv.node.id}:${b.id}`, f.id);
-		}
-	}
-
-	// 2. Scan events oldest-first to reconstruct historical bases that were already collected.
-	const chronological = [...events].sort((a, b) => Number(a.at - b.at));
-	for (const ev of chronological) {
-		const atMs = Number(ev.at);
-		if (ev.kind === "base") {
-			const mBuildGen = EV_BUILDING_GEN_RE.exec(ev.text);
-			if (mBuildGen) {
-				const project = mBuildGen[1];
-				const gen = Number(mBuildGen[2]);
-				const from = mBuildGen[3];
-				const baseId = `${project}-g${gen}`;
-				const cmdId =
-					ev.ref?.type === "command" && ev.ref.id ? ev.ref.id : `base:${ev.nodeId}:${baseId}`;
-				const existingId = byNodeBase.get(`${ev.nodeId}:${baseId}`) ?? cmdId;
-				let f = byId.get(existingId);
-				if (!f) {
-					f = create(BaseFreshenSchema, {
-						id: cmdId,
-						baseId,
-						nodeId: ev.nodeId,
-						project,
-						generation: gen,
-						runtime: "",
-						state: FreshenState.QUEUED,
-						cold: from === "from nothing",
-						fromBaseId: from.startsWith("from g") ? `${project}-${from.slice("from ".length)}` : "",
-						createdAt: BigInt(atMs),
-					});
-					byId.set(cmdId, f);
-					byNodeBase.set(`${ev.nodeId}:${baseId}`, cmdId);
-				} else if (f.createdAt === 0n || BigInt(atMs) < f.createdAt) {
-					f.createdAt = BigInt(atMs);
-					if (from === "from nothing") f.cold = true;
-					else if (from.startsWith("from g") && !f.fromBaseId) {
-						f.fromBaseId = `${project}-${from.slice("from ".length)}`;
-					}
-				}
-				continue;
-			}
-			const mBuildId = EV_BUILDING_ID_RE.exec(ev.text);
-			if (mBuildId) {
-				const baseId = mBuildId[1];
-				const from = mBuildId[2];
-				const dash = baseId.indexOf("-");
-				const project = dash > 0 ? baseId.slice(0, dash) : baseId;
-				const cmdId =
-					ev.ref?.type === "command" && ev.ref.id ? ev.ref.id : `base:${ev.nodeId}:${baseId}`;
-				const existingId = byNodeBase.get(`${ev.nodeId}:${baseId}`) ?? cmdId;
-				if (!byId.has(existingId)) {
-					const f = create(BaseFreshenSchema, {
-						id: cmdId,
-						baseId,
-						nodeId: ev.nodeId,
-						project,
-						runtime: baseId.includes("-vm-") ? "vm" : baseId.includes("-fuse-") ? "cladefs" : "",
-						state: FreshenState.QUEUED,
-						cold: from === "from nothing",
-						fromBaseId: from !== "from nothing" ? from.slice("from ".length) : "",
-						createdAt: BigInt(atMs),
-					});
-					byId.set(cmdId, f);
-					byNodeBase.set(`${ev.nodeId}:${baseId}`, cmdId);
-				}
-				continue;
-			}
-			const mWarmGen = EV_WARM_GEN_RE.exec(ev.text);
-			if (mWarmGen) {
-				const project = mWarmGen[1];
-				const gen = Number(mWarmGen[2]);
-				const durSec = parseHumanDurationSeconds(mWarmGen[3]);
-				const baseId = `${project}-g${gen}`;
-				const existingId = byNodeBase.get(`${ev.nodeId}:${baseId}`);
-				let f = existingId ? byId.get(existingId) : undefined;
-				if (!f) {
-					const id = `base:${ev.nodeId}:${baseId}`;
-					f = create(BaseFreshenSchema, {
-						id,
-						baseId,
-						nodeId: ev.nodeId,
-						project,
-						generation: gen,
-						runtime: "",
-						createdAt: BigInt(Math.max(0, atMs - Math.round(durSec * 1000))),
-					});
-					byId.set(id, f);
-					byNodeBase.set(`${ev.nodeId}:${baseId}`, id);
-				}
-				if (!isTerminalState(f.state)) {
-					f.state = FreshenState.SUCCEEDED;
-					f.progress = 1;
-					f.endedAt = BigInt(atMs);
-					if (durSec > 0 && f.runSeconds === 0) f.runSeconds = durSec;
-				}
-				continue;
-			}
-			const mWarmId = EV_WARM_ID_RE.exec(ev.text);
-			if (mWarmId) {
-				const baseId = mWarmId[1];
-				const durSec = parseHumanDurationSeconds(mWarmId[2]);
-				const existingId = byNodeBase.get(`${ev.nodeId}:${baseId}`);
-				const f = existingId ? byId.get(existingId) : undefined;
-				if (f && !isTerminalState(f.state)) {
-					f.state = FreshenState.SUCCEEDED;
-					f.progress = 1;
-					f.endedAt = BigInt(atMs);
-					if (durSec > 0 && f.runSeconds === 0) f.runSeconds = durSec;
-				}
-				continue;
-			}
-			const mDropGen = EV_DROPPED_GEN_RE.exec(ev.text);
-			if (mDropGen) {
-				const project = mDropGen[1];
-				const gen = Number(mDropGen[2]);
-				const reason = mDropGen[3];
-				const baseId = `${project}-g${gen}`;
-				const existingId = byNodeBase.get(`${ev.nodeId}:${baseId}`);
-				const f = existingId ? byId.get(existingId) : undefined;
-				if (f && !isTerminalState(f.state)) {
-					f.state = FreshenState.DROPPED;
-					f.endedAt = BigInt(atMs);
-					f.reason = reason;
-				}
-				continue;
-			}
-		} else if (ev.kind === "fail") {
-			const mFailStep = EV_FAILED_STEP_RE.exec(ev.text);
-			if (mFailStep) {
-				const baseId = mFailStep[1];
-				const step = mFailStep[2];
-				const cmdId = mFailStep[3];
-				const existingId = byNodeBase.get(`${ev.nodeId}:${baseId}`) ?? cmdId;
-				const f = byId.get(existingId);
-				if (f && !isTerminalState(f.state)) {
-					f.state = FreshenState.FAILED;
-					f.endedAt = BigInt(atMs);
-					f.failedStep = step;
-					f.reason = `failed at step ${step}`;
-				}
-				continue;
-			}
-			const mFailGen = EV_FAILED_GENERIC_RE.exec(ev.text);
-			if (mFailGen) {
-				const baseId = mFailGen[1];
-				const detail = mFailGen[2] || "failed to freshen";
-				const cmdId = mFailGen[3];
-				const existingId = byNodeBase.get(`${ev.nodeId}:${baseId}`) ?? cmdId;
-				const f = byId.get(existingId);
-				if (f && !isTerminalState(f.state)) {
-					f.state = FreshenState.FAILED;
-					f.endedAt = BigInt(atMs);
-					f.reason = detail;
-				}
-				continue;
-			}
-		} else if (ev.kind === "wait" && ev.ref?.type === "command" && ev.ref.id) {
-			const f = byId.get(ev.ref.id);
-			if (f && !f.reason) {
-				const dot = ev.text.indexOf("· ");
-				if (dot >= 0) f.reason = ev.text.slice(dot + 2);
-			}
-		}
-	}
-
-	// 3. Reconcile synthesized legacy entries that are no longer live in node_state
-	//    (e.g. a base that was collected after failing/being superseded without a fail/drop event).
-	const out: BaseFreshen[] = [];
-	for (const f of byId.values()) {
+	return stored.map((input) => {
+		const f = clone(BaseFreshenSchema, input);
 		const bKey = `${f.nodeId}:${f.baseId}`;
-		const liveBase = baseByKey.get(bKey)?.base;
-		const liveCmd = cmdById.get(f.id)?.cmd;
-		const host = hostById.get(f.nodeId) ?? f.node;
+		const liveBase = baseByKey.get(bKey);
+		const liveCmd = cmdById.get(f.id);
 		if (isFreshenActive(f.state) && !liveBase && !liveCmd) {
 			// Neither the base nor the freshen command exists on the worker anymore.
 			f.state = FreshenState.FAILED;
 			if (!f.reason) f.reason = "ended before telemetry recorded (base no longer on node)";
 			if (f.endedAt === undefined) f.endedAt = f.createdAt;
 		}
-		const enriched = enrichFreshenLive(
+		return enrichFreshenLive(
 			f,
-			host,
+			hostById.get(f.nodeId) ?? f.node,
 			nowMs,
 			liveBase,
 			liveCmd,
@@ -766,12 +534,11 @@ export function synthesizeLegacyFreshens(
 			hbBaseByKey.get(bKey),
 			waitingByKey.get(bKey),
 		);
-		out.push(enriched);
-	}
-	return out;
+	});
 }
 
-function quantile(xs: number[], p: number): number {
+/** The p-quantile of xs (nearest rank), 0 for none. */
+export function quantile(xs: number[], p: number): number {
 	if (xs.length === 0) return 0;
 	const sorted = [...xs].sort((a, b) => a - b);
 	return sorted[Math.round(p * (sorted.length - 1))];

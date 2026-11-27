@@ -1,4 +1,3 @@
-import { create, toBinary } from "@bufbuild/protobuf";
 import {
 	authenticateRequest,
 	checkSameOrigin,
@@ -16,8 +15,8 @@ import {
 	type CallerIdentity,
 } from "./auth.ts";
 import type { ControllerEnv } from "./controller-do.ts";
-import { ErrorCode, HotbedError, fromUnknownError, hotbedError } from "./errors.ts";
-import { ErrorInfoSchema } from "./gen/hotbed/v1/hotbed_pb.ts";
+import { decodePathSegment } from "./encoding.ts";
+import { ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
 import { randomHex } from "./gitops.ts";
 import {
 	authenticateWithCode,
@@ -76,63 +75,6 @@ const REFRESH_MARGIN_MS = 60_000;
 
 function isOrgAdmin(role: string): boolean {
 	return role === "admin" || role === "owner";
-}
-
-function decodePathSegment(raw: string): string | null {
-	try {
-		return decodeURIComponent(raw).trim();
-	} catch {
-		return null;
-	}
-}
-
-function encodeBase64(bytes: Uint8Array): string {
-	let bin = "";
-	const chunk = 0x8000;
-	for (let i = 0; i < bytes.length; i += chunk) {
-		bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-	}
-	return btoa(bin);
-}
-
-export function edgeConnectErrorResponse(err: HotbedError): Response {
-	const info = create(ErrorInfoSchema, {
-		code: err.code,
-		suggestion: err.suggestion,
-		retryable: err.retryable,
-	});
-	const connectCode =
-		err.code === ErrorCode.NotAuthorized
-			? "permission_denied"
-			: err.code === ErrorCode.InvalidArgs
-				? "invalid_argument"
-				: err.code === ErrorCode.ControllerUnreachable || err.code === ErrorCode.WorkerUnreachable
-					? "unavailable"
-					: "internal";
-	const httpStatus =
-		err.code === ErrorCode.NotAuthorized
-			? 403
-			: err.code === ErrorCode.InvalidArgs
-				? 400
-				: err.code === ErrorCode.ControllerUnreachable || err.code === ErrorCode.WorkerUnreachable
-					? 503
-					: 500;
-	return new Response(
-		JSON.stringify({
-			code: connectCode,
-			message: err.message,
-			details: [
-				{
-					type: ErrorInfoSchema.typeName,
-					value: encodeBase64(toBinary(ErrorInfoSchema, info)),
-				},
-			],
-		}),
-		{
-			status: httpStatus,
-			headers: { "Content-Type": "application/json" },
-		},
-	);
 }
 
 export interface EdgeAuthResult {

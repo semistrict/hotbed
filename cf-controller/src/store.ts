@@ -9,6 +9,7 @@ import {
 	type MessageShape,
 } from "@bufbuild/protobuf";
 import * as dbSchema from "./db/schema.ts";
+import { big, num, str } from "./sql-values.ts";
 import {
 	ActorKind,
 	BaseFreshenSchema,
@@ -227,20 +228,6 @@ function marshal<T extends DescMessage>(schema: T, msg: MessageShape<T>): string
 
 function unmarshal<T extends DescMessage>(schema: T, doc: string): MessageShape<T> {
 	return fromJsonString(schema, doc || "{}", { ignoreUnknownFields: true });
-}
-
-function num(v: unknown): number {
-	return typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : Number(v ?? 0);
-}
-
-function big(v: unknown): bigint {
-	return typeof v === "bigint" ? v : BigInt(Math.trunc(Number(v ?? 0)));
-}
-
-function str(v: unknown): string {
-	if (typeof v === "string") return v;
-	if (typeof v === "number" || typeof v === "bigint" || typeof v === "boolean") return String(v);
-	return "";
 }
 
 function optBig(v: unknown): bigint | undefined {
@@ -467,6 +454,20 @@ function reviewResponseOn(about: string, e: ReviewEvent): string {
 	return `${who} on ${about}: ${parts.join("; ")}`;
 }
 
+function toClusterEvent(r: Record<string, SqlStorageValue>): ClusterEvent {
+	return create(ClusterEventSchema, {
+		id: big(r.id),
+		at: big(r.at),
+		kind: str(r.kind),
+		nodeId: str(r.node_id),
+		text: str(r.text),
+		ref:
+			str(r.ref_type) || str(r.ref_id)
+				? create(EventRefSchema, { type: str(r.ref_type), id: str(r.ref_id) })
+				: undefined,
+	});
+}
+
 export class ControllerStore {
 	private readonly storage: DurableObjectStorage;
 	readonly db: DrizzleSqliteDODatabase<typeof dbSchema>;
@@ -476,7 +477,6 @@ export class ControllerStore {
 			...bindings: unknown[]
 		): SqlStorageCursor<T>;
 	};
-	private samplesGen = 0;
 
 	constructor(storage: DurableObjectStorage, db: DrizzleSqliteDODatabase<typeof dbSchema>) {
 		this.storage = storage;
@@ -493,10 +493,6 @@ export class ControllerStore {
 				return rawSql.exec<T>(query, ...coerced);
 			},
 		};
-	}
-
-	samplesVersion(): number {
-		return this.samplesGen;
 	}
 
 	transactionSync<T>(fn: () => T): T {
@@ -2193,7 +2189,6 @@ export class ControllerStore {
 				this.touchSession(session, nowMs);
 			}
 		});
-		this.samplesGen++;
 	}
 
 	loadView(nodeId: string): NodeStateView {
@@ -2422,6 +2417,15 @@ export class ControllerStore {
 		);
 	}
 
+	/** A node's events, newest first, read only as far as the caller iterates. */
+	*nodeEventsNewestFirst(nodeId: string): Generator<ClusterEvent> {
+		const cursor = this.sql.exec(
+			"SELECT id, at, kind, node_id, text, ref_type, ref_id FROM events WHERE node_id = ? ORDER BY id DESC",
+			nodeId,
+		);
+		for (const r of cursor) yield toClusterEvent(r);
+	}
+
 	recentEvents(limit: number): ClusterEvent[] {
 		return this.sql
 			.exec(
@@ -2429,19 +2433,7 @@ export class ControllerStore {
 				limit,
 			)
 			.toArray()
-			.map((r) =>
-				create(ClusterEventSchema, {
-					id: big(r.id),
-					at: big(r.at),
-					kind: str(r.kind),
-					nodeId: str(r.node_id),
-					text: str(r.text),
-					ref:
-						str(r.ref_type) || str(r.ref_id)
-							? create(EventRefSchema, { type: str(r.ref_type), id: str(r.ref_id) })
-							: undefined,
-				}),
-			);
+			.map(toClusterEvent);
 	}
 
 	addPlacement(d: PlacementDecision, nowMs: number): void {
@@ -4581,6 +4573,14 @@ export class ControllerStore {
 		return unmarshal(BaseFreshenSchema, str(rows[0].doc));
 	}
 
+	/** The freshens that built this base, on any node, newest first. */
+	baseFreshensOfBase(baseId: string): BaseFreshen[] {
+		return this.sql
+			.exec("SELECT doc FROM base_freshens WHERE base_id = ? ORDER BY created_at DESC", baseId)
+			.toArray()
+			.map((r) => unmarshal(BaseFreshenSchema, str(r.doc)));
+	}
+
 	listBaseFreshens(sinceMs: number): BaseFreshen[] {
 		const rows =
 			sinceMs > 0
@@ -4640,7 +4640,6 @@ export class ControllerStore {
 			"DELETE FROM kv_meta WHERE key LIKE 'cli_handoff:%' AND CAST(value AS INTEGER) < ?",
 			nowMs,
 		);
-		this.samplesGen++;
 	}
 }
 

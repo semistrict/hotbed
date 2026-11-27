@@ -1,3 +1,4 @@
+import { escapeHtml } from "./encoding.ts";
 import { bytesToHex } from "./gitops.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
 import {
@@ -628,12 +629,4 @@ export function renderLoginPage(error?: string, workosEnabled = false, returnTo 
 </form>
 </body>
 </html>`;
-}
-
-function escapeHtml(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
 }

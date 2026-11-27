@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { create, toBinary, toJson } from "@bufbuild/protobuf";
+import { create, toJson } from "@bufbuild/protobuf";
 import { drizzle, type DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import migrations from "../drizzle/migrations.js";
@@ -11,7 +11,6 @@ import {
 	CommandProfileSchema,
 	CommandSchema,
 	DaemonLogLevel,
-	ErrorInfoSchema,
 	FinishedCommandSchema,
 	GitAuthService,
 	MemoryService,
@@ -30,24 +29,22 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import {
 	authenticateRequest,
-	checkSameOrigin,
-	clearSessionCookie,
 	INTERNAL_DEFAULT_DO_HEADER,
 	INTERNAL_GLOBAL_ADMIN_HEADER,
 	INTERNAL_ORG_HEADER,
-	makeSessionCookie,
-	renderLoginPage,
+	isOrgAdminCaller,
 	sha256Hex,
 	timingSafeStringEqual,
 	type AuthEnv,
 	type CallerIdentity,
 } from "./auth.ts";
-import { formatOrgToken, isSafeReturnTo, isWorkOSEnabled } from "./workos.ts";
+import { formatOrgToken, isWorkOSEnabled } from "./workos.ts";
 import { BuildDistributor, type BuildsEnv, type TestBuildConfig } from "./builds.ts";
 import { CommandStoreClient, type CommandDO } from "./command-do.ts";
 import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./connect-adapter.ts";
 import { ControllerContext } from "./context.ts";
-import { ErrorCode, HotbedError, fromUnknownError } from "./errors.ts";
+import { decodePathSegment } from "./encoding.ts";
+import { connectErrorResponse, ErrorCode, HotbedError, fromUnknownError } from "./errors.ts";
 import { randomHex } from "./gitops.ts";
 import { createBoardService, type BoardServiceBundle } from "./services/board.ts";
 import { createClusterService } from "./services/cluster.ts";
@@ -125,62 +122,6 @@ const ORG_ID_META_KEY = "org_id";
 const CLADEFS_TENANT_ID_META_KEY = "cladefs_tenant_id";
 const CLADEFS_TENANT_ORG_KEY_META_KEY = "cladefs_tenant_org_key";
 const TENANT_REGISTRY_DO_NAME = "global";
-
-function encodeBase64(bytes: Uint8Array): string {
-	let bin = "";
-	const chunk = 0x8000;
-	for (let i = 0; i < bytes.length; i += chunk) {
-		bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-	}
-	return btoa(bin);
-}
-
-/**
- * Formats an auth/gate error in Connect JSON wire format with hotbed.v1.ErrorInfo detail
- * so Go clients (`api.FromConnect`) and @connectrpc/connect-web decode the exact HotbedError.
- */
-function connectErrorResponse(err: HotbedError, buildNumber: number): Response {
-	const info = create(ErrorInfoSchema, {
-		code: err.code,
-		suggestion: err.suggestion,
-		retryable: err.retryable,
-	});
-	const connectCode =
-		err.code === ErrorCode.NotAuthorized
-			? "permission_denied"
-			: err.code === ErrorCode.InvalidArgs
-				? "invalid_argument"
-				: "internal";
-	const httpStatus =
-		err.code === ErrorCode.NotAuthorized ? 403 : err.code === ErrorCode.InvalidArgs ? 400 : 500;
-	return new Response(
-		JSON.stringify({
-			code: connectCode,
-			message: err.message,
-			details: [
-				{
-					type: ErrorInfoSchema.typeName,
-					value: encodeBase64(toBinary(ErrorInfoSchema, info)),
-				},
-			],
-		}),
-		{
-			status: httpStatus,
-			headers: {
-				"Content-Type": "application/json",
-				"Hotbed-Build": String(buildNumber),
-			},
-		},
-	);
-}
-
-function decodePathSegment(raw: string): string | null {
-	try {
-		return decodeURIComponent(raw).trim();
-	} catch {
-		return null;
-	}
-}
 
 export class ControllerDO extends DurableObject<ControllerEnv> {
 	private db!: DrizzleSqliteDODatabase<typeof dbSchema>;
@@ -556,10 +497,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				status: 403,
 			};
 		}
-		const caller = params.caller;
-		const isAdmin =
-			caller.role === "owner" && (caller.orgRole === "admin" || caller.orgRole === "owner");
-		if (!isAdmin) {
+		if (!isOrgAdminCaller(params.caller)) {
 			return {
 				ok: false,
 				code: ErrorCode.NotAuthorized,
@@ -567,7 +505,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				status: 403,
 			};
 		}
-		const effectiveOrgId = reqOrgId || caller.orgId;
+		const effectiveOrgId = reqOrgId || params.caller.orgId;
 		if (effectiveOrgId && !this.ctrl.orgId) {
 			this.store.setMeta(ORG_ID_META_KEY, effectiveOrgId);
 			this.ctrl.orgId = effectiveOrgId;
@@ -685,12 +623,14 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				{ status: 400 },
 			);
 		}
-		let node: string;
+		let nodeId: string;
+		let host: string;
 		try {
 			const row = this.store.getWorkspace(workspace);
 			if (row.released)
 				throw new HotbedError(ErrorCode.NotFound, `workspace ${workspace} was released`);
-			node = row.node;
+			nodeId = row.node;
+			host = this.store.getNode(nodeId).node.hostname || nodeId;
 		} catch (err) {
 			return Response.json(fromUnknownError(err).toJSON(), { status: 404 });
 		}
@@ -708,7 +648,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		};
 		let pipe;
 		try {
-			pipe = await this.tunnel.openPipe(node, node, kind, workspace, port, {
+			pipe = await this.tunnel.openPipe(nodeId, host, kind, workspace, port, {
 				onOpened: () => server.send(JSON.stringify({ type: "opened" })),
 				onData: (bytes) => server.send(bytes),
 				onClose: closeClient,
@@ -717,17 +657,26 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			closeClient(fromUnknownError(err).message);
 			return new Response(null, { status: 101, webSocket: client });
 		}
-		// Sent in order, a message's bytes once the one before's are.
+		// Sent in order, a message's bytes once the one before's are. A frame
+		// that fails to send ends the pipe: the client's byte stream has a hole
+		// in it, and the chain must not stay rejected for every later frame.
 		let sending: Promise<void> = Promise.resolve();
 		server.addEventListener("message", (ev) => {
 			const data: unknown = ev.data;
-			sending = sending.then(async () => {
-				if (typeof data === "string") pipe.send(new TextEncoder().encode(data));
-				else if (data instanceof ArrayBuffer) pipe.send(new Uint8Array(data));
-				else if (ArrayBuffer.isView(data))
-					pipe.send(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-				else if (data instanceof Blob) pipe.send(new Uint8Array(await data.arrayBuffer()));
-			});
+			sending = sending
+				.then(async () => {
+					if (typeof data === "string") pipe.send(new TextEncoder().encode(data));
+					else if (data instanceof ArrayBuffer) pipe.send(new Uint8Array(data));
+					else if (ArrayBuffer.isView(data))
+						pipe.send(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+					else if (data instanceof Blob) pipe.send(new Uint8Array(await data.arrayBuffer()));
+				})
+				.catch((err: unknown) => {
+					const message = fromUnknownError(err).message;
+					console.error(`pipe to ${host} workspace ${workspace}: send failed: ${message}`);
+					pipe.close();
+					closeClient(`send failed: ${message}`);
+				});
 		});
 		server.addEventListener("close", () => pipe.close());
 		server.addEventListener("error", () => pipe.close());
@@ -850,85 +799,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			return mismatch;
 		}
 
-		// 2. Cockpit cookie auth endpoints
-		if (pathname === "/auth/login") {
-			if (request.method === "GET") {
-				const returnTo = isSafeReturnTo(url.searchParams.get("return_to"));
-				return new Response(renderLoginPage(undefined, false, returnTo), {
-					status: 200,
-					headers: { "Content-Type": "text/html; charset=utf-8" },
-				});
-			}
-			if (request.method === "POST") {
-				const csrfErr = checkSameOrigin(request);
-				if (csrfErr) {
-					return Response.json(
-						{ code: ErrorCode.NotAuthorized, message: csrfErr },
-						{ status: 403 },
-					);
-				}
-				let submitted = "";
-				let rawReturnTo: string | null = url.searchParams.get("return_to");
-				const ct = (request.headers.get("Content-Type") ?? "").toLowerCase();
-				if (ct.includes("application/json")) {
-					const body = (await request.json().catch(() => ({}))) as {
-						token?: string;
-						return_to?: string;
-					};
-					submitted = (body.token ?? "").trim();
-					if (typeof body.return_to === "string") rawReturnTo = body.return_to;
-				} else {
-					const form = await request.formData().catch(() => null);
-					const tokenField = form?.get("token");
-					submitted = typeof tokenField === "string" ? tokenField.trim() : "";
-					const rtField = form?.get("return_to");
-					if (typeof rtField === "string") rawReturnTo = rtField;
-				}
-				const returnTo = isSafeReturnTo(rawReturnTo);
-				const ownerToken = (this.env.OWNER_TOKEN ?? "").trim();
-				if (!ownerToken) {
-					return new Response(
-						renderLoginPage("OWNER_TOKEN is not configured on this controller.", false, returnTo),
-						{
-							status: 503,
-							headers: { "Content-Type": "text/html; charset=utf-8" },
-						},
-					);
-				}
-				if (!submitted || !(await timingSafeStringEqual(submitted, ownerToken))) {
-					return new Response(renderLoginPage("Invalid owner token.", false, returnTo), {
-						status: 401,
-						headers: { "Content-Type": "text/html; charset=utf-8" },
-					});
-				}
-				const secure = url.protocol === "https:";
-				const cookie = await makeSessionCookie(ownerToken, secure);
-				return new Response(null, {
-					status: 303,
-					headers: {
-						Location: returnTo,
-						"Set-Cookie": cookie,
-					},
-				});
-			}
-			return new Response("Method Not Allowed", { status: 405 });
-		}
-
-		if (pathname === "/auth/logout" && request.method === "POST") {
-			const csrfErr = checkSameOrigin(request);
-			if (csrfErr) {
-				return Response.json({ code: ErrorCode.NotAuthorized, message: csrfErr }, { status: 403 });
-			}
-			const secure = url.protocol === "https:";
-			return new Response(null, {
-				status: 303,
-				headers: {
-					Location: "/auth/login",
-					"Set-Cookie": clearSessionCookie(secure),
-				},
-			});
-		}
-
+		// 2. Cockpit cookie auth (/auth/login, /auth/logout) is served at the edge by
+		// handleAuthRoute; only the session check reaches the DO.
 		if (pathname === "/auth/check" && request.method === "GET") {
 			try {
 				const caller = await this.authRequest(request);
@@ -1223,6 +1095,22 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 						{ status: 403 },
 					);
 				}
+				// `/auth/signup-code` redeems codes in the default DO only; a code
+				// written to an organization's DO (OWNER_TOKEN + X-Hotbed-Org-Id)
+				// would be accepted here and never honored.
+				const isDefaultDo = request.headers.get(INTERNAL_DEFAULT_DO_HEADER) === "1";
+				const boundOrgId =
+					this.ctrl.orgId || (request.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
+				if (!isDefaultDo && boundOrgId) {
+					return Response.json(
+						{
+							code: ErrorCode.InvalidArgs,
+							message: `sign-up codes live in the default organization, not ${boundOrgId}`,
+							suggestion: "omit X-Hotbed-Org-Id when managing sign-up codes",
+						},
+						{ status: 400 },
+					);
+				}
 				if (pathname === "/admin/signup-codes" && request.method === "GET") {
 					return Response.json({
 						codes: this.store.listSignupCodes(),
@@ -1364,7 +1252,9 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					allowJoinToken: pathname === "/hotbed.v1.ClusterService/Join",
 				});
 			} catch (err) {
-				return connectErrorResponse(fromUnknownError(err), this.builds.currentBuildNumber());
+				return connectErrorResponse(err, {
+					"Hotbed-Build": String(this.builds.currentBuildNumber()),
+				});
 			}
 			const res = await this.dispatcher.handle(request, caller, this.builds.currentBuildNumber());
 			if (request.method === "POST") {

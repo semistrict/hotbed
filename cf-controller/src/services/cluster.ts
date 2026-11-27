@@ -51,6 +51,7 @@ import {
 	WorkerConfigSchema,
 	WorkerUpgradeSystemRequestSchema,
 	type Base,
+	type BaseFreshen,
 	type ClusterEvent,
 	type Command,
 	type CommandDiagnostics,
@@ -78,7 +79,8 @@ import {
 	type ControllerContext,
 } from "../context.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
-import { buildFreshenSummary, isFreshenActive, synthesizeLegacyFreshens } from "../freshens.ts";
+import { parseDurationMs } from "../durations.ts";
+import { buildFreshenSummary, isFreshenActive, quantile, withLiveState } from "../freshens.ts";
 import { canonicalRemote, parseBuildNumber, stepHash, validateRepoURL } from "../gitops.ts";
 import { overlayHostSamples, prepareHostUsage } from "../hostusage.ts";
 import { isCommandLive, workOf } from "../standby.ts";
@@ -118,32 +120,7 @@ function parseFreshenSinceMs(raw: string, nowMs: number): number {
 	const s = raw.trim().toLowerCase();
 	if (!s) return nowMs - DEFAULT_FRESHEN_WINDOW_MS;
 	if (s === "all" || s === "0") return 0;
-	const m = /^(\d+)(ms|s|m|h|d)$/.exec(s);
-	if (!m) {
-		throw hotbedError(ErrorCode.InvalidArgs, `invalid --since duration "${raw}"`).withSuggestion(
-			'use e.g. "1h", "24h", "7d", or "all"',
-		);
-	}
-	const n = Number(m[1]);
-	let ms = 0;
-	switch (m[2]) {
-		case "ms":
-			ms = n;
-			break;
-		case "s":
-			ms = n * 1000;
-			break;
-		case "m":
-			ms = n * 60_000;
-			break;
-		case "h":
-			ms = n * 3600_000;
-			break;
-		case "d":
-			ms = n * 86_400_000;
-			break;
-	}
-	return Math.max(0, nowMs - ms);
+	return Math.max(0, nowMs - parseDurationMs(s, "--since duration", '"1h", "24h", "7d", or "all"'));
 }
 
 function checkProjectName(name: string): void {
@@ -174,12 +151,6 @@ function dayHours(nowMs: number): number[] {
 		out.push(cur - (23 - i) * 3_600_000);
 	}
 	return out;
-}
-
-function quantile(xs: number[], p: number): number {
-	if (xs.length === 0) return 0;
-	const sorted = [...xs].sort((a, b) => a - b);
-	return sorted[Math.round(p * (sorted.length - 1))];
 }
 
 function summarizeRepo(repo: Repo, bases: Base[]): RepoSummary {
@@ -1174,9 +1145,7 @@ export function createClusterService(
 				nodeId = found.node.id;
 			}
 
-			const stored = ctrl.store.listBaseFreshens(sinceMs);
-			const recentEvs = ctrl.store.recentEvents(KEEP_EVENTS);
-			const all = synthesizeLegacyFreshens(stored, nvs, recentEvs, nowMs);
+			const all = withLiveState(ctrl.store.listBaseFreshens(sinceMs), nvs, nowMs);
 
 			if (target && matchProjects && matchProjects.size === 0) {
 				if (all.some((f) => f.project === target)) {
@@ -1247,14 +1216,10 @@ export function createClusterService(
 				}
 				nodeId = found.node.id;
 			}
-			const stored = ctrl.store.listBaseFreshens(0);
-			const recentEvs = ctrl.store.recentEvents(KEEP_EVENTS);
-			const all = synthesizeLegacyFreshens(stored, nvs, recentEvs, nowMs);
-
-			let hits = all.filter((f) => f.id === id && (!nodeId || f.nodeId === nodeId));
-			if (hits.length === 0) {
-				hits = all.filter((f) => f.baseId === id && (!nodeId || f.nodeId === nodeId));
-			}
+			const onNode = (f: BaseFreshen) => !nodeId || f.nodeId === nodeId;
+			const byId = ctrl.store.getBaseFreshen(id);
+			let hits = byId && onNode(byId) ? [byId] : [];
+			if (hits.length === 0) hits = ctrl.store.baseFreshensOfBase(id).filter(onNode);
 			if (hits.length === 0) {
 				throw hotbedError(ErrorCode.NotFound, `no base freshen ${id}`).withSuggestion(
 					"hotbed freshen ls lists recent and active base freshens",
@@ -1268,9 +1233,8 @@ export function createClusterService(
 						`base ${id} has freshens on multiple nodes (${nodes.join(", ")})`,
 					).withSuggestion(`pass --node HOST, or use the freshen command ID (e.g. ${hits[0].id})`);
 				}
-				hits.sort((a, b) => (b.createdAt > a.createdAt ? 1 : b.createdAt < a.createdAt ? -1 : 0));
 			}
-			const freshen = hits[0];
+			const [freshen] = withLiveState([hits[0]], nvs, nowMs);
 			const nv = nvs.find((v) => v.node.id === freshen.nodeId);
 			const nodeAdmission =
 				nv && nv.online && isFreshenActive(freshen.state) ? nv.node.admission : undefined;
@@ -1279,8 +1243,7 @@ export function createClusterService(
 			const genPhrase =
 				freshen.generation > 0 ? `base ${freshen.project} g${freshen.generation} ` : "";
 			const related: ClusterEvent[] = [];
-			for (const ev of recentEvs) {
-				if (ev.nodeId !== freshen.nodeId) continue;
+			for (const ev of ctrl.store.nodeEventsNewestFirst(freshen.nodeId)) {
 				const matches =
 					(ev.ref?.id && (ev.ref.id === freshen.id || ev.ref.id === freshen.baseId)) ||
 					(freshen.baseId && ev.text.includes(freshen.baseId)) ||

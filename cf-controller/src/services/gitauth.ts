@@ -212,8 +212,6 @@ function selectGitCredential(
 }
 
 export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeof GitAuthService> {
-	const inflightRefreshes = new Map<string, Promise<{ token: string; expiresAt: number }>>();
-
 	function loadPendingLogins(nowMs: number): Record<string, PendingGitHubLogin> {
 		const raw = ctrl.store.getMeta(PENDING_LOGINS_META_KEY);
 		if (!raw) return {};
@@ -267,9 +265,13 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 		);
 	}
 
-	async function freshToken(
-		stored: StoredGitCredential,
-	): Promise<{ token: string; expiresAt: number }> {
+	/**
+	 * The stored token, or null when it must be refreshed first. Read from the
+	 * store each time so a token another request refreshed is reused.
+	 */
+	function usableToken(name: string, host: string): { token: string; expiresAt: number } | null {
+		const stored = ctrl.store.gitCredentialsByHost(host).find((c) => c.cred.name === name);
+		if (!stored) return null;
 		const nowMs = ctrl.now();
 		if (!stored.secret.refreshToken || !stored.secret.tokenExpiresAt) {
 			return { token: stored.secret.token, expiresAt: nowMs + GIT_TOKEN_LEASE_TTL_MS };
@@ -277,66 +279,86 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 		if (stored.secret.tokenExpiresAt > nowMs + OAUTH_REFRESH_LEAD_MS) {
 			return { token: stored.secret.token, expiresAt: stored.secret.tokenExpiresAt };
 		}
-		const existing = inflightRefreshes.get(stored.cred.name);
-		if (existing) {
-			return existing;
-		}
-		const run = (async () => {
-			const oauthBase = githubOAuthBase(stored.cred.host, stored.cred.oauthUrl);
-			const clientId = stored.secret.clientId || DEFAULT_GITHUB_CLIENT_ID;
-			const form = new URLSearchParams({
-				client_id: clientId,
-				grant_type: "refresh_token",
-				refresh_token: stored.secret.refreshToken!,
-			});
-			const res = await fetch(`${oauthBase}/login/oauth/access_token`, {
-				method: "POST",
-				headers: {
-					Accept: "application/json",
-					"Content-Type": "application/x-www-form-urlencoded",
-				},
-				body: form.toString(),
-			});
-			const data = await readJsonObject<{
-				access_token?: string;
-				refresh_token?: string;
-				expires_in?: number;
-				refresh_token_expires_in?: number;
-				error?: string;
-				error_description?: string;
-			}>(res, `refresh GitHub OAuth token for ${stored.cred.name}`, ErrorCode.NotAuthorized);
-			if (!res.ok || data.error || !data.access_token) {
-				throw hotbedError(
-					ErrorCode.NotAuthorized,
-					`refresh GitHub OAuth token for ${stored.cred.name}: ${data.error_description || data.error || `HTTP ${res.status}`}`,
-				).withSuggestion("re-authenticate on the controller with: hotbed auth login");
-			}
-			const refreshedNow = ctrl.now();
-			const exp = data.expires_in ? refreshedNow + data.expires_in * 1000 : 0;
-			const rExp = data.refresh_token_expires_in
-				? refreshedNow + data.refresh_token_expires_in * 1000
-				: 0;
-			stored.secret.token = data.access_token;
-			stored.secret.refreshToken = data.refresh_token || stored.secret.refreshToken;
-			stored.secret.tokenExpiresAt = exp;
-			stored.secret.refreshExpiresAt = rExp;
-			stored.cred.expiresAt = BigInt(exp);
-			stored.cred.refreshable = Boolean(stored.secret.refreshToken);
-			stored.cred.updatedAt = BigInt(refreshedNow);
-			ctrl.store.putGitCredential(stored.cred, stored.secret);
-			return {
-				token: stored.secret.token,
-				expiresAt: exp || refreshedNow + GIT_TOKEN_LEASE_TTL_MS,
-			};
-		})();
-		inflightRefreshes.set(stored.cred.name, run);
+		return null;
+	}
+
+	/**
+	 * Refreshes on the calling request: an in-flight fetch shared with
+	 * concurrent DO requests makes workerd throw (cf-controller/AGENTS.md).
+	 * GitHub refresh tokens are single-use, so when two requests race and this
+	 * one loses, the winner's stored token is used instead of the error.
+	 */
+	async function freshToken(
+		stored: StoredGitCredential,
+	): Promise<{ token: string; expiresAt: number }> {
+		const { name, host } = stored.cred;
+		const current = usableToken(name, host);
+		if (current) return current;
 		try {
-			return await run;
-		} finally {
-			if (inflightRefreshes.get(stored.cred.name) === run) {
-				inflightRefreshes.delete(stored.cred.name);
-			}
+			return await refreshOAuthToken(stored);
+		} catch (err) {
+			const refreshedElsewhere = usableToken(name, host);
+			if (refreshedElsewhere) return refreshedElsewhere;
+			throw err;
 		}
+	}
+
+	async function refreshOAuthToken(
+		stored: StoredGitCredential,
+	): Promise<{ token: string; expiresAt: number }> {
+		const refreshToken = stored.secret.refreshToken;
+		if (!refreshToken) {
+			throw hotbedError(
+				ErrorCode.Internal,
+				`git credential ${stored.cred.name} has no refresh token`,
+			);
+		}
+		const oauthBase = githubOAuthBase(stored.cred.host, stored.cred.oauthUrl);
+		const clientId = stored.secret.clientId || DEFAULT_GITHUB_CLIENT_ID;
+		const form = new URLSearchParams({
+			client_id: clientId,
+			grant_type: "refresh_token",
+			refresh_token: refreshToken,
+		});
+		const res = await fetch(`${oauthBase}/login/oauth/access_token`, {
+			method: "POST",
+			headers: {
+				Accept: "application/json",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: form.toString(),
+		});
+		const data = await readJsonObject<{
+			access_token?: string;
+			refresh_token?: string;
+			expires_in?: number;
+			refresh_token_expires_in?: number;
+			error?: string;
+			error_description?: string;
+		}>(res, `refresh GitHub OAuth token for ${stored.cred.name}`, ErrorCode.NotAuthorized);
+		if (!res.ok || data.error || !data.access_token) {
+			throw hotbedError(
+				ErrorCode.NotAuthorized,
+				`refresh GitHub OAuth token for ${stored.cred.name}: ${data.error_description || data.error || `HTTP ${res.status}`}`,
+			).withSuggestion("re-authenticate on the controller with: hotbed auth login");
+		}
+		const refreshedNow = ctrl.now();
+		const exp = data.expires_in ? refreshedNow + data.expires_in * 1000 : 0;
+		const rExp = data.refresh_token_expires_in
+			? refreshedNow + data.refresh_token_expires_in * 1000
+			: 0;
+		stored.secret.token = data.access_token;
+		stored.secret.refreshToken = data.refresh_token || refreshToken;
+		stored.secret.tokenExpiresAt = exp;
+		stored.secret.refreshExpiresAt = rExp;
+		stored.cred.expiresAt = BigInt(exp);
+		stored.cred.refreshable = Boolean(stored.secret.refreshToken);
+		stored.cred.updatedAt = BigInt(refreshedNow);
+		ctrl.store.putGitCredential(stored.cred, stored.secret);
+		return {
+			token: stored.secret.token,
+			expiresAt: exp || refreshedNow + GIT_TOKEN_LEASE_TTL_MS,
+		};
 	}
 
 	return {

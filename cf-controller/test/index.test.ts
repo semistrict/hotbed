@@ -9,7 +9,8 @@ import {
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createFetchClient } from "@connectrpc/connect/protocol";
 import { createTransport } from "@connectrpc/connect/protocol-connect";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import type { ControllerStore } from "../src/store.ts";
 import {
 	AdmissionSchema,
 	AdmissionSignalSchema,
@@ -3125,6 +3126,32 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		const detail = await owner.cluster.getFreshen({ id: "f-proj-freshen-obs-g2-bbb222" });
 		expect(detail.freshen?.baseId).toBe("proj-freshen-obs-g2");
 		expect(detail.nodeAdmission?.holding).toBe(true);
+
+		// GetFreshen reads the one freshen it names (by ID, or else by base ID),
+		// never every stored freshen and the whole event log.
+		const store = await runInDurableObject(
+			env.CONTROLLER.getByName("default"),
+			(instance) => (instance as any).store as ControllerStore,
+		);
+		const listAll = vi.spyOn(store, "listBaseFreshens");
+		const allEvents = vi.spyOn(store, "recentEvents");
+		try {
+			const byBase = await owner.cluster.getFreshen({ id: "proj-freshen-obs-g1" });
+			expect(byBase.freshen?.id).toBe("f-proj-freshen-obs-g1-aaa111");
+			expect(byBase.freshen?.state).toBe(FreshenState.SUCCEEDED);
+			expect(byBase.nodeAdmission).toBeUndefined();
+			const live = await owner.cluster.getFreshen({ id: "proj-freshen-obs-g2" });
+			expect(live.freshen?.waitingWorkspaces).toEqual(["ws-wait-g2"]);
+			expect(live.freshen?.reason).toContain("needs 6.0 GiB, 1.5 GiB left");
+			await expect(owner.cluster.getFreshen({ id: "proj-freshen-obs-g9" })).rejects.toThrow(
+				"no base freshen proj-freshen-obs-g9",
+			);
+			expect(listAll).not.toHaveBeenCalled();
+			expect(allEvents).not.toHaveBeenCalled();
+		} finally {
+			listAll.mockRestore();
+			allEvents.mockRestore();
+		}
 	});
 
 	it("treats macOS warn (50%) host memory pressure as soft placement penalty and holds only on critical (100%)", () => {

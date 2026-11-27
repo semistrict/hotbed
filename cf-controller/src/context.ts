@@ -322,84 +322,74 @@ export class ControllerContext {
 		});
 	}
 
-	/** Calls online workers with active WebSocket tunnels in parallel for live commands. */
-	async liveNodeCommands(
+	/** Live commands of a session (or all, for ""), by node. See liveFromNodes. */
+	liveNodeCommands(
 		nvs: NodeView[],
 		nodeIds: Set<string> | null,
 		sessionId: string,
 	): Promise<Map<string, Command[]>> {
-		const targets = nvs.filter(
-			(nv) =>
-				nv.online && this.tunnel.isConnected(nv.node.id) && (!nodeIds || nodeIds.has(nv.node.id)),
-		);
-		const live = new Map<string, Command[]>();
-		if (targets.length === 0) return live;
-
-		await Promise.all(
-			targets.map(async (nv) => {
-				try {
-					const res = await this.tunnel.callUnary(
-						nv.node.id,
-						nv.node.hostname,
-						"/hotbed.v1.WorkspaceService/ListCommands",
-						ListCommandsRequestSchema,
-						create(ListCommandsRequestSchema, { sessionId }),
-						ListCommandsResponseSchema,
-						LIVE_QUERY_TIMEOUT_MS,
-					);
-					const addr = this.addrOf(nv);
-					for (const cmd of res.commands) cmd.nodeAddr = addr;
-					live.set(nv.node.id, res.commands);
-				} catch {
-					// Fall back to cached node_state view
-				}
-			}),
-		);
-
-		const sessIds: string[] = [];
-		for (const cmds of live.values()) {
-			for (const cmd of cmds) if (cmd.sessionId) sessIds.push(cmd.sessionId);
-		}
-		const sessProj = this.store.sessionProjectsFor(sessIds);
-		for (const cmds of live.values()) {
-			for (const cmd of cmds) {
-				const p = sessProj.get(cmd.sessionId);
-				if (p) cmd.project = p;
-			}
-		}
-		return live;
+		return this.liveFromNodes(nvs, nodeIds, async (nv) => {
+			const res = await this.tunnel.callUnary(
+				nv.node.id,
+				nv.node.hostname,
+				"/hotbed.v1.WorkspaceService/ListCommands",
+				ListCommandsRequestSchema,
+				create(ListCommandsRequestSchema, { sessionId }),
+				ListCommandsResponseSchema,
+				LIVE_QUERY_TIMEOUT_MS,
+			);
+			const addr = this.addrOf(nv);
+			for (const cmd of res.commands) cmd.nodeAddr = addr;
+			return res.commands;
+		});
 	}
 
-	/** Calls online workers with active WebSocket tunnels in parallel for live workspaces. */
-	async liveNodeWorkspaces(
+	/** Live workspaces, by node. See liveFromNodes. */
+	liveNodeWorkspaces(
 		nvs: NodeView[],
 		nodeIds: Set<string> | null,
 	): Promise<Map<string, Workspace[]>> {
+		return this.liveFromNodes(nvs, nodeIds, async (nv) => {
+			const res = await this.tunnel.callUnary(
+				nv.node.id,
+				nv.node.hostname,
+				"/hotbed.v1.WorkspaceService/ListWorkspaces",
+				ListWorkspacesRequestSchema,
+				create(ListWorkspacesRequestSchema, {}),
+				ListWorkspacesResponseSchema,
+				LIVE_QUERY_TIMEOUT_MS,
+			);
+			const addr = this.addrOf(nv);
+			for (const ws of res.workspaces) {
+				ws.nodeAddr = addr;
+				ws.node = nv.node.hostname;
+			}
+			return res.workspaces;
+		});
+	}
+
+	/**
+	 * Asks each online node with a connected tunnel (of nodeIds, or all) for
+	 * its live items in parallel, and files each item under its session's
+	 * project. A node that does not answer is left out of the map: its caller
+	 * falls back to the cached node_state view.
+	 */
+	private async liveFromNodes<T extends { sessionId: string; project: string }>(
+		nvs: NodeView[],
+		nodeIds: Set<string> | null,
+		ask: (nv: NodeView) => Promise<T[]>,
+	): Promise<Map<string, T[]>> {
 		const targets = nvs.filter(
 			(nv) =>
 				nv.online && this.tunnel.isConnected(nv.node.id) && (!nodeIds || nodeIds.has(nv.node.id)),
 		);
-		const live = new Map<string, Workspace[]>();
+		const live = new Map<string, T[]>();
 		if (targets.length === 0) return live;
 
 		await Promise.all(
 			targets.map(async (nv) => {
 				try {
-					const res = await this.tunnel.callUnary(
-						nv.node.id,
-						nv.node.hostname,
-						"/hotbed.v1.WorkspaceService/ListWorkspaces",
-						ListWorkspacesRequestSchema,
-						create(ListWorkspacesRequestSchema, {}),
-						ListWorkspacesResponseSchema,
-						LIVE_QUERY_TIMEOUT_MS,
-					);
-					const addr = this.addrOf(nv);
-					for (const ws of res.workspaces) {
-						ws.nodeAddr = addr;
-						ws.node = nv.node.hostname;
-					}
-					live.set(nv.node.id, res.workspaces);
+					live.set(nv.node.id, await ask(nv));
 				} catch {
 					// Fall back to cached node_state view
 				}
@@ -407,14 +397,14 @@ export class ControllerContext {
 		);
 
 		const sessIds: string[] = [];
-		for (const wss of live.values()) {
-			for (const ws of wss) if (ws.sessionId) sessIds.push(ws.sessionId);
+		for (const items of live.values()) {
+			for (const it of items) if (it.sessionId) sessIds.push(it.sessionId);
 		}
 		const sessProj = this.store.sessionProjectsFor(sessIds);
-		for (const wss of live.values()) {
-			for (const ws of wss) {
-				const p = sessProj.get(ws.sessionId);
-				if (p) ws.project = p;
+		for (const items of live.values()) {
+			for (const it of items) {
+				const p = sessProj.get(it.sessionId);
+				if (p) it.project = p;
 			}
 		}
 		return live;

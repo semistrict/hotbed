@@ -10,7 +10,6 @@ import {
 	QuestionService,
 	QuestionState,
 	type Answer,
-	type Project,
 	type Prompt,
 	type Question,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
@@ -23,7 +22,7 @@ import {
 	type ControllerContext,
 } from "../context.ts";
 import { ErrorCode, hotbedError, type HotbedError } from "../errors.ts";
-import { canonicalRemote } from "../gitops.ts";
+import { checkRevision, projectRepo } from "./project-items.ts";
 
 const MAX_ASKED = 4;
 const MAX_HEADER = 12;
@@ -190,29 +189,8 @@ function decisionFor(p: Prompt): { answer?: Answer; err?: HotbedError } {
 	return err ? { err } : { answer: a };
 }
 
-function questionRepo(project: Project, named: string, askedFrom: string): string {
-	if (named) {
-		const repo = canonicalRemote(named);
-		if (!project.repos.includes(repo)) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				`project ${project.name} does not hold ${repo}; it holds ${project.repos.join(", ")}`,
-			).withSuggestion(`hotbed project add ${project.name} --repo ${repo}`);
-		}
-		return repo;
-	}
-	const from = canonicalRemote(askedFrom);
-	if (from && project.repos.includes(from)) return from;
-	return "";
-}
-
-function checkRevision(q: Question, want: bigint): void {
-	if (want > 0n && q.revision !== want) {
-		throw hotbedError(
-			ErrorCode.Conflict,
-			`question ${q.id} is at revision ${q.revision}, not ${want}`,
-		).withSuggestion(`hotbed question show ${q.id}`);
-	}
+function checkQuestionRevision(q: Question, want: bigint): void {
+	checkRevision(q.revision, want, `question ${q.id}`, `hotbed question show ${q.id}`);
 }
 
 function mustBeOpen(q: Question, done: string): void {
@@ -273,7 +251,7 @@ export function createQuestionService(
 				ctrl.store.setSessionT3CodeThreadIdIfEmpty(sess.id, t3Thread);
 			}
 			const effectiveT3 = t3Thread || sess?.t3codeThreadId || "";
-			const repo = questionRepo(project, req.repo, req.askedFrom?.remote ?? "");
+			const repo = projectRepo(project, req.repo, req.askedFrom?.remote ?? "");
 			if (req.askedFrom && req.askedFrom.dirty.length > DIRTY_KEPT) {
 				req.askedFrom.dirty = req.askedFrom.dirty.slice(0, DIRTY_KEPT);
 			}
@@ -296,7 +274,7 @@ export function createQuestionService(
 			return withReminder(
 				ctrl.store.changeQuestion(req.id, "edited", by, (q) => {
 					inProject("question", q.id, q.project, project, by);
-					checkRevision(q, req.ifRevision);
+					checkQuestionRevision(q, req.ifRevision);
 					mustBeOpen(q, "edited");
 					q.prompt = req.prompt;
 					q.edited = by;
@@ -308,7 +286,7 @@ export function createQuestionService(
 			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, req.reason);
 			const q = ctrl.store.changeQuestion(req.id, "deleted", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
-				checkRevision(item, req.ifRevision);
+				checkQuestionRevision(item, req.ifRevision);
 				if (item.state === QuestionState.DELETED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
@@ -370,7 +348,7 @@ export function createQuestionService(
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
 			const q = ctrl.store.changeQuestion(req.id, "answered", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
-				checkRevision(item, req.ifRevision);
+				checkQuestionRevision(item, req.ifRevision);
 				mustBeAnswerable(item, "answered");
 				const err = checkAnswer(item, req.answer);
 				if (err) throw err;
@@ -388,7 +366,7 @@ export function createQuestionService(
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, req.reason);
 			const q = ctrl.store.changeQuestion(req.id, "dismissed", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
-				checkRevision(item, req.ifRevision);
+				checkQuestionRevision(item, req.ifRevision);
 				mustBeAnswerable(item, "dismissed");
 				item.state = QuestionState.DISMISSED;
 				item.dismissed = by;
@@ -406,7 +384,7 @@ export function createQuestionService(
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
 			const q = ctrl.store.changeQuestion(req.id, "edited", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
-				checkRevision(item, req.ifRevision);
+				checkQuestionRevision(item, req.ifRevision);
 				if (item.state === QuestionState.DELETED) {
 					throw hotbedError(
 						ErrorCode.Conflict,

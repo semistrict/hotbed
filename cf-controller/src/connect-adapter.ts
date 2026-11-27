@@ -130,6 +130,9 @@ export const VIEWER_ALLOWED_PROCEDURES = new Set([
 	"/hotbed.v1.BoardService/GetBoardSchema",
 	"/hotbed.v1.BoardService/ListBoardSchedules",
 	"/hotbed.v1.BoardService/ListBoardTasks",
+	// IssueService (read-only)
+	"/hotbed.v1.IssueService/ListIssues",
+	"/hotbed.v1.IssueService/GetIssue",
 ]);
 
 const roleScopeInterceptor: Interceptor = (next) => async (req) => {

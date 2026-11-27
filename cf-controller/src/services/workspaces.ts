@@ -66,6 +66,8 @@ import {
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
 import { WORKER_RPC_TIMEOUT_MS, type ControllerContext } from "../context.ts";
+import { parseDurationMs } from "../durations.ts";
+import { waitAtMost } from "../waits.ts";
 import { ErrorCode, codeOf, fromWorkerError, hotbedError } from "../errors.ts";
 import { newId } from "../gitops.ts";
 import {
@@ -143,32 +145,6 @@ function commandOfHistory(f: FinishedCommand): Command {
 		estimate: f.estimate ? clone(CommandEstimateSchema, f.estimate) : undefined,
 		placement: f.placement ? clone(PlacementDecisionSchema, f.placement) : undefined,
 	});
-}
-
-function parseDurationMs(raw: string): number {
-	const s = raw.trim();
-	if (!s) return 0;
-	const m = /^(\d+)(ms|s|m|h|d)$/.exec(s);
-	if (!m) {
-		throw hotbedError(ErrorCode.InvalidArgs, `invalid duration "${raw}"`).withSuggestion(
-			"use e.g. 15m, 1h, 24h, 7d",
-		);
-	}
-	const n = Number(m[1]);
-	switch (m[2]) {
-		case "ms":
-			return n;
-		case "s":
-			return n * 1000;
-		case "m":
-			return n * 60_000;
-		case "h":
-			return n * 3600_000;
-		case "d":
-			return n * 86_400_000;
-		default:
-			return 0;
-	}
 }
 
 export interface WorkspaceHelpers {
@@ -334,7 +310,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						suggestion: "run again in a moment: hotbed run waits for it by itself",
 					});
 				}
-				await waitPromise(waiter.promise, rem, signal);
+				await waitAtMost(waiter.promise, rem, signal);
 			} finally {
 				waiter.cancel();
 			}
@@ -356,7 +332,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 				const rem = deadlineMs - Date.now();
 				if (rem <= 0) return false;
-				await waitPromise(Promise.race(waiters.map((w) => w.promise)), rem, signal);
+				await waitAtMost(Promise.race(waiters.map((w) => w.promise)), rem, signal);
 			} finally {
 				for (const w of waiters) w.cancel();
 			}
@@ -406,7 +382,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			...hosts.map((h) => ctrl.power.changes.wait(h)),
 		];
 		try {
-			await waitPromise(Promise.race(waiters.map((w) => w.promise)), rem, signal);
+			await waitAtMost(Promise.race(waiters.map((w) => w.promise)), rem, signal);
 		} finally {
 			for (const w of waiters) w.cancel();
 		}
@@ -686,7 +662,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			// READY before picking the PREPARING workspace and discarding the slow one.
 			if ((a1.done && a1.res?.ws) || (a2.done && a2.res?.ws)) {
 				const pending = a1.done ? a2.promise : a1.promise;
-				await waitPromise(
+				await waitAtMost(
 					pending.then(() => {}),
 					WORKSPACE_RACE_PREPARE_WAIT_MS,
 					signal,
@@ -2150,23 +2126,6 @@ function unreachableDaemonLogSource(n: Node, msg: string): DaemonLogSource {
 		maxFileBytes: prev?.maxFileBytes ?? 0n,
 		maxFiles: prev?.maxFiles ?? 0,
 		maxAgeDays: prev?.maxAgeDays ?? 0,
-	});
-}
-
-function waitPromise(p: Promise<void>, timeoutMs: number, signal?: AbortSignal): Promise<void> {
-	return new Promise<void>((resolve) => {
-		if (signal?.aborted) {
-			resolve();
-			return;
-		}
-		const done = () => {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", done);
-			resolve();
-		};
-		const timer = setTimeout(done, timeoutMs);
-		signal?.addEventListener("abort", done, { once: true });
-		void p.then(done);
 	});
 }
 

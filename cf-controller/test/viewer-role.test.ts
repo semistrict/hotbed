@@ -77,6 +77,8 @@ describe("viewer role enforcement", () => {
 			"/hotbed.v1.BoardService/ListBoardTasks",
 			"/hotbed.v1.BoardService/ListBoardSchemas",
 			"/hotbed.v1.BoardService/ListBoardActors",
+			"/hotbed.v1.IssueService/ListIssues",
+			"/hotbed.v1.IssueService/GetIssue",
 		]) {
 			expect(VIEWER_ALLOWED_PROCEDURES.has(proc)).toBe(true);
 			const res = await doFetch(doName, proc, {
@@ -104,6 +106,8 @@ describe("viewer role enforcement", () => {
 			"/hotbed.v1.BoardService/PostBoardMessage",
 			"/hotbed.v1.BoardService/CreateBoardTask",
 			"/hotbed.v1.BoardService/ImportBoard",
+			"/hotbed.v1.IssueService/ReportIssue",
+			"/hotbed.v1.IssueService/ArchiveIssue",
 		]) {
 			expect(VIEWER_ALLOWED_PROCEDURES.has(proc)).toBe(false);
 			const res = await doFetch(doName, proc, {
@@ -194,6 +198,25 @@ describe("viewer role enforcement", () => {
 			body: "{}",
 		});
 		expect(writeRes.status).toBe(403);
+	});
+
+	it("lets a single-tenant owner (no organization role) revoke API tokens, as any org admin may", async () => {
+		const testEnv = env as unknown as ControllerEnv;
+		const stub = testEnv.CONTROLLER.getByName("viewer-role-revoke-test");
+		const owner: CallerIdentity = { ...memberCaller(""), orgRole: "", authMethod: "bearer" };
+		expect(await stub.revokeUserApiTokens({ caller: owner, orgId: "", userId: "user_x" })).toEqual({
+			ok: true,
+			revoked: 0,
+		});
+		const member = memberCaller("");
+		expect(await stub.revokeUserApiTokens({ caller: member, orgId: "", userId: "user_x" })).toEqual(
+			{
+				ok: false,
+				code: "NOT_AUTHORIZED",
+				message: "organization admin required",
+				status: 403,
+			},
+		);
 	});
 
 	it("SELF smoke check", async () => {

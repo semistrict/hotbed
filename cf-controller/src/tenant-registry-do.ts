@@ -1,17 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
+import { num, str } from "./sql-values.ts";
 
 export interface TenantAssignment {
 	orgKey: string;
 	tenantId: string;
 	createdAt: number;
-}
-
-function sqlStr(v: SqlStorageValue | undefined): string {
-	return typeof v === "string" ? v : v === null || v === undefined ? "" : String(Number(v));
-}
-
-function sqlNum(v: SqlStorageValue | undefined): number {
-	return typeof v === "number" ? v : typeof v === "string" ? Number(v) : 0;
 }
 
 /**
@@ -54,7 +47,7 @@ export class TenantRegistryDO extends DurableObject<Env> {
 				.exec("SELECT tenant_id FROM org_tenants WHERE org_key = ?", orgKey)
 				.toArray();
 			if (existing.length > 0) {
-				return String(sqlNum(existing[0].tenant_id));
+				return String(num(existing[0].tenant_id));
 			}
 
 			const nowMs = Date.now();
@@ -70,7 +63,7 @@ export class TenantRegistryDO extends DurableObject<Env> {
 					);
 					return "0";
 				}
-				const holderKey = sqlStr(zeroHolder[0].org_key);
+				const holderKey = str(zeroHolder[0].org_key);
 				if (holderKey === "default" && orgKey !== "default") {
 					this.sql.exec(
 						"UPDATE org_tenants SET org_key = ? WHERE org_key = 'default' AND tenant_id = 0",
@@ -85,11 +78,11 @@ export class TenantRegistryDO extends DurableObject<Env> {
 			const metaRows = this.sql
 				.exec("SELECT value FROM registry_meta WHERE key = 'next_tenant_id'")
 				.toArray();
-			const metaNext = metaRows.length > 0 ? sqlNum(metaRows[0].value) : 1;
+			const metaNext = metaRows.length > 0 ? num(metaRows[0].value) : 1;
 			const maxRows = this.sql
 				.exec("SELECT COALESCE(MAX(tenant_id), 0) AS max_id FROM org_tenants")
 				.toArray();
-			const maxId = maxRows.length > 0 ? sqlNum(maxRows[0].max_id) : 0;
+			const maxId = maxRows.length > 0 ? num(maxRows[0].max_id) : 0;
 			const assigned = Math.max(1, Number.isFinite(metaNext) ? metaNext : 1, maxId + 1);
 
 			this.sql.exec(
@@ -114,7 +107,7 @@ export class TenantRegistryDO extends DurableObject<Env> {
 			.exec("SELECT tenant_id FROM org_tenants WHERE org_key = ?", orgKey)
 			.toArray();
 		if (rows.length === 0) return null;
-		return String(sqlNum(rows[0].tenant_id));
+		return String(num(rows[0].tenant_id));
 	}
 
 	listTenants(): TenantAssignment[] {
@@ -122,9 +115,9 @@ export class TenantRegistryDO extends DurableObject<Env> {
 			.exec("SELECT org_key, tenant_id, created_at FROM org_tenants ORDER BY tenant_id ASC")
 			.toArray()
 			.map((r) => ({
-				orgKey: sqlStr(r.org_key),
-				tenantId: String(sqlNum(r.tenant_id)),
-				createdAt: sqlNum(r.created_at),
+				orgKey: str(r.org_key),
+				tenantId: String(num(r.tenant_id)),
+				createdAt: num(r.created_at),
 			}));
 	}
 }

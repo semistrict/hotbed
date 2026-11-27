@@ -18,6 +18,7 @@ import { getCaller } from "../connect-adapter.ts";
 import { inProject, type ControllerContext } from "../context.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
 import { canonicalRemote } from "../gitops.ts";
+import { checkRevision, projectRepo } from "./project-items.ts";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TAG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -185,29 +186,8 @@ function mergeContent(
 	return validateContent(out);
 }
 
-function checkRevision(m: Memory, want: bigint): void {
-	if (want > 0n && m.revision !== want) {
-		throw hotbedError(
-			ErrorCode.Conflict,
-			`memory #${m.id} is at revision ${m.revision}, not ${want}`,
-		).withSuggestion(`hotbed memory show ${m.id}`);
-	}
-}
-
-function memoryRepo(project: Project, named: string, fromRemote: string): string {
-	if (named) {
-		const repo = canonicalRemote(named);
-		if (!project.repos.includes(repo)) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				`project ${project.name} does not hold ${repo}; it holds ${project.repos.join(", ")}`,
-			).withSuggestion(`hotbed project add ${project.name} --repo ${repo}`);
-		}
-		return repo;
-	}
-	const from = canonicalRemote(fromRemote);
-	if (from && project.repos.includes(from)) return from;
-	return "";
+function checkMemoryRevision(m: Memory, want: bigint): void {
+	checkRevision(m.revision, want, `memory #${m.id}`, `hotbed memory show ${m.id}`);
 }
 
 export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof MemoryService> {
@@ -317,10 +297,10 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				// Named outright, any project: a session of one project often learns
 				// what belongs to another (a cladefs session about hotbed, say).
 				targetProject = ctrl.store.getProject(req.project);
-				repo = memoryRepo(targetProject, req.repo, req.from?.remote ?? "");
+				repo = projectRepo(targetProject, req.repo, req.from?.remote ?? "");
 			} else if (sessProject) {
 				targetProject = sessProject;
-				repo = memoryRepo(targetProject, req.repo, req.from?.remote ?? "");
+				repo = projectRepo(targetProject, req.repo, req.from?.remote ?? "");
 			} else {
 				throw hotbedError(
 					ErrorCode.InvalidArgs,
@@ -452,7 +432,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
-				checkRevision(item, req.ifRevision);
+				checkMemoryRevision(item, req.ifRevision);
 
 				const wasProject = item.scope === MemoryScope.PROJECT;
 
@@ -467,7 +447,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					item.scope = MemoryScope.PROJECT;
 					item.project = targetProj.name;
 					if (req.repo !== undefined) {
-						item.repo = req.repo.trim() ? memoryRepo(targetProj, req.repo.trim(), "") : "";
+						item.repo = req.repo.trim() ? projectRepo(targetProj, req.repo.trim(), "") : "";
 					} else if (projectChanged && item.repo && !targetProj.repos.includes(item.repo)) {
 						item.repo = "";
 					}
@@ -482,7 +462,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 						item.repo = "";
 					} else {
 						const curProj = ctrl.store.getProject(item.project);
-						item.repo = req.repo.trim() ? memoryRepo(curProj, req.repo.trim(), "") : "";
+						item.repo = req.repo.trim() ? projectRepo(curProj, req.repo.trim(), "") : "";
 					}
 				}
 
@@ -518,7 +498,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
-				checkRevision(item, req.ifRevision);
+				checkMemoryRevision(item, req.ifRevision);
 				if (item.state !== MemoryState.APPROVED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
@@ -536,7 +516,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
-				checkRevision(item, req.ifRevision);
+				checkMemoryRevision(item, req.ifRevision);
 				if (
 					item.state !== MemoryState.ARCHIVED &&
 					item.state !== MemoryState.REJECTED &&
@@ -559,7 +539,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
-				checkRevision(item, req.ifRevision);
+				checkMemoryRevision(item, req.ifRevision);
 			});
 		},
 

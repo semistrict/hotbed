@@ -28,6 +28,7 @@ import {
 	type ControllerContext,
 } from "../context.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
+import { waitAtMost } from "../waits.ts";
 import { canonicalRemote, generatePetname } from "../gitops.ts";
 import { isCommandLive } from "../standby.ts";
 
@@ -360,7 +361,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					if (res.ended) return;
 					const remaining = deadline - Date.now();
 					if (remaining <= 0) return;
-					await raceAbortAndTimeout(waiter.promise, remaining, ctx.signal);
+					await waitAtMost(waiter.promise, remaining, ctx.signal);
 				} finally {
 					waiter.cancel();
 				}
@@ -391,7 +392,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					}
 					const remaining = deadline - Date.now();
 					if (remaining <= 0) return res;
-					await raceAbortAndTimeout(waiter.promise, remaining, ctx.signal);
+					await waitAtMost(waiter.promise, remaining, ctx.signal);
 				} finally {
 					waiter.cancel();
 				}
@@ -401,25 +402,4 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			return finalRes;
 		},
 	};
-}
-
-function raceAbortAndTimeout(
-	promise: Promise<void>,
-	timeoutMs: number,
-	signal: AbortSignal,
-): Promise<void> {
-	return new Promise<void>((resolve) => {
-		if (signal.aborted) {
-			resolve();
-			return;
-		}
-		const done = () => {
-			clearTimeout(timer);
-			signal.removeEventListener("abort", done);
-			resolve();
-		};
-		const timer = setTimeout(done, timeoutMs);
-		signal.addEventListener("abort", done, { once: true });
-		void promise.then(done);
-	});
 }
