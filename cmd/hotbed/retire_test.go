@@ -14,6 +14,7 @@ import (
 // its session's next run goes elsewhere, and its history stays. A node
 // still online is not retired, and one that joins again is a node again.
 func TestRetireNodeGoneForGood(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -21,7 +22,7 @@ func TestRetireNodeGoneForGood(t *testing.T) {
 	c.ok(nil, "session", "start", S)
 	agent := filepath.Join(t.TempDir(), "agent")
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
-	t.Chdir(agent)
+	c.chdir(agent)
 
 	node, _ := c.ranOn(S, "one\n", "--arch", "amd64", "--", "echo", "one")
 	if node != "mini" {

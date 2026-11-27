@@ -13,9 +13,10 @@ import (
 )
 
 func TestOutputModesPlainJSONAndJQ(t *testing.T) {
+	t.Parallel()
 	t.Run("plain text default", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"version"}, deps{stdout: &stdout, stderr: &stderr})
+		code := run(t.Context(), []string{"version"}, deps{here: newTestHere(t, nil).here(), stdout: &stdout, stderr: &stderr})
 		if code != exitOK {
 			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 		}
@@ -30,7 +31,7 @@ func TestOutputModesPlainJSONAndJQ(t *testing.T) {
 
 	t.Run("--json envelope", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"version", "--json"}, deps{stdout: &stdout, stderr: &stderr})
+		code := run(t.Context(), []string{"version", "--json"}, deps{here: newTestHere(t, nil).here(), stdout: &stdout, stderr: &stderr})
 		if code != exitOK {
 			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 		}
@@ -45,7 +46,7 @@ func TestOutputModesPlainJSONAndJQ(t *testing.T) {
 
 	t.Run("--jq filter", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"version", "--jq", ".os"}, deps{stdout: &stdout, stderr: &stderr})
+		code := run(t.Context(), []string{"version", "--jq", ".os"}, deps{here: newTestHere(t, nil).here(), stdout: &stdout, stderr: &stderr})
 		if code != exitOK {
 			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 		}
@@ -56,7 +57,7 @@ func TestOutputModesPlainJSONAndJQ(t *testing.T) {
 
 	t.Run("invalid --jq exits 2", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"version", "--jq", ".[invalid"}, deps{stdout: &stdout, stderr: &stderr})
+		code := run(t.Context(), []string{"version", "--jq", ".[invalid"}, deps{here: newTestHere(t, nil).here(), stdout: &stdout, stderr: &stderr})
 		if code != exitInvalidArgs {
 			t.Fatalf("code = %d, want %d", code, exitInvalidArgs)
 		}
@@ -64,7 +65,7 @@ func TestOutputModesPlainJSONAndJQ(t *testing.T) {
 
 	t.Run("plain error goes to stderr", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"no-such-command"}, deps{stdout: &stdout, stderr: &stderr})
+		code := run(t.Context(), []string{"no-such-command"}, deps{here: newTestHere(t, nil).here(), stdout: &stdout, stderr: &stderr})
 		if code != exitInvalidArgs {
 			t.Fatalf("code = %d, want %d", code, exitInvalidArgs)
 		}
@@ -109,6 +110,7 @@ func TestOutputModesPlainJSONAndJQ(t *testing.T) {
 // not beaten yet has no resources): each list it ranges over holds one
 // empty item, and no object it reaches into is there at all.
 func TestFormatsRenderMissingFields(t *testing.T) {
+	t.Parallel()
 	formats := map[string]*template.Template{}
 	for name := range defaultFormatSpecs {
 		formats[name] = compiledFormats()[name]
@@ -145,6 +147,7 @@ func TestFormatsRenderMissingFields(t *testing.T) {
 // Default formats print real newlines: a Go raw string's \n is a backslash
 // and an n, which ran every row of ps onto one line (board 7237).
 func TestDefaultFormatsUseRealNewlines(t *testing.T) {
+	t.Parallel()
 	for name, f := range defaultFormatSpecs {
 		if strings.Contains(f.src, `\n`) {
 			t.Errorf("%s's default format holds a literal \\n: %q", name, f.src)
@@ -180,6 +183,7 @@ func TestDefaultFormatsUseRealNewlines(t *testing.T) {
 // review ls names each review's implementer and reviewer model(s), and says
 // so when a review has none yet (requested, or legacy) (board 7788).
 func TestReviewLsShowsTheModel(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	err := apicmd.FormatPlain(&out, compiledFormats()["review ls"], &pb.ListReviewsResponse{Reviews: []*pb.Review{
 		{Id: 2, State: pb.ReviewState_REVIEW_STATE_REQUESTED, Title: "Add B"},
@@ -195,6 +199,7 @@ func TestReviewLsShowsTheModel(t *testing.T) {
 }
 
 func TestFormatByHandCommandsAndDiagnostics(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		cmd    string
 		state  pb.CommandState

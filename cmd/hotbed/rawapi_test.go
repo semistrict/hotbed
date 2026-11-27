@@ -14,6 +14,7 @@ import (
 )
 
 func TestResolveAPIEndpoint(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in       string
 		path     string
@@ -47,6 +48,7 @@ func TestResolveAPIEndpoint(t *testing.T) {
 }
 
 func TestRawAPICommand(t *testing.T) {
+	t.Parallel()
 	var lastMethod, lastPath, lastQuery, lastAuth, lastCT string
 	var lastBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -66,11 +68,12 @@ func TestRawAPICommand(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("HOTBED_TOKEN", "hbo_test_secret")
+	where := newTestHere(t, map[string]string{"HOTBED_TOKEN": "hbo_test_secret"})
 
 	runAPI := func(args ...string) (int, string, string) {
 		var out, errBuf bytes.Buffer
 		d := deps{
+			here:       where.here(),
 			http:       srv.Client(),
 			stream:     srv.Client(),
 			controller: func() (string, error) { return srv.URL, nil },
@@ -158,18 +161,18 @@ func TestControllerAuthToken(t *testing.T) {
 	defaultHotbedDir = func() (string, error) { return dir, nil }
 	t.Cleanup(func() { defaultHotbedDir = orig })
 
-	t.Setenv("HOTBED_TOKEN", "")
-	if got := controllerAuthToken("ubu1:7120"); got != "" {
+	where := newTestHere(t, nil)
+	if got := controllerAuthToken(where.getenv, "ubu1:7120"); got != "" {
 		t.Fatalf("tailnet controller got token %q, want empty", got)
 	}
-	if got := controllerAuthToken("http://127.0.0.1:7120"); got != "" {
+	if got := controllerAuthToken(where.getenv, "http://127.0.0.1:7120"); got != "" {
 		t.Fatalf("plaintext http controller got token %q, want empty", got)
 	}
-	if got := controllerAuthToken("https://ctrl.example.workers.dev"); got != "hbo_file_token" {
+	if got := controllerAuthToken(where.getenv, "https://ctrl.example.workers.dev"); got != "hbo_file_token" {
 		t.Fatalf("https controller got token %q, want hbo_file_token", got)
 	}
-	t.Setenv("HOTBED_TOKEN", "hbo_env_token")
-	if got := controllerAuthToken("https://ctrl.example.workers.dev"); got != "hbo_env_token" {
+	where.setenv("HOTBED_TOKEN", "hbo_env_token")
+	if got := controllerAuthToken(where.getenv, "https://ctrl.example.workers.dev"); got != "hbo_env_token" {
 		t.Fatalf("env override got token %q, want hbo_env_token", got)
 	}
 }

@@ -102,8 +102,9 @@ var storeQuestionArgs = map[string]any{"questions": []any{map[string]any{
 // its tools act as and hotbed commands run there use too; it ends the
 // session when it exits, and the next server started there resumes it.
 func TestMCPServerIsASession(t *testing.T) {
-	c := newCluster(t)
-	t.Setenv("T3CODE_THREAD_ID", "thread-mcp")
+	t.Parallel()
+	c := newControllerOnly(t)
+	c.setenv("T3CODE_THREAD_ID", "thread-mcp")
 	m := c.mcp()
 
 	if instr := m.InitializeResult().Instructions; !strings.Contains(instr, "setup steps") || !strings.Contains(instr, "without downloading or compiling anything") {
@@ -194,8 +195,9 @@ func TestMCPServerIsASession(t *testing.T) {
 // HOTBED_SESSION names the server's session: made, or taken up, by that
 // name.
 func TestMCPServerTakesTheNamedSession(t *testing.T) {
-	c := newCluster(t)
-	t.Setenv("HOTBED_SESSION", "named-otter")
+	t.Parallel()
+	c := newControllerOnly(t)
+	c.setenv("HOTBED_SESSION", "named-otter")
 	m := c.mcp()
 
 	if instr := m.InitializeResult().Instructions; !strings.Contains(instr, "setup steps") || !strings.Contains(instr, "without downloading or compiling anything") {
@@ -212,8 +214,9 @@ func TestMCPServerTakesTheNamedSession(t *testing.T) {
 // A tool's failure is the tool's error, with hotbed's code, for the agent
 // to read; arguments the tool does not take fail before anything is called.
 func TestMCPToolErrors(t *testing.T) {
-	c := newCluster(t)
-	t.Setenv("T3CODE_THREAD_ID", "thread-errors")
+	t.Parallel()
+	c := newControllerOnly(t)
+	c.setenv("T3CODE_THREAD_ID", "thread-errors")
 	m := c.mcp()
 
 	if instr := m.InitializeResult().Instructions; !strings.Contains(instr, "setup steps") || !strings.Contains(instr, "without downloading or compiling anything") {
@@ -244,8 +247,9 @@ func TestMCPToolErrors(t *testing.T) {
 // tool for every option (command) RPC declared in hotbed.proto, with matching
 // annotations, and exercises newly migrated CRUD tools end to end.
 func TestMCPRegistersEveryProtoCommand(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("T3CODE_THREAD_ID", "thread-mcp-coverage")
+	c.setenv("T3CODE_THREAD_ID", "thread-mcp-coverage")
 	m := c.mcp()
 	defer m.stop()
 
@@ -352,7 +356,7 @@ func (c *cluster) getSession(id string, res *pb.GetSessionResponse) error {
 	if err != nil {
 		return err
 	}
-	cl, err := controllerClient{Controller: addr}.clients(c.cli.http)
+	cl, err := controllerClient{Controller: addr, Getenv: c.cli.getenv}.clients(c.cli.http)
 	if err != nil {
 		return err
 	}

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -12,9 +14,24 @@ import (
 )
 
 func TestShellCommandEndToEnd(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addRepo(origin)
+	// The base's freshen lasts until the shell watches its workspace, so the
+	// watch finds it preparing, however slow the shell is to get there.
+	freshen := filepath.Join(t.TempDir(), "freshen")
+	c.ok(nil, "step", "set", "-p", "app", "hold", "--", `while [ ! -e '`+freshen+`' ]; do sleep 0.05; done`)
+	var once sync.Once
+	hook := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/WatchWorkspace") {
+				once.Do(func() { write(t, freshen, "") })
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	c.nodes[0].tunnelHook.Store(&hook)
 	var sess pb.Session
 	c.ok(&sess, "session", "start")
 
@@ -50,7 +67,7 @@ func TestShellCommandEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work, "local-edit.txt"), []byte("synced-for-shell\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(work)
+	c.chdir(work)
 	code, out, stderr = c.hotbed("shell", "-s", sess.Id, "--", "sh", "-c", "test ! -e local-edit.txt && echo untouched")
 	if code != 0 || strings.TrimSpace(out) != "untouched" {
 		t.Fatalf("hotbed shell without --sync: code=%d out=%q stderr=%q", code, out, stderr)
@@ -67,7 +84,7 @@ func TestShellCommandEndToEnd(t *testing.T) {
 	}
 	gitIn(t, other, "init", "--quiet")
 	gitIn(t, other, "remote", "add", "origin", "https://github.com/example/unrelated-repo.git")
-	t.Chdir(other)
+	c.chdir(other)
 	code, out, stderr = c.hotbed("shell", "-s", sess.Id, "--", "cat", "local-edit.txt")
 	if code != 0 || strings.TrimSpace(out) != "synced-for-shell" {
 		t.Fatalf("hotbed shell from unrelated repo: code=%d out=%q stderr=%q", code, out, stderr)
@@ -81,6 +98,7 @@ func TestShellCommandEndToEnd(t *testing.T) {
 }
 
 func TestShellPrefersExistingWorkspaceOverBusyPlacement(t *testing.T) {
+	t.Parallel()
 	c := newFleet(t, 2) // asahimbp and mini
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -118,6 +136,7 @@ func TestShellPrefersExistingWorkspaceOverBusyPlacement(t *testing.T) {
 }
 
 func TestWaitReadyPrintsProgressHeaderAndStepsOnRun(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addProject(origin)
@@ -147,6 +166,7 @@ func TestWaitReadyPrintsProgressHeaderAndStepsOnRun(t *testing.T) {
 // of that runtime, as --arch does. The test cluster's workers have no
 // "vm" runtime, so the request fails where the reuse would have succeeded.
 func TestShellRuntimeDoesNotReuseExistingWorkspace(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	var sess pb.Session

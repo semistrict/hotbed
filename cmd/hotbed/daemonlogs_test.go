@@ -14,6 +14,7 @@ import (
 )
 
 func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 
 	workerLogs := map[string]*daemonlog.Store{}

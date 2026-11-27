@@ -13,7 +13,8 @@ import (
 // them; the user archives one dealt with, and a session's start tells
 // agents how.
 func TestIssues(t *testing.T) {
-	c := newCluster(t)
+	t.Parallel()
+	c := newControllerOnly(t)
 	c.addRepo(upstream(t))
 	var first pb.Session
 	c.ok(&first, "session", "start", "sore-elk")

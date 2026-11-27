@@ -126,7 +126,7 @@ func (c *rawAPICmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		req.Header.Add(k, strings.TrimSpace(v))
 	}
 	if req.Header.Get("Authorization") == "" {
-		if tok := controllerAuthToken(c.Controller); tok != "" {
+		if tok := controllerAuthToken(d.getenv, c.Controller); tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 			if host, _ := os.Hostname(); host != "" && req.Header.Get("X-Hotbed-Host") == "" {
 				req.Header.Set("X-Hotbed-Host", host)

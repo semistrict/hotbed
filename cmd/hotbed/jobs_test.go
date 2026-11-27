@@ -19,6 +19,7 @@ var runningID = regexp.MustCompile(`hotbed: (\w+) running in `)
 // past --max-output stops printing as it runs, and its last lines print
 // as it is left; hotbed output reads all of it, kept whole.
 func TestRunDetachesAfterItsWaitAndOutputReadsItAll(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "slow-owl")
@@ -92,6 +93,7 @@ func TestRunDetachesAfterItsWaitAndOutputReadsItAll(t *testing.T) {
 
 // A run within its wait prints all it wrote and exits with its status.
 func TestRunWithinItsWaitPrintsItAll(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "fast-owl")
@@ -105,6 +107,7 @@ func TestRunWithinItsWaitPrintsItAll(t *testing.T) {
 // A detached run says what it needs: --mem, or an earlier run of the same
 // command's peak. Its estimate stays with it.
 func TestDetachedRunsNeedAnEstimate(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "wise-elk")
@@ -146,6 +149,7 @@ func TestDetachedRunsNeedAnEstimate(t *testing.T) {
 // A detached run with --ready returns once its output says it is ready,
 // and fails, saying so, if it ends first.
 func TestDetachedRunWaitsUntilReady(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "keen-bat")
@@ -166,6 +170,7 @@ func TestDetachedRunWaitsUntilReady(t *testing.T) {
 // A port proxy that accepts and closes at once (its VM's server not up) is
 // not serving; a server that holds the connection, or answers, is.
 func TestServesSeesThroughAPortProxy(t *testing.T) {
+	t.Parallel()
 	listen := func(handle func(net.Conn)) string {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {

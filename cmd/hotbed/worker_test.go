@@ -12,6 +12,7 @@ import (
 )
 
 func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
+	t.Parallel()
 	var c cli
 	parser, err := kong.New(&c, kong.Name("hotbed"))
 	if err != nil {
@@ -65,6 +66,7 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 // The daemon exits for a new build only when its binary was replaced, not
 // when it is told to stop (launchctl bootout).
 func TestReplacedAtTellsReplacementFromStopping(t *testing.T) {
+	t.Parallel()
 	bin := filepath.Join(t.TempDir(), "hotbed")
 	if err := os.WriteFile(bin, []byte("build 1"), 0o755); err != nil {
 		t.Fatal(err)

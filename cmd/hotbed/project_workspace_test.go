@@ -18,6 +18,7 @@ import (
 // there; one run outside any checkout starts in /work. Any repo's branch
 // moving freshens the next base once the optional freshen cooldown passes.
 func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
+	t.Parallel()
 	wclock := &clock{}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = wclock.Now })
 	app, lib := upstream(t), upstream(t)
@@ -26,7 +27,7 @@ func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
 	c.ok(nil, "project", "add", "duo", "--repo", app, "--repo", lib, "--shared")
 	c.ok(nil, "repo", "add", "app", app)
 	c.ok(nil, "repo", "add", "lib", lib)
-	t.Setenv("HOTBED_PROJECT", "duo")
+	c.setenv("HOTBED_PROJECT", "duo")
 	// One step builds across both repos, from /work.
 	project := &pb.Project{}
 	c.ok(project, "step", "set", "-p", "duo", "link", "--every-pull", "--", `cat app/src/lib.txt lib/src/lib.txt > linked.txt`)
@@ -47,7 +48,7 @@ func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
 
 	// Outside any checkout, a run starts in /work, beside every repo and
 	// what the steps built there.
-	t.Chdir(t.TempDir())
+	c.chdir(t.TempDir())
 	if code, out, errOut := c.hotbed("run", "-s", S, "--", "sh", "-c", "ls; cat linked.txt"); code != 0 || out != "app\nlib\nlinked.txt\nbase\nlib\n" {
 		t.Fatalf("run outside a checkout: exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
@@ -57,7 +58,7 @@ func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
 	agent := filepath.Join(t.TempDir(), "lib")
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", lib, agent)
 	write(t, filepath.Join(agent, "src/lib.txt"), "lib edited\n")
-	t.Chdir(agent)
+	c.chdir(agent)
 	code, out, errOut := c.hotbed("run", "-s", S, "--", "sh", "-c", `basename "$PWD"; cat src/lib.txt ../app/src/lib.txt`)
 	if code != 0 || out != "lib\nlib edited\nbase\n" || !strings.Contains(errOut, "synced 1 changed files") {
 		t.Fatalf("run from lib's checkout: exit %d, stdout %q, stderr %q", code, out, errOut)
@@ -99,7 +100,7 @@ func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
 	if g2.Id != "duo-g2" || g2.Cold || heads["app"] != gitIn(t, app, "rev-parse", "HEAD") || heads["lib"] != gitIn(t, lib, "rev-parse", "HEAD") {
 		t.Fatalf("base after app moved = %v, want duo-g2, incremental, at both heads", g2)
 	}
-	t.Chdir(t.TempDir())
+	c.chdir(t.TempDir())
 	if code, out, errOut := c.hotbed("run", "-s", "next-owl", "--", "cat", "linked.txt"); code != 0 || out != "app moved\nlib\n" {
 		t.Errorf("the step's output in the new base: exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
@@ -108,6 +109,7 @@ func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
 // A run of a repo its session's project does not hold is refused, saying
 // how to add it: its checkout would be in none of the project's workspaces.
 func TestRunOfARepoOutsideTheProjectIsRefused(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	other := upstream(t)
@@ -123,6 +125,7 @@ func TestRunOfARepoOutsideTheProjectIsRefused(t *testing.T) {
 // project hosts says which nodes keep a project's bases: runs go only to
 // them, and bases elsewhere go once unused.
 func TestProjectHostsKeepItsBases(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	project := &pb.Project{}

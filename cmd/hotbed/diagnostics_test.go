@@ -22,6 +22,7 @@ import (
 )
 
 func TestInspectTraceAndContinuousProfileE2E(t *testing.T) {
+	t.Parallel()
 	prof := fake.NewProfiler()
 	c := newCluster(t, func(cfg *worker.EngineConfig) {
 		cfg.Inspector = fake.Inspector{}
@@ -276,6 +277,7 @@ func TestInspectTraceAndContinuousProfileE2E(t *testing.T) {
 // live with every stack asked for, and its profile reaches the controller
 // when it ends, inside the event that says so (board 7115).
 func TestProfileOfDeepStacksE2E(t *testing.T) {
+	t.Parallel()
 	prof := fake.NewProfiler()
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Profiler = prof })
 	c.addRepo(upstream(t))
@@ -332,6 +334,7 @@ func TestProfileOfDeepStacksE2E(t *testing.T) {
 // it, the worker removes the file when it forgets the command, and the
 // controller serves the profile on its own (board 7183).
 func TestWorkerRemovesDeliveredProfileFiles(t *testing.T) {
+	t.Parallel()
 	prof := fake.NewProfiler()
 	workerClock := &clock{}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Profiler, cfg.Now = prof, workerClock.Now })
@@ -374,6 +377,7 @@ func TestWorkerRemovesDeliveredProfileFiles(t *testing.T) {
 // `sample`, and `profile`) honor `--jq`, `--json`, and default plain-text
 // output consistently (board 7894).
 func TestFormatRawCommandsHonorJSONJQAndPlainText(t *testing.T) {
+	t.Parallel()
 	prof := fake.NewProfiler()
 	c := newCluster(t, func(cfg *worker.EngineConfig) {
 		cfg.Inspector = fake.Inspector{}
@@ -449,6 +453,7 @@ func TestFormatRawCommandsHonorJSONJQAndPlainText(t *testing.T) {
 // even without global `--json`, while still honoring `--jq` and leaving the
 // omitted `--format` default as human-readable plain text (board 8295).
 func TestProfileExplicitFormatJSONAndPlainText(t *testing.T) {
+	t.Parallel()
 	prof := fake.NewProfiler()
 	c := newCluster(t, func(cfg *worker.EngineConfig) {
 		cfg.Inspector = fake.Inspector{}
@@ -536,6 +541,7 @@ func TestProfileExplicitFormatJSONAndPlainText(t *testing.T) {
 }
 
 func TestFormatSampleTextReportGroupedStacksAndBoundsCheck(t *testing.T) {
+	t.Parallel()
 	t.Run("out-of-bounds frame indices do not panic", func(t *testing.T) {
 		sample := &pb.ProcessSample{
 			CommandId: "cmd-oob",

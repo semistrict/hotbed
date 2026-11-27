@@ -25,6 +25,8 @@ import (
 
 // deps is what commands use from the outside world, so tests can replace it.
 type deps struct {
+	// here is where the command runs: its environment and working directory.
+	here
 	tailnet worker.Tailnet
 	// http calls the API; stream reads output, which has no deadline.
 	http, stream *http.Client
@@ -135,14 +137,16 @@ type cli struct {
 // after printing --help.
 type exited struct{ code int }
 
-// parse returns the command args name, its name, and its output options.
-// When kong handled args itself (--help), cmd is nil and exitCode is set.
-func parse(args []string, stdout io.Writer) (cmd command, name string, opts outputOpts, exitCode *int, err error) {
+// parse returns the command args name, its name, and its output options;
+// what the command line does not give, the variables its env tags name in
+// getenv do. When kong handled args itself (--help), cmd is nil and exitCode
+// is set.
+func parse(args []string, stdout io.Writer, getenv func(string) string) (cmd command, name string, opts outputOpts, exitCode *int, err error) {
 	if len(args) == 0 {
 		args = []string{"--help"}
 	}
 	if sep := slices.Index(args, "--"); sep >= 0 {
-		cmd, name, opts, exitCode, err = parseOnce(args[:sep], stdout)
+		cmd, name, opts, exitCode, err = parseOnce(args[:sep], stdout, getenv)
 		if err == nil && exitCode == nil {
 			if dd, ok := cmd.(dashDashCommand); ok {
 				if before := dd.SetDashArgs(args[sep+1:]); len(before) > 0 {
@@ -157,24 +161,27 @@ func parse(args []string, stdout io.Writer) (cmd command, name string, opts outp
 			}
 		}
 	}
-	return parseOnce(args, stdout)
+	return parseOnce(args, stdout, getenv)
 }
 
-func parseOnce(args []string, stdout io.Writer) (cmd command, name string, opts outputOpts, exitCode *int, err error) {
+func parseOnce(args []string, stdout io.Writer, getenv func(string) string) (cmd command, name string, opts outputOpts, exitCode *int, err error) {
 	var c cli
 	generated, err := apiCommands()
 	if err != nil {
 		return nil, "", outputOpts{}, nil, api.Errorf(api.CodeInternal, "%v", err)
 	}
+	var envs envFlags
 	parser, err := kong.New(&c, append([]kong.Option{
 		kong.Name("hotbed"),
 		kong.Description(description),
 		kong.Writers(stdout, stdout),
 		kong.Exit(func(code int) { panic(exited{code}) }),
+		kong.ValueFormatter(func(v *kong.Value) string { return envs.helpValue(v) }),
 	}, generated.Options()...)...)
 	if err != nil {
 		return nil, "", outputOpts{}, nil, err
 	}
+	envs = takeEnvs(parser.Model)
 	defer func() {
 		if r := recover(); r != nil {
 			e, ok := r.(exited)
@@ -185,6 +192,9 @@ func parseOnce(args []string, stdout io.Writer) (cmd command, name string, opts 
 		}
 	}()
 	kctx, perr := parser.Parse(args)
+	if perr == nil {
+		perr = envs.fill(kctx, getenv)
+	}
 	opts = outputOpts{JSON: c.JSON, JQ: c.JQ}
 	if perr != nil && !opts.JSON {
 		opts.JSON = slices.Contains(args, "--json")

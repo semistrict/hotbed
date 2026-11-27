@@ -1,22 +1,16 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,30 +23,23 @@ import (
 	"github.com/semistrict/hotbed/internal/update"
 )
 
-// cfHarness runs a single local Miniflare 5 (workerd) instance of cf-controller
-// shared across the test binary, giving each cluster its own isolated SQLite
-// Durable Object via the X-Hotbed-Test-DO header.
-type cfHarness struct {
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	url   string
-	token string
-}
-
+// The cf-controller harness: one local Miniflare (workerd) instance shared
+// across the test binary, giving each cluster its own isolated SQLite Durable
+// Object via the X-Hotbed-Test-DO header.
 var (
 	harnessMu   sync.Mutex
-	harnessInst *cfHarness
+	harnessInst *cfbundle.Harness
 	harnessErr  error
 	harnessSeq  atomic.Int64
 )
 
-func getCFHarness() (*cfHarness, error) {
+func getCFHarness() (*cfbundle.Harness, error) {
 	harnessMu.Lock()
 	defer harnessMu.Unlock()
 	if harnessInst != nil || harnessErr != nil {
 		return harnessInst, harnessErr
 	}
-	harnessInst, harnessErr = startCFHarness()
+	harnessInst, harnessErr = cfbundle.StartHarness(context.Background(), cfbundle.HarnessOptions{})
 	return harnessInst, harnessErr
 }
 
@@ -64,140 +51,9 @@ func stopCFHarness() {
 	if h == nil {
 		return
 	}
-	_ = h.stdin.Close()
-	done := make(chan struct{})
-	go func() {
-		_ = h.cmd.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = h.cmd.Process.Kill()
-		<-done
+	if err := h.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "stop the cf-controller harness: %v\n", err)
 	}
-}
-
-func findRepoRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "cf-controller", "scripts", "harness.mjs")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", errors.New("could not locate cf-controller/scripts/harness.mjs from working directory")
-		}
-		dir = parent
-	}
-}
-
-func startCFHarness() (*cfHarness, error) {
-	root, err := findRepoRoot()
-	if err != nil {
-		return nil, err
-	}
-	bundleDir, err := cfbundle.Ensure(root)
-	if err != nil {
-		return nil, err
-	}
-
-	script := filepath.Join(root, "cf-controller", "scripts", "harness.mjs")
-	cmd := exec.Command("node", script, "--bundle", bundleDir)
-	cmd.Dir = filepath.Join(root, "cf-controller")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start cf-controller harness: %w", err)
-	}
-
-	lineCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		if sc.Scan() {
-			lineCh <- sc.Text()
-			// Drain any further stdout so the child never blocks on a full pipe.
-			for sc.Scan() {
-			}
-			return
-		}
-		if err := sc.Err(); err != nil {
-			errCh <- err
-		} else {
-			errCh <- io.EOF
-		}
-	}()
-
-	select {
-	case line := <-lineCh:
-		var ready struct {
-			URL   string `json:"url"`
-			Token string `json:"token"`
-		}
-		if err := json.Unmarshal([]byte(line), &ready); err != nil || ready.URL == "" {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return nil, fmt.Errorf("parse cf-controller harness ready line %q: %w (stderr: %s)", line, err, stderr.String())
-		}
-		return &cfHarness{cmd: cmd, stdin: stdin, url: ready.URL, token: ready.Token}, nil
-	case err := <-errCh:
-		_ = cmd.Wait()
-		return nil, fmt.Errorf("cf-controller harness exited early (%w): %s", err, stderr.String())
-	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, fmt.Errorf("timed out waiting for cf-controller harness: %s", stderr.String())
-	}
-}
-
-func (h *cfHarness) doJSON(ctx context.Context, doName, method, path string, reqBody any, out any) error {
-	var bodyReader io.Reader
-	if reqBody != nil {
-		b, err := json.Marshal(reqBody)
-		if err != nil {
-			return err
-		}
-		bodyReader = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, h.url+path, bodyReader)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-Hotbed-Test-DO", doName)
-	if reqBody != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	if out != nil {
-		if err := json.Unmarshal(raw, out); err != nil {
-			return fmt.Errorf("decode %s %s: %w (body: %s)", method, path, err, raw)
-		}
-	}
-	return nil
 }
 
 // testServerConfig replaces controller.ServerConfig in clusterOpts.server.
@@ -244,25 +100,25 @@ func buildMockPayload(cache *buildCache, buildNum int64) (*mockBuildPayload, err
 
 // testServer drives controller maintenance hooks on the test DO.
 type testServer struct {
-	h      *cfHarness
+	h      *cfbundle.Harness
 	doName string
 }
 
 func (s *testServer) ReapIdle(ctx context.Context) error {
-	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/reap-idle", map[string]any{}, nil)
+	return s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/reap-idle", map[string]any{}, nil)
 }
 
 func (s *testServer) TickSchedules(ctx context.Context) error {
-	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/tick-schedules", map[string]any{}, nil)
+	return s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/tick-schedules", map[string]any{}, nil)
 }
 
 func (s *testServer) TickBoard(ctx context.Context) error {
-	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/tick-board", map[string]any{}, nil)
+	return s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/tick-board", map[string]any{}, nil)
 }
 
 // testStore inspects and seeds state in the test DO via /__test/* endpoints.
 type testStore struct {
-	h      *cfHarness
+	h      *cfbundle.Harness
 	doName string
 }
 
@@ -276,7 +132,7 @@ func (s *testStore) ConnectedWorkers(ctx context.Context) ([]string, error) {
 	var res struct {
 		NodeIDs []string `json:"nodeIds"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=connectedWorkers", nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=connectedWorkers", nil, &res); err != nil {
 		return nil, err
 	}
 	return res.NodeIDs, nil
@@ -293,7 +149,7 @@ func (s *testStore) LogDaemon(ctx context.Context, level, msg string, attrs map[
 	if !at.IsZero() {
 		payload["at"] = at.UnixMilli()
 	}
-	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/daemon-log", payload, nil)
+	return s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/daemon-log", payload, nil)
 }
 
 func (s *testStore) AddProject(ctx context.Context, name string, remotes []string, stamp *pb.Stamp) (*pb.Project, error) {
@@ -309,7 +165,7 @@ func (s *testStore) AddProject(ctx context.Context, name string, remotes []strin
 			proj["reason"] = stamp.Reason
 		}
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"project": proj}, nil); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"project": proj}, nil); err != nil {
 		return nil, err
 	}
 	return &pb.Project{Name: name, Repos: remotes}, nil
@@ -325,7 +181,7 @@ func (s *testStore) StartSession(ctx context.Context, id, agent, project, t3code
 	if !at.IsZero() {
 		sess["at"] = at.UnixMilli()
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"session": sess}, nil); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"session": sess}, nil); err != nil {
 		return nil, err
 	}
 	return &pb.Session{Id: id, Agent: agent, Project: project}, nil
@@ -341,7 +197,7 @@ func (s *testStore) AddWorkspace(ctx context.Context, id, sessionID, nodeID, age
 	if !at.IsZero() {
 		ws["at"] = at.UnixMilli()
 	}
-	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"workspace": ws}, nil)
+	return s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"workspace": ws}, nil)
 }
 
 func (s *testStore) AddRun(ctx context.Context, run *pb.ScheduledRun) error {
@@ -351,7 +207,7 @@ func (s *testStore) AddRun(ctx context.Context, run *pb.ScheduledRun) error {
 		"startedAt": run.StartedAt,
 		"outcome":   int32(run.Outcome),
 	}
-	return s.h.doJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"run": r}, nil)
+	return s.h.DoJSON(ctx, s.doName, http.MethodPost, "/__test/seed", map[string]any{"run": r}, nil)
 }
 
 func (s *testStore) Session(ctx context.Context, id string) (*pb.Session, error) {
@@ -359,7 +215,7 @@ func (s *testStore) Session(ctx context.Context, id string) (*pb.Session, error)
 		Found bool            `json:"found"`
 		Data  json.RawMessage `json:"data"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=session&id="+url.QueryEscape(id), nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=session&id="+url.QueryEscape(id), nil, &res); err != nil {
 		return nil, err
 	}
 	if !res.Found {
@@ -376,7 +232,7 @@ func (s *testStore) SessionEvents(ctx context.Context, session string, after int
 	var res struct {
 		Data []json.RawMessage `json:"data"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=sessionEvents&id="+url.QueryEscape(session), nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=sessionEvents&id="+url.QueryEscape(session), nil, &res); err != nil {
 		return nil, err
 	}
 	out := make([]*pb.SessionEvent, 0, len(res.Data))
@@ -399,7 +255,7 @@ func (s *testStore) NodeView(ctx context.Context, nodeID string) (*pb.Checkpoint
 		Workspaces []json.RawMessage `json:"workspaces"`
 		Commands   []json.RawMessage `json:"commands"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=nodeView&id="+url.QueryEscape(nodeID), nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=nodeView&id="+url.QueryEscape(nodeID), nil, &res); err != nil {
 		return nil, err
 	}
 	cp := &pb.Checkpoint{Seq: res.Seq}
@@ -432,7 +288,7 @@ func (s *testStore) Finished(ctx context.Context, id string) (*pb.FinishedComman
 		Found bool            `json:"found"`
 		Data  json.RawMessage `json:"data"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=finished&id="+url.QueryEscape(id), nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=finished&id="+url.QueryEscape(id), nil, &res); err != nil {
 		return nil, false, err
 	}
 	if !res.Found {
@@ -449,7 +305,7 @@ func (s *testStore) History(ctx context.Context, since time.Time) ([]*pb.Finishe
 	var res struct {
 		Data []json.RawMessage `json:"data"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=history", nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=history", nil, &res); err != nil {
 		return nil, err
 	}
 	sinceMs := int64(0)
@@ -474,7 +330,7 @@ func (s *testStore) CommandProfile(ctx context.Context, id string) (*pb.CommandP
 		Found bool            `json:"found"`
 		Data  json.RawMessage `json:"data"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=commandProfile&id="+url.QueryEscape(id), nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=commandProfile&id="+url.QueryEscape(id), nil, &res); err != nil {
 		return nil, false, err
 	}
 	if !res.Found {
@@ -493,7 +349,7 @@ func (s *testStore) BaseByCommand(ctx context.Context, cmdID string) (string, *p
 		NodeID string          `json:"nodeId"`
 		Base   json.RawMessage `json:"base"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=baseByCommand&id="+url.QueryEscape(cmdID), nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=baseByCommand&id="+url.QueryEscape(cmdID), nil, &res); err != nil {
 		return "", nil, false, err
 	}
 	if !res.Found {
@@ -512,7 +368,7 @@ func (s *testStore) Command(ctx context.Context, id string) (string, string, err
 		Session string `json:"session"`
 		Node    string `json:"node"`
 	}
-	if err := s.h.doJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=command&id="+url.QueryEscape(id), nil, &res); err != nil {
+	if err := s.h.DoJSON(ctx, s.doName, http.MethodGet, "/__test/inspect?kind=command&id="+url.QueryEscape(id), nil, &res); err != nil {
 		return "", "", err
 	}
 	if !res.Found {

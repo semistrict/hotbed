@@ -46,6 +46,7 @@ func read(t *testing.T, path string) string {
 // a CI build install it over themselves, from the controller, never from
 // GitHub.
 func TestNodesFollowTheControllersBuild(t *testing.T) {
+	t.Parallel()
 	cache, _ := publishBuild(t, 7)
 	workerExe := writeExe(t, "old worker")
 	c := newClusterWith(t, clusterOpts{
@@ -111,6 +112,7 @@ func TestNodesFollowTheControllersBuild(t *testing.T) {
 // A controller on a build it doesn't keep (a dev build) has nothing to hand
 // out: workers stay as they are, and upgrade says why.
 func TestADevControllerHandsOutNoBuild(t *testing.T) {
+	t.Parallel()
 	workerExe := writeExe(t, "old worker")
 	c := newClusterWith(t, clusterOpts{
 		follow: func(ctrl string, hc *http.Client) *worker.Follow {
@@ -133,6 +135,7 @@ func TestADevControllerHandsOutNoBuild(t *testing.T) {
 // ride out their worker's restart, printing all of the command's output
 // once; run exits with its status.
 func TestRunRidesOutAWorkerRestart(t *testing.T) {
+	t.Parallel()
 	for _, logs := range []bool{false, true} {
 		t.Run(map[bool]string{false: "run", true: "logs -f"}[logs], func(t *testing.T) { ridesOut(t, logs) })
 	}
@@ -188,6 +191,7 @@ func ridesOut(t *testing.T, logs bool) {
 // restarting, then immediately installs the new build and returns
 // update.ErrRestart once the command finishes (board 7989).
 func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
+	t.Parallel()
 	cache, _ := publishBuild(t, 8)
 
 	workerExe := writeExe(t, "old worker")
@@ -271,6 +275,7 @@ func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
 // immediately, sends workers a direct GitHub release download URL, and workers
 // fetch directly from GitHub without controller auth and restart into it.
 func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
+	t.Parallel()
 	_, files := publishBuild(t, 12)
 	g := serveReleaseDownloads(t, 12, files)
 	const wantCommit = "0123456789abcdef0123456789abcdef01234567"

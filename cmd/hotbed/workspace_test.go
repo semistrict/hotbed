@@ -12,6 +12,7 @@ import (
 )
 
 func TestWorkspaceCommands(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -21,7 +22,7 @@ func TestWorkspaceCommands(t *testing.T) {
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
 	write(t, filepath.Join(agent, "src/lib.txt"), "edited\n")
 	write(t, filepath.Join(agent, "src/new.txt"), "new\n")
-	t.Chdir(agent)
+	c.chdir(agent)
 	c.ok(nil, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--", "true")
 	ws := &pb.Workspace{}
 	c.ok(ws, "workspace", "show", "-s", S)
@@ -81,11 +82,7 @@ func TestWorkspaceCommands(t *testing.T) {
 	// logs --tail prints a command's last lines.
 	cmd := &pb.Command{}
 	c.ok(cmd, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo one; echo two; echo three")
-	c.eventually("the command to end", func() bool {
-		ps := &pb.ListCommandsResponse{}
-		c.ok(ps, "ps", "-s", S)
-		return !containsLive(ps.Commands, cmd.Id)
-	})
+	c.eventually("the command to end", func() bool { return c.ended(S, cmd.Id) })
 	if code, out, errOut := c.hotbed("logs", "-s", S, "--tail", "2", cmd.Id); code != 0 || out != "two\nthree\n" {
 		t.Errorf("logs --tail 2: exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
@@ -94,11 +91,7 @@ func TestWorkspaceCommands(t *testing.T) {
 	big := &pb.Command{}
 	c.ok(big, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c",
 		`printf 'first\n'; head -c 614400 /dev/zero | tr '\0' a; echo; head -c 614400 /dev/zero | tr '\0' b; printf '\377\n'`)
-	c.eventually("the big command to end", func() bool {
-		ps := &pb.ListCommandsResponse{}
-		c.ok(ps, "ps", "-s", S)
-		return !containsLive(ps.Commands, big.Id)
-	})
+	c.eventually("the big command to end", func() bool { return c.ended(S, big.Id) })
 	code, out, errOut := c.hotbed("logs", "-s", S, "--tail", "3", big.Id)
 	if want := strings.Repeat("b", 614400) + "�\n"; code != 0 || out != want {
 		t.Errorf("logs --tail 3 of 1.2 MiB: exit %d, %d bytes of stdout starting %.20q, want the last line alone", code, len(out), out)
@@ -150,6 +143,7 @@ func workspaceIDs(res *pb.ListWorkspacesResponse) []string {
 // Workspaces and commands carry their session's project and can be filtered
 // with -p PROJECT.
 func TestWorkspaceAndCommandProjectFiltering(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addRepo(origin)

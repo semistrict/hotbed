@@ -41,9 +41,10 @@ const twoQuestions = `{"questions": [
 // no session.
 func questionCluster(t *testing.T) (*cluster, hotbedv1connect.QuestionServiceClient) {
 	t.Helper()
-	// newCluster leaves us outside any checkout, so the sessions bind to
-	// nothing: a command names its session, or has none.
-	c := newCluster(t)
+	// The cluster starts outside any checkout, so the sessions bind to
+	// nothing: a command names its session, or has none. What questions and
+	// reviews are, the controller alone keeps: no worker.
+	c := newControllerOnly(t)
 	c.ok(nil, "session", "start", "brave-otter")
 	c.ok(nil, "session", "start", "calm-heron")
 	addr, err := c.cli.controller()
@@ -105,6 +106,7 @@ func whats(q *pb.Question) []string {
 // questions is an entry of its own, listed newest first by default, and in
 // any other order on request.
 func TestQuestionsAreOneListForEverySession(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	asked := c.ask("brave-otter", twoQuestions)
 	if got := ids(asked); !slices.Equal(got, []int32{1, 2}) {
@@ -145,6 +147,7 @@ func TestQuestionsAreOneListForEverySession(t *testing.T) {
 // A question keeps where its agent asked from: the checkout's top, origin,
 // branch, commit and what was changed in it.
 func TestQuestionKeepsWhereItWasAsked(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	dir := t.TempDir()
 	gitIn(t, dir, "init", "-q", "-b", "work")
@@ -154,7 +157,7 @@ func TestQuestionKeepsWhereItWasAsked(t *testing.T) {
 	gitIn(t, dir, "remote", "add", "origin", "https://example.invalid/app.git")
 	write(t, filepath.Join(dir, "a.txt"), "b\n")
 	write(t, filepath.Join(dir, "new.txt"), "new\n")
-	t.Chdir(dir)
+	c.chdir(dir)
 
 	// The project holds the checkout's repo, so the question is about it.
 	c.ok(nil, "project", "add", "test", "--repo", "https://example.invalid/app.git")
@@ -174,7 +177,7 @@ func TestQuestionKeepsWhereItWasAsked(t *testing.T) {
 
 	// Outside a checkout, only the directory.
 	out := t.TempDir()
-	t.Chdir(out)
+	c.chdir(out)
 	q = c.ask("brave-otter", storeQuestion)[0]
 	if from := q.AskedFrom; from.Dir != out || from.Head != "" || from.DirtyFiles != 0 {
 		t.Errorf("asked from outside a checkout: %v, want only the directory %s", from, out)
@@ -197,6 +200,7 @@ func TestQuestionKeepsWhereItWasAsked(t *testing.T) {
 // to (recommended). A question that takes one option marks one of each at
 // most, and no option is both.
 func TestQuestionsMarkTheImplementedAndRecommendedOptions(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	asked := c.ask("brave-otter", `{"questions": [{
 	  "question": "Keep the README guard on /work?", "header": "/work guard",
@@ -260,6 +264,7 @@ func TestQuestionsMarkTheImplementedAndRecommendedOptions(t *testing.T) {
 // stripping or mutating Recommended: callers mark recommended options
 // explicitly with "recommended": true (board 7876).
 func TestQuestionRecommendedLabelIsPreservedVerbatim(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	asked := c.ask("brave-otter", `{"questions": [{
 	  "question": "Which store should sessions use?", "header": "Store",
@@ -289,6 +294,7 @@ func TestQuestionRecommendedLabelIsPreservedVerbatim(t *testing.T) {
 // hotbed poll hears of it, and any agent that acts on it acknowledges it,
 // which makes it handled. Every step is kept, with the session that took it.
 func TestAnsweredQuestionGoesThroughTheOutbox(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ask("brave-otter", storeQuestion)
 	c.ok(nil, "poll", "-s", "brave-otter", "--timeout", "1") // past what happened so far
@@ -357,6 +363,7 @@ func TestAnsweredQuestionGoesThroughTheOutbox(t *testing.T) {
 // so long as its answer still fits it. Each wakes the asker as an answer
 // does, and each is kept in the history.
 func TestUserChangesResponsesReopensAndRevises(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ask("brave-otter", storeQuestion) // 1
 	c.ask("brave-otter", twoQuestions)  // 2, 3: on top of 1
@@ -437,6 +444,7 @@ func TestUserChangesResponsesReopensAndRevises(t *testing.T) {
 // overturns it by reopening it and answering. A decision marks what was
 // decided, or none of the add's questions is made.
 func TestDecisionsAreAddedAnswered(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ok(nil, "poll", "-s", "brave-otter", "--timeout", "1") // past what happened so far
 	res := &pb.AddQuestionsResponse{}
@@ -509,6 +517,7 @@ func TestDecisionsAreAddedAnswered(t *testing.T) {
 // An agent passing on the user's word answers as its session; a
 // multiSelect question takes several picks, and words of the user's own.
 func TestAgentPassesOnAnAnswer(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	c.ask("brave-otter", twoQuestions)
 	q := &pb.Question{}
@@ -522,6 +531,7 @@ func TestAgentPassesOnAnAnswer(t *testing.T) {
 // of the list unless asked for, and keeps its history. The user may
 // dismiss a question, which sends it to the outbox unanswered.
 func TestQuestionsAreEditedDeletedAndDismissed(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	c.ask("brave-otter", twoQuestions)
 
@@ -580,6 +590,7 @@ func TestQuestionsAreEditedDeletedAndDismissed(t *testing.T) {
 // The user orders the open questions; moving one is kept in its history
 // but is not a change to it as the updated order sees it.
 func TestUserOrdersTheQuestions(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	for range 3 {
 		c.ask("brave-otter", storeQuestion)
@@ -631,6 +642,7 @@ func TestUserOrdersTheQuestions(t *testing.T) {
 // open, and at once when the user answers it, with the question as
 // answered.
 func TestPollHearsAnAnswer(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ask("brave-otter", storeQuestion)
 	c.ok(nil, "poll", "-s", "brave-otter", "--timeout", "1") // past what happened so far
@@ -667,6 +679,7 @@ func TestPollHearsAnAnswer(t *testing.T) {
 // Each project has its own list, which every session working on it shares;
 // a listing is of the session's project unless told otherwise.
 func TestQuestionsBelongToAProject(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "far-fox", "-p", "other")
@@ -688,7 +701,7 @@ func TestQuestionsBelongToAProject(t *testing.T) {
 	if _, e := c.fails("question", "ls", "-p", "other", "--all-projects"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "can't be used together") {
 		t.Errorf("ls -p other --all-projects = %v, want INVALID_ARGS: one or the other", e)
 	}
-	t.Setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_PROJECT", "")
 	if got := c.listed("-s", "far-fox"); !slices.Equal(got, []int32{2}) {
 		t.Errorf("ls -s far-fox = %v, want its project's", got)
 	}
@@ -722,6 +735,7 @@ func TestQuestionsBelongToAProject(t *testing.T) {
 // A session's poll hears of answers to its own questions alone: an answer
 // to another session's question is that session's.
 func TestPollHearsOnlyOwnAnswers(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ask("brave-otter", storeQuestion)
 	c.ask("calm-heron", storeQuestion)
@@ -758,9 +772,10 @@ func TestPollHearsOnlyOwnAnswers(t *testing.T) {
 // one long ended, is not recorded, and does not stop it. A session named
 // with -s is recorded, and must be live.
 func TestUserChangesIgnoreABoundSession(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	c.ask("brave-otter", storeQuestion)
-	t.Setenv("T3CODE_THREAD_ID", "thread-old")
+	c.setenv("T3CODE_THREAD_ID", "thread-old")
 	c.ok(nil, "session", "start", "old-owl")
 	c.ok(nil, "session", "end", "-s", "old-owl")
 
@@ -778,6 +793,7 @@ func TestUserChangesIgnoreABoundSession(t *testing.T) {
 // A session changes only its own project's questions: their list is what
 // its project's sessions read.
 func TestAgentsChangeOnlyTheirProjectsQuestions(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "far-fox", "-p", "other")
@@ -812,6 +828,7 @@ func TestAgentsChangeOnlyTheirProjectsQuestions(t *testing.T) {
 
 // move --first puts a question first in its own project's list.
 func TestMoveFirstWithinItsProject(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "far-fox", "-p", "other")
@@ -832,10 +849,11 @@ func TestMoveFirstWithinItsProject(t *testing.T) {
 // missing, rather than acting for everyone or as the user. Every such
 // command is here: a new one fails the test until it is.
 func TestCommandsActingAsNoSessionAreRefused(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	c.ask("brave-otter", storeQuestion)
-	t.Setenv("HOTBED_PROJECT", "")
-	t.Setenv("HOTBED_SESSION", "")
+	c.setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_SESSION", "")
 	edited := `{"question": "Which store?", "header": "Store", "options": [{"label": "A", "description": "a"}, {"label": "B", "description": "b"}]}`
 	cases := map[string]struct {
 		stdin string
@@ -882,6 +900,7 @@ func TestCommandsActingAsNoSessionAreRefused(t *testing.T) {
 // user has not answered: every QuestionService response has the reminder,
 // set on the response alone, and the plain text prints it.
 func TestEveryQuestionResponseReminds(t *testing.T) {
+	t.Parallel()
 	svc := pb.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService")
 	methods := svc.Methods()
 	for i := range methods.Len() {
@@ -931,6 +950,7 @@ func TestEveryQuestionResponseReminds(t *testing.T) {
 // on question edit and question revise rather than silently dropping them
 // (board 7894).
 func TestQuestionOnePromptRejectsAnsweredAndExtraFields(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	c.ask("brave-otter", storeQuestion)
 
@@ -969,13 +989,14 @@ func TestQuestionOnePromptRejectsAnsweredAndExtraFields(t *testing.T) {
 // question add, ls, outbox, and show — both from T3CODE_THREAD_ID captured
 // when asked and from the asking session's persisted t3code_thread_id.
 func TestQuestionT3CodeThreadMappingAndOutboxSessions(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ok(nil, "project", "add", "other")
 
 	// 1. Session started with T3CODE_THREAD_ID; asks questions later with env unset.
-	t.Setenv("T3CODE_THREAD_ID", "thread-alpha")
+	c.setenv("T3CODE_THREAD_ID", "thread-alpha")
 	c.ok(nil, "session", "start", "alpha-one")
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 	qAlpha1 := c.ask("alpha-one", twoQuestions) // #1, #2
 	if qAlpha1[0].T3CodeThreadId != "thread-alpha" || qAlpha1[1].T3CodeThreadId != "thread-alpha" {
 		t.Fatalf("alpha-one questions t3 = [%q %q], want thread-alpha", qAlpha1[0].T3CodeThreadId, qAlpha1[1].T3CodeThreadId)
@@ -983,7 +1004,7 @@ func TestQuestionT3CodeThreadMappingAndOutboxSessions(t *testing.T) {
 
 	// 2. Second session for the same T3 thread in another project.
 	c.ok(nil, "session", "start", "alpha-two", "-p", "other", "--t3code-thread-id", "thread-alpha")
-	t.Setenv("T3CODE_THREAD_ID", "thread-alpha")
+	c.setenv("T3CODE_THREAD_ID", "thread-alpha")
 	qAlpha2 := c.ask("alpha-two", storeQuestion) // #3
 	if qAlpha2[0].T3CodeThreadId != "thread-alpha" {
 		t.Fatalf("alpha-two question t3 = %q, want thread-alpha", qAlpha2[0].T3CodeThreadId)
@@ -991,9 +1012,9 @@ func TestQuestionT3CodeThreadMappingAndOutboxSessions(t *testing.T) {
 
 	// 3. Session started without a T3 thread; asking with T3CODE_THREAD_ID records
 	//    it on the question AND backfills the session.
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 	c.ok(nil, "session", "start", "beta-one")
-	t.Setenv("T3CODE_THREAD_ID", "thread-beta")
+	c.setenv("T3CODE_THREAD_ID", "thread-beta")
 	qBeta := c.ask("beta-one", storeQuestion) // #4
 	if qBeta[0].T3CodeThreadId != "thread-beta" {
 		t.Fatalf("beta-one question t3 = %q, want thread-beta", qBeta[0].T3CodeThreadId)
@@ -1006,7 +1027,7 @@ func TestQuestionT3CodeThreadMappingAndOutboxSessions(t *testing.T) {
 
 	// 4. Session started and asked without any T3 thread, then later resumed with one:
 	//    previously-asked questions inherit the session's t3code_thread_id via JOIN.
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 	c.ok(nil, "session", "start", "gamma-one")
 	qGamma := c.ask("gamma-one", storeQuestion) // #5
 	if qGamma[0].T3CodeThreadId != "" {
@@ -1102,9 +1123,9 @@ func TestQuestionT3CodeThreadMappingAndOutboxSessions(t *testing.T) {
 	}
 
 	// Filtering by --t3code-thread-id works across projects when no project/session is named.
-	t.Setenv("HOTBED_PROJECT", "")
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_SESSION", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 	byAlpha := &pb.ListQuestionsResponse{}
 	c.ok(byAlpha, "question", "outbox", "--t3code-thread-id", "thread-alpha")
 	if got := ids(byAlpha.Questions); !slices.Equal(got, []int32{3, 2, 1}) || len(byAlpha.Sessions) != 2 {

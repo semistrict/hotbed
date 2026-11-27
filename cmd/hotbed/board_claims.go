@@ -76,7 +76,7 @@ func resolveBoardClaimFence(d deps, controller string, taskID int64, sessionID, 
 	if explicitToken != "" {
 		return explicitEpoch, explicitToken, nil
 	}
-	if env := strings.TrimSpace(os.Getenv("HOTBED_BOARD_TASK")); env != "" {
+	if env := d.env("HOTBED_BOARD_TASK"); env != "" {
 		var envTask struct {
 			ID    int64  `json:"id"`
 			Epoch int32  `json:"epoch"`

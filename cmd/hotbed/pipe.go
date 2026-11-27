@@ -46,7 +46,7 @@ func (f controllerClient) dialPipe(ctx context.Context, d deps, workspace, kind 
 	u.RawQuery = q.Encode()
 
 	hdr := http.Header{}
-	tok, err := resolveControllerAuthToken(ctx, f.Controller, d.http)
+	tok, err := resolveControllerAuthToken(ctx, d.getenv, f.Controller, d.http)
 	if err != nil {
 		return nil, err
 	}

@@ -275,12 +275,8 @@ func (c *shellCmd) shellRepo(ctx context.Context, d deps, session string) (strin
 	if c.Repo != "" {
 		return c.resolveRepo(ctx, d, session, c.Repo, "")
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
+	if in, err := d.inCheckout(ctx); err != nil || !in {
 		return "", err
-	}
-	if _, err := gitCheckoutRoot(ctx, cwd); err != nil {
-		return "", nil
 	}
 	repo, err := c.resolveRepo(ctx, d, session, "", "")
 	if err != nil {

@@ -36,7 +36,7 @@ func TestRunSyncsDirtySubmodules(t *testing.T) {
 	write(t, filepath.Join(sub, "a.txt"), "edited\n")
 	write(t, filepath.Join(sub, "new.txt"), "untracked\n")
 
-	t.Chdir(agent)
+	c.chdir(agent)
 	code, stdout, stderr := c.hotbed("run", "-s", sess.Id, "-r", "app", "--", "cat", "lib/a.txt", "lib/c.txt", "lib/new.txt")
 	if code != 0 || stdout != "edited\ncommitted here only\nuntracked\n" || !strings.Contains(stderr, "synced") {
 		t.Fatalf("run: exit %d, stdout %q, stderr %q", code, stdout, stderr)

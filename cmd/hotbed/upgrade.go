@@ -76,7 +76,7 @@ func install(ctx context.Context, controllerAddr string, d deps, b *pb.Build) er
 		return err
 	}
 	if attachAuth {
-		if tok := controllerAuthToken(controllerAddr); tok != "" {
+		if tok := controllerAuthToken(d.getenv, controllerAddr); tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 	}
@@ -145,7 +145,7 @@ func followController(ctx context.Context, d deps, addr string, seen int64) {
 	if d.build == 0 || seen == 0 || seen <= d.build {
 		return
 	}
-	cl, err := controllerClient{Controller: addr}.clients(d.http)
+	cl, err := controllerClient{Controller: addr, Getenv: d.getenv}.clients(d.http)
 	if err == nil {
 		var b *pb.Build
 		if b, err = cl.cluster.GetBuild(ctx, &pb.GetBuildRequest{Os: runtime.GOOS, Arch: runtime.GOARCH}); err == nil {

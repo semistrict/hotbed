@@ -58,6 +58,7 @@ func runGeneratedWithPeer(t *testing.T, addr, stdin string, args ...string) (int
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	d := deps{
+		here:         newTestHere(t, nil).here(),
 		http:         &http.Client{Timeout: 10 * time.Second},
 		stream:       &http.Client{},
 		rideOut:      15 * time.Second,
@@ -75,6 +76,7 @@ func runGeneratedWithPeer(t *testing.T, addr, stdin string, args ...string) (int
 // An idempotent generated CLI command (question ls) cut off mid-call by a
 // controller restart must be retried by api.RideOut and succeed.
 func TestRideOutRetriesIdempotentGeneratedCommand(t *testing.T) {
+	t.Parallel()
 	peer := &flakyPeer{
 		broken: 1,
 		answer: &pb.ListQuestionsResponse{
@@ -115,6 +117,7 @@ func TestRideOutRetriesIdempotentGeneratedCommand(t *testing.T) {
 // A non-idempotent generated CLI command (question add) cut off mid-call may
 // have landed and must NOT be retried by api.RideOut.
 func TestRideOutDoesNotRetryNonIdempotentGeneratedCommand(t *testing.T) {
+	t.Parallel()
 	peer := &flakyPeer{
 		broken: 1,
 		answer: &pb.AddQuestionsResponse{},

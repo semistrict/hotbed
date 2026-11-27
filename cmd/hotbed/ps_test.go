@@ -15,6 +15,7 @@ import (
 // forgotten them, any session's, and --match and --limit narrow what it
 // finds, live commands too (board 7682).
 func TestPsSearchesHistory(t *testing.T) {
+	t.Parallel()
 	workerClock := &clock{}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = workerClock.Now })
 	c.addRepo(upstream(t))

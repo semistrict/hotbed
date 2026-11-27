@@ -87,6 +87,7 @@ func (g gate) open(t *testing.T, name string) {
 }
 
 func TestBenchOnANodeThatTakesNoMeasurementsFails(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "tidy-owl")
@@ -99,6 +100,7 @@ func TestBenchOnANodeThatTakesNoMeasurementsFails(t *testing.T) {
 // A measurement runs in the isolation's slice, isolated from before it
 // starts until after it ends, never swapping, and at the default nice.
 func TestBenchRunsIsolated(t *testing.T) {
+	t.Parallel()
 	c, iso := benchCluster(t)
 	code, out, stderr := c.hotbed("run", "-s", "tidy-owl", "-r", "app", "--bench", "--", "sh", "-c", "echo measured")
 	if code != 0 || out != "measured\n" {
@@ -130,6 +132,7 @@ func TestBenchRunsIsolated(t *testing.T) {
 // Normal (non-measurement) commands default to low CPU and IO priority so
 // they yield to desktop and system processes.
 func TestNormalWorkRunsAtLowPriority(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t, func(cfg *worker.EngineConfig) {
 		cfg.UnitProperties = []string{"DeviceAllow=/dev/kvm rw"}
 	})
@@ -158,6 +161,7 @@ func TestNormalWorkRunsAtLowPriority(t *testing.T) {
 // A measurement whose isolation was lost mid-run fails, whatever its
 // command's status.
 func TestBenchThatLostItsIsolationFails(t *testing.T) {
+	t.Parallel()
 	c, iso := benchCluster(t)
 	iso.SetLost(errors.New("the measurement's slice is not a partition of 4-7: root invalid, its CPUs 0-7"))
 	code, out, stderr := c.hotbed("run", "-s", "tidy-owl", "-r", "app", "--bench", "--", "true")
@@ -178,6 +182,7 @@ func TestBenchThatLostItsIsolationFails(t *testing.T) {
 // Measurements take turns: the second waits for the first to end, without
 // holding up work queued behind it.
 func TestMeasurementsTakeTurns(t *testing.T) {
+	t.Parallel()
 	c, iso := benchCluster(t)
 	g := newGate(t)
 	b1 := c.detach([]string{"--bench"}, g.until("b1")...)
@@ -203,6 +208,7 @@ func TestMeasurementsTakeTurns(t *testing.T) {
 // A measurement waits until running work fits in the CPUs it leaves them,
 // and work queued after it waits behind it, so that the work ahead drains.
 func TestBenchWaitsForRoomAndHoldsTheLine(t *testing.T) {
+	t.Parallel()
 	c, iso := benchCluster(t)
 	c.nodes[0].units.SetCores(6) // each command keeps 6 CPUs busy
 	g := newGate(t)

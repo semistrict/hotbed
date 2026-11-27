@@ -69,6 +69,7 @@ func diagnosingCluster(t *testing.T) *cluster {
 // hotbed diagnostics hint), emits a session poll event with the note, and
 // keeps diagnostics on the controller even after the worker is halted.
 func TestByHandStopWithDiagnoseTellsWaitingAgentAndPersists(t *testing.T) {
+	t.Parallel()
 	c := diagnosingCluster(t)
 	c.ok(nil, "session", "start", "calm-yak")
 	c.workspace("calm-yak", nil)
@@ -124,9 +125,15 @@ func TestByHandStopWithDiagnoseTellsWaitingAgentAndPersists(t *testing.T) {
 		t.Errorf("poll events missing WHAT_CANCELLED for %s: %v", id, polled.Events)
 	}
 
-	// The controller keeps the diagnostics even after the worker is gone.
-	c.nodes[0].halt()
+	// Diagnostics reach the controller from the worker's outbox, beside its
+	// event stream, after the stop itself; once there, the controller keeps
+	// them even after the worker is gone.
 	var diags pb.GetCommandDiagnosticsResponse
+	c.eventually("the diagnostics on the controller", func() bool {
+		c.ok(&diags, "diagnostics", id)
+		return len(diags.Diagnostics) > 0
+	})
+	c.nodes[0].halt()
 	c.ok(&diags, "diagnostics", id)
 	if len(diags.Diagnostics) != 1 {
 		t.Fatalf("diagnostics of %s: %v", id, &diags)
@@ -163,6 +170,7 @@ func TestByHandStopWithDiagnoseTellsWaitingAgentAndPersists(t *testing.T) {
 // Host field), and the agent's attached run ends with COMMAND_STOPPED naming
 // that host, the comment, and the diagnostics command.
 func TestByHandStopFromCockpitTellsWaitingAgent(t *testing.T) {
+	t.Parallel()
 	c := diagnosingCluster(t)
 	c.ok(nil, "session", "start", "keen-fox")
 	c.workspace("keen-fox", nil)
@@ -199,6 +207,7 @@ func TestByHandStopFromCockpitTellsWaitingAgent(t *testing.T) {
 // the hand pause (exits 124 again, stays PAUSED); resume -m thaws it and lets
 // it finish; poll carries the pause and resume intervention notes.
 func TestByHandPauseHoldsUntilResumed(t *testing.T) {
+	t.Parallel()
 	c := diagnosingCluster(t)
 	c.ok(nil, "session", "start", "deft-emu")
 	c.workspace("deft-emu", nil)
@@ -271,8 +280,13 @@ func TestByHandPauseHoldsUntilResumed(t *testing.T) {
 		t.Errorf("poll resumed detail = %q, want %q", resumeDetail, wantResume)
 	}
 
+	// Diagnostics reach the controller from the worker's outbox, after the
+	// pause itself.
 	var diags pb.GetCommandDiagnosticsResponse
-	c.ok(&diags, "diagnostics", id)
+	c.eventually("the diagnostics on the controller", func() bool {
+		c.ok(&diags, "diagnostics", id)
+		return len(diags.Diagnostics) > 0
+	})
 	if len(diags.Diagnostics) != 1 || diags.Diagnostics[0].Intervention.GetKind() != pb.InterventionKind_INTERVENTION_KIND_PAUSE {
 		t.Errorf("diagnostics of %s: %v", id, &diags)
 	}
@@ -282,6 +296,7 @@ func TestByHandPauseHoldsUntilResumed(t *testing.T) {
 // none says so, while the stop or pause goes on; a command with none has
 // none to read.
 func TestByHandWithoutDiagnostics(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t) // no inspector: the worker takes no diagnostics
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "bare-gnu")
@@ -331,6 +346,7 @@ func TestByHandWithoutDiagnostics(t *testing.T) {
 // hotbed diagnostics is served via apicmd (CLI + MCP) with --seq and --after-seq
 // pagination, plain-text report formatting, and full JSON envelope output.
 func TestByHandDiagnosticsCLIAndMCP(t *testing.T) {
+	t.Parallel()
 	c := diagnosingCluster(t)
 	c.ok(nil, "session", "start", "diag-owl")
 	c.workspace("diag-owl", nil)
@@ -345,8 +361,13 @@ func TestByHandDiagnosticsCLIAndMCP(t *testing.T) {
 	c.ok(nil, "stop", "-s", "diag-owl", "--diagnose", "-m", "final stop", id)
 
 	// 1. CLI default (all diagnostics) + --seq and --after-seq pagination.
+	// Diagnostics reach the controller from the worker's outbox, beside its
+	// event stream, after the pause or stop itself.
 	var all pb.GetCommandDiagnosticsResponse
-	c.ok(&all, "diagnostics", id)
+	c.eventually("both diagnostics on the controller", func() bool {
+		c.ok(&all, "diagnostics", id)
+		return len(all.Diagnostics) >= 2
+	})
 	if len(all.Diagnostics) != 2 ||
 		all.Diagnostics[0].GetIntervention().GetSeq() != 1 || all.Diagnostics[0].GetIntervention().GetComment() != "first pause" ||
 		all.Diagnostics[1].GetIntervention().GetSeq() != 3 || all.Diagnostics[1].GetIntervention().GetComment() != "final stop" {
@@ -382,7 +403,7 @@ func TestByHandDiagnosticsCLIAndMCP(t *testing.T) {
 	}
 
 	// 2. MCP tool discovery and invocation with id, seq, and after_seq.
-	t.Setenv("T3CODE_THREAD_ID", "thread-diagnostics-mcp")
+	c.setenv("T3CODE_THREAD_ID", "thread-diagnostics-mcp")
 	m := c.mcp()
 	defer m.stop()
 
@@ -444,6 +465,7 @@ func TestByHandDiagnosticsCLIAndMCP(t *testing.T) {
 // SUCCEEDED) cannot hide the pause from the waiting agent, and a hand stop
 // intervention is reliably surfaced as COMMAND_STOPPED.
 func TestByHandFollowTerminalChunkPreservesPauseAndStop(t *testing.T) {
+	t.Parallel()
 	newClient := func(t *testing.T, h hotbedv1connect.WorkspaceServiceHandler) hotbedv1connect.WorkspaceServiceClient {
 		t.Helper()
 		cs := connect.NewServer()

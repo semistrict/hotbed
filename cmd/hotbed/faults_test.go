@@ -95,6 +95,7 @@ func (c *cluster) runAttached(session string, args ...string) (id string, code i
 // A worker restarted under a running command (a deploy) picks it up again:
 // its end reaches the session once, with its status.
 func TestWorkerRestartMidCommand(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "warm-elk")
@@ -118,6 +119,7 @@ func TestWorkerRestartMidCommand(t *testing.T) {
 // A worker whose database is lost starts a new epoch. Its session hears
 // that its command and workspace are lost, and a new workspace works.
 func TestLostWorkerDatabase(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "poor-cod")
@@ -150,6 +152,7 @@ func TestLostWorkerDatabase(t *testing.T) {
 // With its worker cut off, the controller answers for a command from the
 // worker's view, as it last saw it, rather than failing (board 7027).
 func TestCutOffWorkersCommandIsAnsweredFromItsView(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "far-gnu")
@@ -176,6 +179,7 @@ func TestCutOffWorkersCommandIsAnsweredFromItsView(t *testing.T) {
 // workspace waits for it and gets it, rather than failing NOT_FOUND from a
 // node that does not have it yet (board 7349).
 func TestRunsWaitForAWorkspaceBeingMade(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "slow-elk")
@@ -223,6 +227,7 @@ func TestRunsWaitForAWorkspaceBeingMade(t *testing.T) {
 // made) is forgotten, and the next run gets another instead of failing
 // NOT_FOUND forever (board 7349).
 func TestWorkspaceItsNodeLacksIsReplaced(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "lost-elk")

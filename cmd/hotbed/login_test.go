@@ -22,8 +22,7 @@ func TestLoginWhoamiOrgAndLogoutCommands(t *testing.T) {
 	origDir := defaultHotbedDir
 	defaultHotbedDir = func() (string, error) { return hotbedDir, nil }
 	t.Cleanup(func() { defaultHotbedDir = origDir })
-	t.Setenv("HOTBED_TOKEN", "")
-	t.Setenv("HOTBED_ORG", "")
+	where := newTestHere(t, nil)
 
 	activeOrg := cliauth.OrganizationSummary{ID: "org_alpha", Name: "Alpha", Role: "admin"}
 	orgs := []cliauth.OrganizationSummary{
@@ -112,6 +111,7 @@ func TestLoginWhoamiOrgAndLogoutCommands(t *testing.T) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		d := deps{
+			here:       where.here(),
 			http:       srv.Client(),
 			stream:     srv.Client(),
 			controller: at(srv.URL),
@@ -182,8 +182,7 @@ func TestOrgSwitchAndCreateUnderRefreshTokenRotationAndConcurrency(t *testing.T)
 	origDir := defaultHotbedDir
 	defaultHotbedDir = func() (string, error) { return hotbedDir, nil }
 	t.Cleanup(func() { defaultHotbedDir = origDir })
-	t.Setenv("HOTBED_TOKEN", "")
-	t.Setenv("HOTBED_ORG", "")
+	where := newTestHere(t, nil)
 
 	var mu sync.Mutex
 	activeRT := map[string]bool{"rt_1": true}
@@ -279,6 +278,7 @@ func TestOrgSwitchAndCreateUnderRefreshTokenRotationAndConcurrency(t *testing.T)
 	runCmd := func(args ...string) (int, string, string) {
 		var stdout, stderr bytes.Buffer
 		d := deps{
+			here:       where.here(),
 			http:       srv.Client(),
 			stream:     srv.Client(),
 			controller: at(srv.URL),
@@ -354,8 +354,7 @@ func TestControllerAuthTokenFailsClosedOnHotbedOrgError(t *testing.T) {
 	origDir := defaultHotbedDir
 	defaultHotbedDir = func() (string, error) { return hotbedDir, nil }
 	t.Cleanup(func() { defaultHotbedDir = origDir })
-	t.Setenv("HOTBED_TOKEN", "")
-	t.Setenv("HOTBED_ORG", "org_unauthorized")
+	where := newTestHere(t, map[string]string{"HOTBED_ORG": "org_unauthorized"})
 
 	controllerURL := "https://127.0.0.1:1"
 	if err := os.WriteFile(filepath.Join(hotbedDir, "token"), []byte("legacy_owner_token_wrong_org\n"), 0o600); err != nil {
@@ -370,10 +369,10 @@ func TestControllerAuthTokenFailsClosedOnHotbedOrgError(t *testing.T) {
 		t.Fatalf("SaveCredentials: %v", err)
 	}
 
-	if got := controllerAuthToken(controllerURL); got != "" {
+	if got := controllerAuthToken(where.getenv, controllerURL); got != "" {
 		t.Fatalf("controllerAuthToken fell back to %q on HOTBED_ORG refresh failure; want empty", got)
 	}
-	if _, err := resolveControllerAuthToken(t.Context(), controllerURL, nil); err == nil {
+	if _, err := resolveControllerAuthToken(t.Context(), where.getenv, controllerURL, nil); err == nil {
 		t.Fatalf("resolveControllerAuthToken returned nil error on failed HOTBED_ORG refresh; want error")
 	}
 }

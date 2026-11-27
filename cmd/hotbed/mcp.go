@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -165,26 +164,26 @@ func (s *mcpServer) ensure(ctx context.Context) (string, error) {
 	}
 	// The session the environment names: HOTBED_SESSION, or the one bound
 	// to this T3 thread or git worktree.
-	named, found, err := sessionFlag{Session: os.Getenv("HOTBED_SESSION")}.lookupBinding(ctx, s.d)
+	named, found, err := sessionFlag{Session: s.d.getenv("HOTBED_SESSION")}.lookupBinding(ctx, s.d)
 	if err != nil {
 		return "", err
 	}
 	req := &pb.StartSessionRequest{
-		Agent:          os.Getenv("HOTBED_AGENT"),
+		Agent:          s.d.getenv("HOTBED_AGENT"),
 		Project:        s.project,
-		T3CodeThreadId: strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID")),
+		T3CodeThreadId: s.d.t3codeThreadID(),
 	}
 	if found {
 		req.Id, req.Resume = named.ID, true
 	}
-	if req.Remote, err = checkoutRemote(ctx); err != nil {
+	if req.Remote, err = s.d.checkoutRemote(ctx); err != nil {
 		return "", err
 	}
 	sess, err := cl.sessions.StartSession(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	if place, binds := startPlace(ctx); !found && binds {
+	if place, binds := s.d.startPlace(ctx); !found && binds {
 		if err := updateSessionMap(sessionsFilePath(s.d), func(m sessionMap) { m.bind(place, sess.Id) }); err != nil {
 			return "", api.Errorf(api.CodeInternal, "started session %s, but could not bind it to %s: %v", sess.Id, place, err)
 		}

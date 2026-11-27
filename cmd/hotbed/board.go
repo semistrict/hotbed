@@ -322,9 +322,9 @@ func (c *boardPostCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	remote, _ := checkoutRemote(ctx)
+	remote, _ := d.checkoutRemote(ctx)
 	if c.boardScheduleOpts.active() {
-		return runBoardScheduleCreate(ctx, cl, c.Project, 0, text, labels, c.Attach, sess, remote, c.As, c.Model, c.boardScheduleOpts)
+		return runBoardScheduleCreate(ctx, cl, c.Project, 0, text, labels, c.Attach, sess, remote, c.As, c.Model, d.t3codeThreadID(), c.boardScheduleOpts)
 	}
 	return cl.board.PostBoardMessage(ctx, &pb.PostBoardMessageRequest{
 		Project:        c.Project,
@@ -336,7 +336,7 @@ func (c *boardPostCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Remote:         remote,
 		AsProfile:      c.As,
 		Model:          c.Model,
-		T3CodeThreadId: currentT3CodeThreadID(),
+		T3CodeThreadId: d.t3codeThreadID(),
 	})
 }
 
@@ -371,7 +371,7 @@ func (c *boardReplyCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	if c.boardScheduleOpts.active() {
-		return runBoardScheduleCreate(ctx, cl, "", c.ID, text, labels, c.Attach, sess, "", c.As, c.Model, c.boardScheduleOpts)
+		return runBoardScheduleCreate(ctx, cl, "", c.ID, text, labels, c.Attach, sess, "", c.As, c.Model, d.t3codeThreadID(), c.boardScheduleOpts)
 	}
 	return cl.board.PostBoardMessage(ctx, &pb.PostBoardMessageRequest{
 		Re:             c.ID,
@@ -383,7 +383,7 @@ func (c *boardReplyCmd) Exec(ctx context.Context, d deps) (any, error) {
 		SessionId:      sess,
 		AsProfile:      c.As,
 		Model:          c.Model,
-		T3CodeThreadId: currentT3CodeThreadID(),
+		T3CodeThreadId: d.t3codeThreadID(),
 	})
 }
 
@@ -395,7 +395,7 @@ func runBoardScheduleCreate(
 	text string,
 	labels map[string]string,
 	attach []string,
-	sess, remote, asProfile, model string,
+	sess, remote, asProfile, model, t3codeThreadID string,
 	s boardScheduleOpts,
 ) (*pb.BoardScheduleResult, error) {
 	inSec, err := parseBoardDuration(s.In)
@@ -434,7 +434,7 @@ func runBoardScheduleCreate(
 		Remote:         remote,
 		AsProfile:      asProfile,
 		Model:          model,
-		T3CodeThreadId: currentT3CodeThreadID(),
+		T3CodeThreadId: t3codeThreadID,
 	})
 }
 
@@ -1019,8 +1019,8 @@ func (c *boardScheduleAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	remote, _ := checkoutRemote(ctx)
-	return runBoardScheduleCreate(ctx, cl, c.Project, c.Re, text, labels, c.Attach, sess, remote, c.As, c.Model, c.boardScheduleOpts)
+	remote, _ := d.checkoutRemote(ctx)
+	return runBoardScheduleCreate(ctx, cl, c.Project, c.Re, text, labels, c.Attach, sess, remote, c.As, c.Model, d.t3codeThreadID(), c.boardScheduleOpts)
 }
 
 type boardScheduleLsCmd struct {
@@ -1199,7 +1199,7 @@ func (c *boardTaskCreateCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	remote, _ := checkoutRemote(ctx)
+	remote, _ := d.checkoutRemote(ctx)
 
 	if c.Plan != "" {
 		var raw []byte
@@ -1254,7 +1254,7 @@ func (c *boardTaskCreateCmd) Exec(ctx context.Context, d deps) (any, error) {
 			Remote:         remote,
 			AsProfile:      c.As,
 			Model:          c.Model,
-			T3CodeThreadId: currentT3CodeThreadID(),
+			T3CodeThreadId: d.t3codeThreadID(),
 		})
 	}
 
@@ -1285,7 +1285,7 @@ func (c *boardTaskCreateCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Remote:         remote,
 		AsProfile:      c.As,
 		Model:          c.Model,
-		T3CodeThreadId: currentT3CodeThreadID(),
+		T3CodeThreadId: d.t3codeThreadID(),
 	})
 	if err != nil {
 		return nil, err
@@ -1414,6 +1414,11 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if len(c.dashArgs) == 0 {
 		return exitInvalidArgs, false, api.Errorf(api.CodeInvalidArgs, "pass the command to run after --")
 	}
+	// The command runs where this does.
+	wd, err := d.getwd()
+	if err != nil {
+		return exitError, false, err
+	}
 	claimCmd := &boardTaskClaimCmd{
 		controllerClient: c.controllerClient,
 		boardActorFlags:  c.boardActorFlags,
@@ -1486,6 +1491,7 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	}()
 
 	cmd := exec.CommandContext(runCtx, c.dashArgs[0], c.dashArgs[1:]...)
+	cmd.Dir = wd
 	cmd.Stdin = d.stdin
 	cmd.Stdout = d.stdout
 	cmd.Stderr = d.stderr

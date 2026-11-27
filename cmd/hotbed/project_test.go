@@ -12,12 +12,12 @@ import (
 )
 
 // checkout makes a git checkout whose origin is remote, and goes into it.
-func checkout(t *testing.T, remote string) string {
-	t.Helper()
-	dir := t.TempDir()
-	gitIn(t, dir, "init", "-q")
-	gitIn(t, dir, "remote", "add", "origin", remote)
-	t.Chdir(dir)
+func (c *cluster) checkout(remote string) string {
+	c.t.Helper()
+	dir := c.t.TempDir()
+	gitIn(c.t, dir, "init", "-q")
+	gitIn(c.t, dir, "remote", "add", "origin", remote)
+	c.chdir(dir)
 	return dir
 }
 
@@ -25,9 +25,10 @@ func checkout(t *testing.T, remote string) string {
 // its canonical remote; a repo no project holds becomes a project of its own
 // name; a repo several projects hold needs the project named.
 func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("HOTBED_PROJECT", "")
-	checkout(t, "git@github.com:o/app.git")
+	c.setenv("HOTBED_PROJECT", "")
+	c.checkout("git@github.com:o/app.git")
 
 	sess := &pb.Session{}
 	c.ok(sess, "session", "start", "first-one")
@@ -60,7 +61,7 @@ func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
 	}
 
 	// The one project holding a repo is its sessions' default.
-	checkout(t, "https://github.com/o/ui.git")
+	c.checkout("https://github.com/o/ui.git")
 	c.ok(sess, "session", "start", "third-one")
 	if sess.Project != "web" {
 		t.Errorf("start in ui, which only web holds: project %q", sess.Project)
@@ -72,7 +73,7 @@ func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
 	if _, e := c.fails("session", "start", "-p", "nosuch", "--replace"); e.Code != api.CodeNotFound {
 		t.Errorf("start -p nosuch = %v, want NOT_FOUND", e)
 	}
-	t.Chdir(t.TempDir())
+	c.chdir(t.TempDir())
 	if _, e := c.fails("session", "start"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "outside a git checkout") {
 		t.Errorf("start outside a checkout without a project = %v, want INVALID_ARGS", e)
 	}
@@ -81,7 +82,7 @@ func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
 	}
 
 	// A repo whose own name is a project holding other repos needs naming.
-	checkout(t, "git@github.com:other/web.git")
+	c.checkout("git@github.com:other/web.git")
 	if _, e := c.fails("session", "start"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "project web holds other repos") {
 		t.Errorf("start in other/web = %v, want INVALID_ARGS", e)
 	}
@@ -99,6 +100,7 @@ func projectRepos(ls *pb.ListProjectsResponse, name string) []string {
 // project ls counts each project's live sessions and questions; session ls
 // lists a project's sessions.
 func TestProjectsCountTheirWork(t *testing.T) {
+	t.Parallel()
 	c, user := questionCluster(t)
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "far-fox", "-p", "other")
@@ -146,10 +148,11 @@ func sessionIDs(res *pb.ListSessionsResponse) []string {
 // project of that name that holds no repo yet takes the repo in. A session
 // whose name is taken makes no project.
 func TestRepoProjectNames(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_PROJECT", "")
 
-	checkout(t, "https://github.com/vercel/Next.js.git")
+	c.checkout("https://github.com/vercel/Next.js.git")
 	sess := &pb.Session{}
 	c.ok(sess, "session", "start", "next-one")
 	if sess.Project != "next-js" {
@@ -157,7 +160,7 @@ func TestRepoProjectNames(t *testing.T) {
 	}
 
 	c.ok(nil, "project", "add", "app")
-	checkout(t, "git@github.com:o/app.git")
+	c.checkout("git@github.com:o/app.git")
 	c.ok(sess, "session", "start", "app-one")
 	ls := &pb.ListProjectsResponse{}
 	c.ok(ls, "project", "ls")
@@ -165,7 +168,7 @@ func TestRepoProjectNames(t *testing.T) {
 		t.Errorf("session in o/app with an empty project app: project %q holding %v", sess.Project, projectRepos(ls, "app"))
 	}
 
-	checkout(t, "git@github.com:o/fresh.git")
+	c.checkout("git@github.com:o/fresh.git")
 	if _, e := c.fails("session", "start", "app-one"); e.Code != api.CodeConflict {
 		t.Errorf("start a taken name = %v, want CONFLICT", e)
 	}
@@ -178,6 +181,7 @@ func TestRepoProjectNames(t *testing.T) {
 // Registering a repo auto-creates a single-repo project for it when no project
 // holds it yet; adding a repo already held by a project leaves projects alone.
 func TestRepoAddCreatesItsOwnProject(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "cladefs", "https://github.com/semistrict/cladefs.git")
 
@@ -200,11 +204,12 @@ func TestRepoAddCreatesItsOwnProject(t *testing.T) {
 // then sessions starting in its checkouts must name their project; taking it
 // out again restores the default. Every change is kept, with who made it.
 func TestProjectRepoIsSharedOnlyOnPurpose(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("HOTBED_PROJECT", "")
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("T3CODE_THREAD_ID", "")
-	checkout(t, "git@github.com:o/app.git")
+	c.setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_SESSION", "")
+	c.setenv("T3CODE_THREAD_ID", "")
+	c.checkout("git@github.com:o/app.git")
 	c.ok(nil, "session", "start", "first-one") // makes project app, holding o/app
 
 	if _, e := c.fails("project", "add", "web", "--repo", "https://github.com/o/app.git"); e.Code != api.CodeConflict ||
@@ -218,7 +223,7 @@ func TestProjectRepoIsSharedOnlyOnPurpose(t *testing.T) {
 	}
 
 	c.ok(nil, "project", "add", "web", "--repo", "https://github.com/o/app.git", "--shared", "-s", "first-one")
-	checkout(t, "git@github.com:o/app.git") // another checkout: first-one is bound to the first
+	c.checkout("git@github.com:o/app.git") // another checkout: first-one is bound to the first
 	if _, e := c.fails("session", "start", "second-one"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "is in projects app, web") {
 		t.Errorf("start in a shared repo = %v, want INVALID_ARGS", e)
 	}
@@ -266,6 +271,7 @@ func TestProjectRepoIsSharedOnlyOnPurpose(t *testing.T) {
 // repo add -p attaches the repo to a named project; repo ls -p lists only that
 // project's repos.
 func TestRepoAddAndListWithProject(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.ok(nil, "project", "add", "alpha")
 	c.ok(nil, "project", "add", "beta")
@@ -304,6 +310,7 @@ func TestRepoAddAndListWithProject(t *testing.T) {
 // project or session named must be one. Every request with all_projects
 // is here: a new one fails the test until it is.
 func TestListingsScopeAlike(t *testing.T) {
+	t.Parallel()
 	c, _ := questionCluster(t)
 	c.ok(nil, "board", "task", "create", "-p", "test", "ready task 1")
 	c.ok(nil, "board", "task", "create", "-p", "test", "ready task 2")
@@ -330,7 +337,7 @@ func TestListingsScopeAlike(t *testing.T) {
 	// The cluster's helpers fail the test itself, so no subtests.
 	for req, cmd := range listings {
 		with := func(args ...string) []string { return append(slices.Clone(cmd), args...) }
-		t.Setenv("HOTBED_PROJECT", "test")
+		c.setenv("HOTBED_PROJECT", "test")
 		c.ok(nil, with("--all-projects")...)
 		if _, e := c.fails(with("-p", "other", "--all-projects")...); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "can't be used together") {
 			t.Errorf("%s -p other --all-projects = %v, want INVALID_ARGS", req, e)
@@ -342,7 +349,7 @@ func TestListingsScopeAlike(t *testing.T) {
 			t.Errorf("%s -s no-such-session = %v, want NOT_FOUND", req, e)
 		}
 		c.ok(nil, with("-s", "brave-otter")...)
-		t.Setenv("HOTBED_PROJECT", "")
+		c.setenv("HOTBED_PROJECT", "")
 		if _, e := c.fails(cmd...); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "say which project") {
 			t.Errorf("%s with no project or session = %v, want INVALID_ARGS", req, e)
 		}
@@ -353,9 +360,10 @@ func TestListingsScopeAlike(t *testing.T) {
 // the one project that holds the checkout's repo, as session start's
 // project is.
 func TestListingsFallBackToTheCheckoutsProject(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("HOTBED_PROJECT", "")
-	t.Setenv("HOTBED_SESSION", "")
+	c.setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_SESSION", "")
 	c.ok(nil, "project", "add", "app", "--repo", "github.com/o/app")
 	c.ok(nil, "project", "add", "web", "--repo", "github.com/o/ui")
 	// Outside a checkout, so bound to none.
@@ -364,7 +372,7 @@ func TestListingsFallBackToTheCheckoutsProject(t *testing.T) {
 	c.ask("app-one", storeQuestion)
 	c.ask("web-one", storeQuestion)
 
-	dir := checkout(t, "git@github.com:o/app.git")
+	dir := c.checkout("git@github.com:o/app.git")
 	write(t, filepath.Join(dir, "a.go"), "package a\n")
 	gitIn(t, dir, "add", ".")
 	gitIn(t, dir, "commit", "-qm", "a")
@@ -409,11 +417,11 @@ func TestListingsFallBackToTheCheckoutsProject(t *testing.T) {
 			t.Errorf("%v in a repo two projects hold = %v, want INVALID_ARGS naming them", cmd, e)
 		}
 	}
-	checkout(t, "git@github.com:o/nobody.git")
+	c.checkout("git@github.com:o/nobody.git")
 	if _, e := c.fails("review", "ls"); e.Code != api.CodeNotFound || !strings.Contains(e.Message, "no project holds github.com/o/nobody") {
 		t.Errorf("review ls in a repo no project holds = %v, want NOT_FOUND", e)
 	}
-	t.Chdir(t.TempDir())
+	c.chdir(t.TempDir())
 	if _, e := c.fails("review", "ls"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "say which project") {
 		t.Errorf("review ls outside a checkout = %v, want INVALID_ARGS", e)
 	}
@@ -424,10 +432,11 @@ func TestListingsFallBackToTheCheckoutsProject(t *testing.T) {
 // so common dev commands run without downloading or compiling anything.
 // Read/list endpoints and storage never retain that transient reminder.
 func TestSetupStepsReminder(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("HOTBED_PROJECT", "")
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_SESSION", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 
 	checkReminder := func(t *testing.T, label, text, project string, hasSteps bool) {
 		t.Helper()
@@ -507,7 +516,7 @@ func TestSetupStepsReminder(t *testing.T) {
 
 	// 3. session start (plain text auto-creating a project, JSON in a project
 	// with steps, and --resume).
-	checkout(t, "git@github.com:o/brandnew.git")
+	c.checkout("git@github.com:o/brandnew.git")
 	code, stdout, stderr = c.hotbed("session", "start", "new-fox")
 	if code != 0 {
 		t.Fatalf("session start new-fox failed (%d): %s", code, stderr)

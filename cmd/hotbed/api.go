@@ -100,13 +100,14 @@ func (f controllerClient) runner(d deps, sessions apicmd.Sessions) (*apicmd.Runn
 		return nil, err
 	}
 	hooks := cliHooks{
+		here:    d.here,
 		cache:   d.cache,
 		stdin:   d.stdin,
 		stderr:  d.stderr,
 		gitAuth: hotbedv1connect.NewGitAuthServiceClient(calls),
 		openURL: d.openURL,
 	}
-	return &apicmd.Runner{Hooks: hotbedv1cli.Table(hooks), Calls: calls, Waits: waits, Sessions: sessions}, nil
+	return &apicmd.Runner{Hooks: hotbedv1cli.Table(hooks), Calls: calls, Waits: waits, Sessions: sessions, Getenv: d.getenv}, nil
 }
 
 // cliSessions is the session a command on the command line acts as: -s,
@@ -125,6 +126,7 @@ func (s cliSessions) Named(_ context.Context, given string) (string, error) {
 
 // cliHooks is the Go hooks hotbed.proto's commands name.
 type cliHooks struct {
+	here
 	cache   string // where this machine keeps each session's poll cursor
 	stdin   io.Reader
 	stderr  io.Writer
@@ -285,30 +287,30 @@ func (h cliHooks) readSecretFile(path, flag string) ([]byte, error) {
 	return b, nil
 }
 
-func (cliHooks) AskedFrom(ctx context.Context, _ *apicmd.Call, _ *pb.AddQuestionsRequest) (*pb.AskedFrom, error) {
-	return askedFrom(ctx)
+func (h cliHooks) AskedFrom(ctx context.Context, _ *apicmd.Call, _ *pb.AddQuestionsRequest) (*pb.AskedFrom, error) {
+	return h.askedFrom(ctx)
 }
 
 // ListedRemote is this checkout's remote, whose project question ls lists
 // when nothing else says whose.
-func (cliHooks) ListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListQuestionsRequest) (string, error) {
-	return checkoutRemote(ctx)
+func (h cliHooks) ListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListQuestionsRequest) (string, error) {
+	return h.checkoutRemote(ctx)
 }
 
-func (cliHooks) MemoryProposedFrom(ctx context.Context, _ *apicmd.Call, _ *pb.ProposeMemoryRequest) (*pb.AskedFrom, error) {
-	return askedFrom(ctx)
+func (h cliHooks) MemoryProposedFrom(ctx context.Context, _ *apicmd.Call, _ *pb.ProposeMemoryRequest) (*pb.AskedFrom, error) {
+	return h.askedFrom(ctx)
 }
 
-func (cliHooks) MemoryListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListMemoriesRequest) (string, error) {
-	return checkoutRemote(ctx)
+func (h cliHooks) MemoryListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListMemoriesRequest) (string, error) {
+	return h.checkoutRemote(ctx)
 }
 
-func (cliHooks) MemoryGetRemote(ctx context.Context, _ *apicmd.Call, _ *pb.GetMemoriesRequest) (string, error) {
-	return checkoutRemote(ctx)
+func (h cliHooks) MemoryGetRemote(ctx context.Context, _ *apicmd.Call, _ *pb.GetMemoriesRequest) (string, error) {
+	return h.checkoutRemote(ctx)
 }
 
-func (cliHooks) MemoryShowRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ShowMemoryRequest) (string, error) {
-	return checkoutRemote(ctx)
+func (h cliHooks) MemoryShowRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ShowMemoryRequest) (string, error) {
+	return h.checkoutRemote(ctx)
 }
 
 func (h cliHooks) loadMemoryBody(bodyFile string, content **pb.MemoryContent) error {
@@ -381,8 +383,8 @@ const dirtyShown = 20
 
 // askedFrom is where this agent asks from: its directory and, in a git
 // checkout, the checkout's top, origin, branch, commit and changed files.
-func askedFrom(ctx context.Context) (*pb.AskedFrom, error) {
-	dir, err := os.Getwd()
+func (h here) askedFrom(ctx context.Context) (*pb.AskedFrom, error) {
+	dir, err := h.getwd()
 	if err != nil {
 		return nil, err
 	}

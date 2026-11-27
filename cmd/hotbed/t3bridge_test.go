@@ -60,17 +60,18 @@ func (f *bridgeTestT3) SendMessage(_ context.Context, threadID string, message s
 }
 
 func TestT3BridgeEndToEndWithControllerDO(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.ok(nil, "project", "add", "bridgeproj")
 
 	// Start a T3-linked session and an unlinked session.
-	t.Setenv("T3CODE_THREAD_ID", "thread-e2e-1")
+	c.setenv("T3CODE_THREAD_ID", "thread-e2e-1")
 	c.ok(nil, "session", "start", "s-t3", "-p", "bridgeproj")
 
-	t.Setenv("T3CODE_THREAD_ID", "thread-e2e-remote")
+	c.setenv("T3CODE_THREAD_ID", "thread-e2e-remote")
 	c.ok(nil, "session", "start", "s-remote", "-p", "bridgeproj")
 
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 	c.ok(nil, "session", "start", "s-plain", "-p", "bridgeproj")
 
 	addQ := func(sess, header, q string) int32 {
@@ -97,7 +98,7 @@ func TestT3BridgeEndToEndWithControllerDO(t *testing.T) {
 
 	bridge, err := t3bridge.New(t3bridge.Config{
 		ControllerURL: c.ctrlSrv.URL,
-		TokenFunc:     func(context.Context) (string, error) { return c.harness.token, nil },
+		TokenFunc:     func(context.Context) (string, error) { return c.harness.Token(), nil },
 		HTTPClient:    c.cli.stream,
 		T3:            t3,
 		State:         store,
@@ -128,7 +129,7 @@ func TestT3BridgeEndToEndWithControllerDO(t *testing.T) {
 		var res struct {
 			Count int `json:"count"`
 		}
-		if err := c.harness.doJSON(context.Background(), c.doName, "GET", "/__test/inspect?kind=connectedQuestionBridges", nil, &res); err != nil {
+		if err := c.harness.DoJSON(context.Background(), c.doName, "GET", "/__test/inspect?kind=connectedQuestionBridges", nil, &res); err != nil {
 			return false
 		}
 		return res.Count == 1
@@ -190,7 +191,7 @@ func TestT3BridgeEndToEndWithControllerDO(t *testing.T) {
 	t3Restart.set("thread-e2e-1", t3bridge.ThreadState{Exists: true, Status: "completed"})
 	bridge2, err := t3bridge.New(t3bridge.Config{
 		ControllerURL: c.ctrlSrv.URL,
-		TokenFunc:     func(context.Context) (string, error) { return c.harness.token, nil },
+		TokenFunc:     func(context.Context) (string, error) { return c.harness.Token(), nil },
 		HTTPClient:    c.cli.stream,
 		T3:            t3Restart,
 		State:         store,
@@ -217,6 +218,7 @@ func TestT3BridgeEndToEndWithControllerDO(t *testing.T) {
 }
 
 func TestDaemonCLICommands(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	dir := t.TempDir()
 

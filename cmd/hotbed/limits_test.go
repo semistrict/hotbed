@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"slices"
@@ -59,6 +60,7 @@ func eventWhats(evs []*pb.SessionEvent, cmd string) []string {
 // returns, exiting 124 and saying how to go on; waiting on it again with
 // logs -f resumes it, and exits with its status once it ends.
 func TestSoftLimitPausesAndWaitingResumes(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "slow-ox")
@@ -105,6 +107,7 @@ func TestSoftLimitPausesAndWaitingResumes(t *testing.T) {
 // command: a resumed command runs a whole soft limit more before it pauses
 // again.
 func TestSoftLimitCountsAgainFromEachWait(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "keen-gnu")
@@ -181,6 +184,7 @@ func (c *frozenClock) advance(d time.Duration) {
 // A command its soft limit paused and no one came back for is stopped at
 // its hard limit.
 func TestHardLimitStopsAPausedCommand(t *testing.T) {
+	t.Parallel()
 	// Drive the worker's clock with a frozen stepped clock and wide limits
 	// (10s soft, 10m hard) so wall-clock jitter during shell startup or CPU
 	// load can never advance limits before the attached client observes
@@ -251,6 +255,7 @@ func TestHardLimitStopsAPausedCommand(t *testing.T) {
 // and a soft limit brings the default hard limit; a measurement takes no
 // soft limit, and limits are whole seconds.
 func TestTimeLimitDefaultsAndFlags(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "neat-cod")
@@ -304,6 +309,7 @@ func TestTimeLimitDefaultsAndFlags(t *testing.T) {
 // logs -f waits on a command and exits with its status, as attached run
 // does: a shell's 128 plus the signal for one a signal killed.
 func TestLogsFollowExitsWithTheCommandsStatus(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "glad-asp")
@@ -321,6 +327,7 @@ func TestLogsFollowExitsWithTheCommandsStatus(t *testing.T) {
 // to the main process), logs -f reports the OOM kill on stderr and exits 137
 // rather than a silent 143 (board 7232).
 func TestLogsFollowReportsOOMKill(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "bold-yak")
@@ -348,6 +355,7 @@ func TestLogsFollowReportsOOMKill(t *testing.T) {
 // read it, and logs -f still exits with its status (board 6174: an agent
 // coming back to a command it ran detached found "no command on this node").
 func TestLogsOfACommandItsWorkerForgot(t *testing.T) {
+	t.Parallel()
 	workerClock := &clock{}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = workerClock.Now })
 	c.addRepo(upstream(t))
@@ -392,6 +400,12 @@ func TestLogsOfACommandItsWorkerForgot(t *testing.T) {
 // calls and its connections cut, and brings it back on the same address
 // after down.
 func (c *cluster) bounce(down time.Duration) {
+	c.bounceUntil(func() { time.Sleep(down) })
+}
+
+// bounceUntil is bounce, bringing the controller back once wait returns (or
+// the test ends).
+func (c *cluster) bounceUntil(wait func()) {
 	addr := c.ctrlSrv.Listener.Addr().String()
 	if c.ctrlBack != nil {
 		c.ctrlBack.Close()
@@ -408,7 +422,12 @@ func (c *cluster) bounce(down time.Duration) {
 	})
 	go func() {
 		defer close(back)
-		time.Sleep(down)
+		waited := make(chan struct{})
+		go func() { defer close(waited); wait() }()
+		select {
+		case <-waited:
+		case <-c.t.Context().Done():
+		}
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			c.t.Errorf("the controller's address after its restart: %v", err)
@@ -418,10 +437,31 @@ func (c *cluster) bounce(down time.Duration) {
 	}()
 }
 
+// saying is a writer that closes said once what it was written says what.
+type saying struct {
+	what string
+	said chan struct{}
+	mu   sync.Mutex
+	buf  strings.Builder
+}
+
+func (s *saying) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !strings.Contains(s.buf.String(), s.what) {
+		s.buf.Write(p)
+		if strings.Contains(s.buf.String(), s.what) {
+			close(s.said)
+		}
+	}
+	return len(p), nil
+}
+
 // Calls to a controller that is restarting wait for it, saying so, rather
 // than failing: a call that never reached it (a session's first run, which
 // has nowhere else to go) and idempotent ones (ps, wait) alike.
 func TestCallsRideOutAControllerRestart(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.cli.rideOut = time.Minute
 	c.addRepo(upstream(t))
@@ -432,12 +472,25 @@ func TestCallsRideOutAControllerRestart(t *testing.T) {
 		{"ps", "-s", "calm-yak"},
 		{"poll", "-s", "calm-yak", "--timeout", "1"},
 	} {
-		c.bounce(500 * time.Millisecond)
-		start := time.Now()
-		code, stdout, stderr := c.hotbed(args...)
-		took := time.Since(start)
-		if code != exitOK || took < time.Second || !strings.Contains(stderr, "is out of reach") || !strings.Contains(stderr, "waiting up to 1m0s for it to come back") {
-			t.Errorf("hotbed %v across a restart: exit %d after %s, stdout %q, stderr %q; want it to wait for the controller and succeed", args, code, took, stdout, stderr)
+		// The controller stays down until the call has found it out of
+		// reach, however long the CLI takes to get there.
+		said := &saying{what: "is out of reach", said: make(chan struct{})}
+		cameBack := make(chan time.Time, 1)
+		c.bounceUntil(func() {
+			<-said.said
+			cameBack <- time.Now()
+		})
+		var stdout, stderr bytes.Buffer
+		d := c.cli
+		d.stdin, d.stdout, d.stderr = strings.NewReader(""), &stdout, io.MultiWriter(&stderr, said)
+		code := run(t.Context(), args, d)
+		ended := time.Now()
+		if code != exitOK || !strings.Contains(stderr.String(), "is out of reach") || !strings.Contains(stderr.String(), "waiting up to 1m0s for it to come back") {
+			t.Errorf("hotbed %v across a restart: exit %d, stdout %q, stderr %q; want it to wait for the controller and succeed", args, code, stdout.String(), stderr.String())
+			continue
+		}
+		if back := <-cameBack; ended.Before(back) {
+			t.Errorf("hotbed %v across a restart ended at %s, before the controller came back at %s", args, ended, back)
 		}
 	}
 }
@@ -445,6 +498,7 @@ func TestCallsRideOutAControllerRestart(t *testing.T) {
 // A poll the controller's restart cuts off is made again once it is back,
 // and returns how the session stands at its timeout, rather than failing.
 func TestPollCutOffByARestartIsMadeAgain(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.cli.rideOut = time.Minute
 	c.addRepo(upstream(t))
@@ -498,6 +552,7 @@ func (stuckThaw) Thaw(context.Context, string) error { return errors.New("the fr
 // A wait that cannot resume its paused command fails, saying why, rather
 // than reporting the pause again (exit 124) for the agent to wait once more.
 func TestAWaitThatCannotResumeFails(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Units = stuckThaw{cfg.Units} })
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "numb-eel")
@@ -515,6 +570,7 @@ func TestAWaitThatCannotResumeFails(t *testing.T) {
 // A base build shows in every session's commands and its project's, so a
 // parked one can be seen, but in no session's own (board 7422).
 func TestPsShowsBaseBuilds(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "deft-owl")
@@ -539,6 +595,7 @@ func TestPsShowsBaseBuilds(t *testing.T) {
 // --vm-cpus and --vm-mem ask for a VM, so such a run goes only to a node with
 // the vm runtime, and a size no VM can have is refused at once.
 func TestVMFlagsNeedAVMNode(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "keen-elk")

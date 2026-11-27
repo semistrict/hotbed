@@ -27,6 +27,9 @@ type controllerClient struct {
 	Controller string `kong:"-"`
 	// RideOut waits out the controller's restarts (rideOut).
 	RideOut []connect.ClientInterceptor `kong:"-"`
+	// Getenv is the command's environment (deps.getenv), which can name the
+	// token to call with (resolveControllerAuthToken).
+	Getenv func(string) string `kong:"-"`
 }
 
 type clients struct {
@@ -43,7 +46,7 @@ type clients struct {
 // callController has the command call the controller at addr, riding out
 // its restarts.
 func (f *controllerClient) callController(addr string, d deps) {
-	f.Controller, f.RideOut = addr, rideOut(d, "the controller at "+addr)
+	f.Controller, f.RideOut, f.Getenv = addr, rideOut(d, "the controller at "+addr), d.getenv
 }
 
 var defaultHotbedDir = setup.DefaultDir
@@ -54,15 +57,15 @@ var defaultHotbedDir = setup.DefaultDir
 // ~/.hotbed/token for HTTPS controllers when no WorkOS credentials or
 // HOTBED_ORG override are active. Refresh failures fail closed and never
 // silently fall back to legacy ~/.hotbed/token.
-func resolveControllerAuthToken(ctx context.Context, controller string, hc *http.Client) (string, error) {
-	if tok := strings.TrimSpace(os.Getenv("HOTBED_TOKEN")); tok != "" {
+func resolveControllerAuthToken(ctx context.Context, getenv func(string) string, controller string, hc *http.Client) (string, error) {
+	if tok := strings.TrimSpace(getenv("HOTBED_TOKEN")); tok != "" {
 		return tok, nil
 	}
 	dir, err := defaultHotbedDir()
 	if err != nil {
 		return "", nil
 	}
-	targetOrg := strings.TrimSpace(os.Getenv("HOTBED_ORG"))
+	targetOrg := strings.TrimSpace(getenv("HOTBED_ORG"))
 	tok, err := cliauth.ResolveToken(ctx, dir, controller, targetOrg, hc)
 	if err != nil {
 		return "", err
@@ -86,16 +89,16 @@ func resolveControllerAuthToken(ctx context.Context, controller string, hc *http
 // controllerAuthToken returns the bearer token for controller, failing closed
 // (returning "") if WorkOS token refresh fails rather than falling back to
 // legacy ~/.hotbed/token.
-func controllerAuthToken(controller string) string {
-	tok, err := resolveControllerAuthToken(context.Background(), controller, nil)
+func controllerAuthToken(getenv func(string) string, controller string) string {
+	tok, err := resolveControllerAuthToken(context.Background(), getenv, controller, nil)
 	if err != nil {
 		return ""
 	}
 	return tok
 }
 
-func controllerAuthInterceptors(controller string, hc *http.Client) ([]connect.ClientInterceptor, error) {
-	tok, err := resolveControllerAuthToken(context.Background(), controller, hc)
+func controllerAuthInterceptors(getenv func(string) string, controller string, hc *http.Client) ([]connect.ClientInterceptor, error) {
+	tok, err := resolveControllerAuthToken(context.Background(), getenv, controller, hc)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +110,7 @@ func controllerAuthInterceptors(controller string, hc *http.Client) ([]connect.C
 }
 
 func (f controllerClient) interceptors(hc *http.Client) ([]connect.ClientInterceptor, error) {
-	auth, err := controllerAuthInterceptors(f.Controller, hc)
+	auth, err := controllerAuthInterceptors(f.Getenv, f.Controller, hc)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +157,7 @@ type joinCmd struct {
 func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 	token := strings.TrimSpace(c.Token)
 	if token == "" {
-		token = controllerAuthToken(c.Controller)
+		token = controllerAuthToken(d.getenv, c.Controller)
 	}
 	return worker.Join(ctx, worker.JoinOptions{
 		Dir: c.Dir, Controller: c.Controller, User: c.User, Token: token, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,

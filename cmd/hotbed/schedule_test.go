@@ -75,6 +75,7 @@ func (c *cluster) session(id string) *pb.Session {
 // A scheduled command runs at its slot in a session of its own, in a fresh
 // workspace, with its env; a run that succeeds ends its session.
 func TestScheduledCommandRunsInItsOwnSession(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.at(tomorrowAt(1, 59))
@@ -140,6 +141,7 @@ func TestScheduledCommandRunsInItsOwnSession(t *testing.T) {
 // A run is never ended by the idle reaper while its command runs. One that
 // fails keeps its session for the idle hour, for an agent to look inside.
 func TestFailedScheduledRunLingers(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
@@ -188,6 +190,7 @@ func TestFailedScheduledRunLingers(t *testing.T) {
 // progress is skipped. A slot that passed while the controller was down is
 // missed, not run late.
 func TestScheduledRunsAreSkippedOrMissed(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
@@ -239,6 +242,7 @@ func TestScheduledRunsAreSkippedOrMissed(t *testing.T) {
 // A controller restarted while a run is in progress settles it from what is
 // in its database.
 func TestScheduledRunSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
@@ -258,6 +262,7 @@ func TestScheduledRunSurvivesRestart(t *testing.T) {
 
 // A run that cannot start says why, and leaves no session behind.
 func TestScheduledRunThatCannotStart(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "schedule", "add", "pinned", "-r", "app", "--cron", nightly, "--arch", "amd64", "--", "true")
@@ -273,6 +278,7 @@ func TestScheduledRunThatCannotStart(t *testing.T) {
 
 // A schedule's runs go only to nodes of its architecture.
 func TestScheduledRunKeepsToItsArchitecture(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	sc := &pb.ScheduledCommand{}
@@ -290,6 +296,7 @@ func TestScheduledRunKeepsToItsArchitecture(t *testing.T) {
 // A schedule that sizes its runs' VM keeps the size, and its runs go only to
 // nodes with the vm runtime.
 func TestScheduledSizedRunNeedsAVMNode(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	sc := &pb.ScheduledCommand{}
@@ -307,6 +314,7 @@ func TestScheduledSizedRunNeedsAVMNode(t *testing.T) {
 // A paused schedule starts nothing until resumed, and then not the slots it
 // slept through.
 func TestPausedScheduleRunsNothing(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.at(tomorrowAt(1, 0))
@@ -333,6 +341,7 @@ func TestPausedScheduleRunsNothing(t *testing.T) {
 // gone, so its command's end may never be reported) ends with it, and the
 // next run may start.
 func TestScheduledRunEndsWithItsSession(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
@@ -372,6 +381,7 @@ func (c *cluster) admitted(session string) {
 // A run a controller recorded and stopped before its command started is
 // recorded as not started by the next, and its session ended.
 func TestInterruptedStartIsNotStarted(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "schedule", "add", "half", "-r", "app", "--cron", nightly, "--", "true")
@@ -401,8 +411,9 @@ func TestInterruptedStartIsNotStarted(t *testing.T) {
 // A schedule keeps the project it was added in, so a repo that another
 // project takes in later does not leave its runs not knowing which.
 func TestScheduleKeepsItsProject(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_PROJECT", "")
 	origin := upstream(t)
 	c.addRepo(origin)
 	sc := &pb.ScheduledCommand{}
@@ -429,6 +440,7 @@ func TestScheduleKeepsItsProject(t *testing.T) {
 // default, -p narrows to another, --all-projects lists every project's, and
 // project ls counts them.
 func TestSchedulesBelongToAProject(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addRepo(origin)

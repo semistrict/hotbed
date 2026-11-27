@@ -14,6 +14,7 @@ import (
 // of it: the node's admission with every signal against its limit, the
 // work it held and made wait, and the placements that weighed it.
 func TestNodeShowsWhyItHoldsWork(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "busy-owl")

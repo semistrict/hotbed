@@ -11,12 +11,13 @@ import (
 )
 
 func TestSessionT3CodeThreadPersistenceAndSearchCLI(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "project", "add", "other")
 
 	// Start a session with T3CODE_THREAD_ID set: persisted on the server.
-	t.Setenv("T3CODE_THREAD_ID", "t3-thread-alpha")
+	c.setenv("T3CODE_THREAD_ID", "t3-thread-alpha")
 	var first pb.Session
 	c.ok(&first, "session", "start", "alpha-one")
 	if first.T3CodeThreadId != "t3-thread-alpha" {
@@ -48,18 +49,22 @@ func TestSessionT3CodeThreadPersistenceAndSearchCLI(t *testing.T) {
 	}
 
 	// Start a session for a different thread ID to verify exact matching.
-	t.Setenv("T3CODE_THREAD_ID", "t3-thread-alpha-2")
+	c.setenv("T3CODE_THREAD_ID", "t3-thread-alpha-2")
 	c.ok(nil, "session", "start", "gamma-one", "-p", "other")
 
 	// Advance clock by 48h so ended sessions (alpha-one, alpha-two) are outside ListSessions' 24h window.
+	// The live ones (beta-one, gamma-one) must outlast the jump: the
+	// controller's maintenance alarm, on its own wall-clock schedule, would
+	// otherwise end them as idle for 48h.
+	c.okIn(`{"controller":{"sessionIdleTimeoutSeconds":604800}}`, nil, "config", "set")
 	c.clock.advance(48 * time.Hour)
 	// Restart controller to confirm server-side SQLite persistence across restarts.
 	c.restart()
 
 	// Unset T3CODE_THREAD_ID and bind nothing locally (simulating another machine / shell).
-	t.Setenv("T3CODE_THREAD_ID", "")
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("HOTBED_PROJECT", "other") // must NOT restrict `session search` unless -p is passed
+	c.setenv("T3CODE_THREAD_ID", "")
+	c.setenv("HOTBED_SESSION", "")
+	c.setenv("HOTBED_PROJECT", "other") // must NOT restrict `session search` unless -p is passed
 
 	// 1. `session search THREAD_ID` finds all 3 sessions across projects (live first, then ended even >24h old).
 	var found pb.SearchSessionsResponse
@@ -107,7 +112,7 @@ func TestSessionT3CodeThreadPersistenceAndSearchCLI(t *testing.T) {
 	if code, e := c.fails("session", "search", "a", "--t3code-thread-id", "b"); code != exitError || e.Code != api.CodeInvalidArgs {
 		t.Fatalf("session search with both arg and flag: exit %d, %+v, want INVALID_ARGS", code, e)
 	}
-	t.Setenv("T3CODE_THREAD_ID", "t3-thread-alpha-2")
+	c.setenv("T3CODE_THREAD_ID", "t3-thread-alpha-2")
 	var envSearch pb.SearchSessionsResponse
 	c.ok(&envSearch, "session", "search")
 	if len(envSearch.Sessions) != 1 || envSearch.Sessions[0].Id != "gamma-one" {
@@ -120,7 +125,7 @@ func TestSessionT3CodeThreadPersistenceAndSearchCLI(t *testing.T) {
 	}
 
 	// 4. `session status --t3code-thread-id` looks up directly on controller (works without local sessions.json).
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 	var stByThread sessionStatusResult
 	c.ok(&stByThread, "session", "status", "--t3code-thread-id", "t3-thread-alpha")
 	if !stByThread.Active || stByThread.ID != "beta-one" || stByThread.Source != "t3code-thread" || stByThread.Key != "t3-thread-alpha" || stByThread.T3CodeThreadID != "t3-thread-alpha" {
@@ -134,7 +139,7 @@ func TestSessionT3CodeThreadPersistenceAndSearchCLI(t *testing.T) {
 	}
 
 	// 5. `session ls --t3code-thread-id` filters ListSessions.
-	t.Setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_PROJECT", "")
 	var lsFiltered pb.ListSessionsResponse
 	c.ok(&lsFiltered, "session", "ls", "--t3code-thread-id", "t3-thread-alpha")
 	if len(lsFiltered.Sessions) != 1 || lsFiltered.Sessions[0].Id != "beta-one" {
@@ -142,8 +147,8 @@ func TestSessionT3CodeThreadPersistenceAndSearchCLI(t *testing.T) {
 	}
 
 	// 6. `hotbed mcp` inside T3 Code also persists T3CODE_THREAD_ID server-side.
-	t.Setenv("T3CODE_THREAD_ID", "t3-thread-mcp-persist")
-	t.Setenv("HOTBED_PROJECT", "app")
+	c.setenv("T3CODE_THREAD_ID", "t3-thread-mcp-persist")
+	c.setenv("HOTBED_PROJECT", "app")
 	m := c.mcp()
 	defer m.stop()
 	var mcpFound pb.SearchSessionsResponse

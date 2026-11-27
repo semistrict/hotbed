@@ -20,6 +20,7 @@ import (
 // lives in a nested message) would otherwise print "<no value>" or fail only
 // when a person runs the command.
 func TestFormatTemplatesNameRealFields(t *testing.T) {
+	t.Parallel()
 	for name, f := range defaultFormatSpecs {
 		t.Run(name, func(t *testing.T) {
 			// A map names its keys itself; anything else is filled in.

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"slices"
 	"strings"
 
@@ -43,7 +42,7 @@ func (f projectFlag) resolve(ctx context.Context, d deps, cc controllerClient, s
 			return "", err
 		}
 	}
-	remote, err := checkoutRemote(ctx)
+	remote, err := d.checkoutRemote(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -74,8 +73,8 @@ func (f projectFlag) resolve(ctx context.Context, d deps, cc controllerClient, s
 
 // checkoutRemote is the canonical remote of the git checkout this command
 // runs in (origin's, or its first remote's); empty outside one.
-func checkoutRemote(ctx context.Context) (string, error) {
-	root, err := gitCheckoutRoot(ctx, ".")
+func (h here) checkoutRemote(ctx context.Context) (string, error) {
+	root, err := h.checkoutRoot(ctx)
 	if err != nil {
 		return "", nil // not in a checkout
 	}
@@ -102,14 +101,14 @@ type listScope struct {
 func (f projectFlag) listing(ctx context.Context, d deps, session sessionFlag, all bool) (listScope, error) {
 	// HOTBED_PROJECT fills -p too, and --all-projects outweighs it; only
 	// a -p given beside --all-projects contradicts it.
-	if all && f.Project != "" && f.Project != strings.TrimSpace(os.Getenv("HOTBED_PROJECT")) {
+	if all && f.Project != "" && f.Project != d.env("HOTBED_PROJECT") {
 		return listScope{}, api.Errorf(api.CodeInvalidArgs, "--project and --all-projects can't be used together")
 	}
 	b, _, err := session.lookupBinding(ctx, d)
 	if err != nil {
 		return listScope{}, err
 	}
-	remote, err := checkoutRemote(ctx)
+	remote, err := d.checkoutRemote(ctx)
 	if err != nil {
 		return listScope{}, err
 	}

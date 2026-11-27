@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -738,6 +737,3 @@ func formatBoardImportSummary(s boardImportSummary) string {
 	}
 	return b.String()
 }
-
-// Keep os referenced if needed for future env helpers.
-var _ = os.Getenv

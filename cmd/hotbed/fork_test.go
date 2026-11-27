@@ -15,6 +15,7 @@ import (
 // it leaves goes with it when it ends, and the session's runs beside it are
 // in the session's workspace. Each --fork gets a new one.
 func TestRunForkRunsInAThrowawayWorkspace(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "fork-elk")
@@ -74,6 +75,7 @@ func TestRunForkRunsInAThrowawayWorkspace(t *testing.T) {
 // A --fork run before the session has a workspace gives it none: the
 // session's first plain run gets a workspace of its own, not the fork.
 func TestRunForkFirstLeavesTheSessionWithoutAWorkspace(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "fork-owl")
@@ -91,6 +93,7 @@ func TestRunForkFirstLeavesTheSessionWithoutAWorkspace(t *testing.T) {
 // With the controller out of reach a --fork run fails: it cannot fall back
 // to the workspace this machine last used, which is the session's own.
 func TestRunForkNeedsTheController(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "fork-yak")

@@ -12,6 +12,7 @@ import (
 )
 
 func TestProjectBasesCLIAndMCP(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -118,7 +119,7 @@ func TestProjectBasesCLIAndMCP(t *testing.T) {
 	}
 
 	// 6. MCP tool `project_bases`: optional project param, filters work end to end.
-	t.Setenv("T3CODE_THREAD_ID", "thread-bases-mcp")
+	c.setenv("T3CODE_THREAD_ID", "thread-bases-mcp")
 	m := c.mcp()
 	defer m.stop()
 
@@ -163,6 +164,7 @@ func TestProjectBasesCLIAndMCP(t *testing.T) {
 }
 
 func TestFreshenCLIAndMCP(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -282,7 +284,7 @@ func TestFreshenCLIAndMCP(t *testing.T) {
 	}
 
 	// 6. MCP tools `freshen_ls` and `freshen_show`.
-	t.Setenv("T3CODE_THREAD_ID", "thread-freshen-mcp")
+	c.setenv("T3CODE_THREAD_ID", "thread-freshen-mcp")
 	m := c.mcp()
 	defer m.stop()
 

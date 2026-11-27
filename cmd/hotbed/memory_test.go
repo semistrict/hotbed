@@ -13,7 +13,8 @@ import (
 )
 
 func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
-	c := newCluster(t)
+	t.Parallel()
+	c := newControllerOnly(t)
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "brave-otter")
 	c.ok(nil, "session", "start", "calm-heron")
@@ -269,7 +270,8 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 // A session of one project saves a memory for another by naming it: a
 // session often learns what belongs to a project it is not working on.
 func TestMemoryAddForAnotherProject(t *testing.T) {
-	c := newCluster(t)
+	t.Parallel()
+	c := newControllerOnly(t)
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "brave-otter") // project test
 
@@ -308,14 +310,15 @@ func TestMemoryAddForAnotherProject(t *testing.T) {
 }
 
 func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
-	c := newCluster(t)
+	t.Parallel()
+	c := newControllerOnly(t)
 	// Seed a global memory directly (user action, no session bound, auto-approved).
 	c.ok(nil, "memory", "propose", "--global", "--mode", "always",
 		"--slug", "mcp-test-rule", "--summary", "Always prefer neon over GPT.")
 
 	dir := t.TempDir()
-	t.Chdir(dir)
-	t.Setenv("T3CODE_THREAD_ID", "thread-mcp-mem")
+	c.chdir(dir)
+	c.setenv("T3CODE_THREAD_ID", "thread-mcp-mem")
 	m := c.mcp()
 	defer m.stop()
 
@@ -351,6 +354,7 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 }
 
 func TestMemorySavingReminders(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 

@@ -41,7 +41,7 @@ func reviewCluster(t *testing.T) (*cluster, hotbedv1connect.ReviewServiceClient,
 	gitIn(t, dir, "checkout", "-qb", "work")
 	write(t, filepath.Join(dir, "a.go"), "package a\n\nfunc A() {}\n")
 	gitIn(t, dir, "commit", "-qam", "work")
-	t.Chdir(dir)
+	c.chdir(dir)
 	addr, err := c.cli.controller()
 	if err != nil {
 		t.Fatal(err)
@@ -105,6 +105,7 @@ func (c *cluster) hotbedAsync(m proto.Message, args ...string) <-chan error {
 // A review goes from request to findings to decisions and the user's
 // responses, each step kept with the session and exact model that took it.
 func TestReviewRoundTrip(t *testing.T) {
+	t.Parallel()
 	c, user, v := reviewCluster(t)
 	// Requesting a review without an implementer model (and on a session with none) is refused.
 	if _, e := c.fails("review", "request", "-s", "brave-otter", "--title", "No model"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no implementer model") {
@@ -270,6 +271,7 @@ func TestReviewRoundTrip(t *testing.T) {
 // Uncommitted work is reviewed as a snapshot commit on HEAD, which git
 // keeps.
 func TestReviewSnapshotsUncommittedWork(t *testing.T) {
+	t.Parallel()
 	c, _, v := reviewCluster(t)
 	write(t, filepath.Join(v.dir, "a.go"), "package a\n\nfunc A() { panic(1) }\n")
 	write(t, filepath.Join(v.dir, "new.go"), "package a\n")
@@ -297,6 +299,7 @@ func TestReviewSnapshotsUncommittedWork(t *testing.T) {
 // A review fails, or is cancelled, with why; its requester hears of a
 // failure; ends are final.
 func TestReviewEnds(t *testing.T) {
+	t.Parallel()
 	c, _, _ := reviewCluster(t)
 	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
@@ -342,6 +345,7 @@ func TestReviewEnds(t *testing.T) {
 
 // Reviews stay in their project and require a real version to review.
 func TestReviewRefusals(t *testing.T) {
+	t.Parallel()
 	c, _, v := reviewCluster(t)
 	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
@@ -375,7 +379,7 @@ func TestReviewRefusals(t *testing.T) {
 	if _, e := c.fails("review", "request", "-s", "brave-otter", "--model", "gemini-4-neon"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no origin/HEAD") {
 		t.Errorf("no origin/HEAD = %v, want INVALID_ARGS", e)
 	}
-	t.Chdir(t.TempDir())
+	c.chdir(t.TempDir())
 	if _, e := c.fails("review", "request", "-s", "brave-otter", "--model", "gemini-4-neon"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "not in one") {
 		t.Errorf("request outside a checkout = %v, want INVALID_ARGS", e)
 	}
@@ -384,6 +388,7 @@ func TestReviewRefusals(t *testing.T) {
 // A reviewer that found nothing says so: no findings, and an event that
 // says it reported none.
 func TestReviewFindingsNoneFound(t *testing.T) {
+	t.Parallel()
 	c, _, _ := reviewCluster(t)
 	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
@@ -417,6 +422,7 @@ const reviewerReport = "# Review of work\n\nA drops an error; the package lacks 
 // a json hotbed-findings block; its caller records them, and the review
 // keeps the whole report.
 func TestReviewFindingsFromReport(t *testing.T) {
+	t.Parallel()
 	c, _, v := reviewCluster(t)
 	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
@@ -482,6 +488,7 @@ func TestReviewFindingsFromReport(t *testing.T) {
 // it takes no more responses until it is reopened. One invalid carries its
 // evidence, and may still be disputed.
 func TestReviewFindingsFixedAndInvalid(t *testing.T) {
+	t.Parallel()
 	c, user, v := reviewCluster(t)
 	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
@@ -565,8 +572,9 @@ func TestReviewFindingsFixedAndInvalid(t *testing.T) {
 // implementer decisions (including won't fix, reject alias) and user vs agent
 // quick responses are attributed unambiguously.
 func TestReviewMultiReviewerSubagentsAndAttribution(t *testing.T) {
+	t.Parallel()
 	c, user, _ := reviewCluster(t)
-	t.Setenv("T3CODE_THREAD_ID", "thread-parent-123")
+	c.setenv("T3CODE_THREAD_ID", "thread-parent-123")
 
 	// Start a session with a model and T3 thread ID; review request inherits its model.
 	sess := &pb.Session{}

@@ -61,6 +61,7 @@ func newMixedArchFleet(t *testing.T) *cluster {
 // workspace while its node is not much busier than another, and gets one
 // on another node, with the checkout synced there, when it is.
 func TestRunsArePlacedByLoad(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -68,7 +69,7 @@ func TestRunsArePlacedByLoad(t *testing.T) {
 	c.ok(nil, "session", "start", S)
 	agent := filepath.Join(t.TempDir(), "agent")
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
-	t.Chdir(agent)
+	c.chdir(agent)
 	write(t, filepath.Join(agent, "src/lib.txt"), "edited\n")
 
 	// Neither node has a base yet: the idle one takes the run.
@@ -133,6 +134,7 @@ func TestRunsArePlacedByLoad(t *testing.T) {
 // A run that syncs no checkout stays in the session's workspace however
 // busy its node: what earlier runs changed there lives only there.
 func TestRunWithoutACheckoutStaysInItsWorkspace(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	const S = "calm-elk"
@@ -161,6 +163,7 @@ func TestRunWithoutACheckoutStaysInItsWorkspace(t *testing.T) {
 // A node that cannot make the workspace now is passed over: the run goes to
 // the next node placement picks.
 func TestRunPassesOverANodeThatCannotTakeIt(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	const S = "wary-ibis"
@@ -180,6 +183,7 @@ func TestRunPassesOverANodeThatCannotTakeIt(t *testing.T) {
 // what the caller asked for (--node, --mem-low, --fork, --no-sync, or any node)
 // and every candidate node weighed — through live state and ended history.
 func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
+	t.Parallel()
 	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -187,7 +191,7 @@ func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
 	c.ok(nil, "session", "start", S)
 	agent := filepath.Join(t.TempDir(), "agent")
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
-	t.Chdir(agent)
+	c.chdir(agent)
 
 	c.load(map[string]float64{"asahimbp": 0.9})
 	// Unconstrained run: picks mini (idle), records empty Placement request.
@@ -237,6 +241,7 @@ func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
 // controller instead of committing to one full host's local queue, and runs on
 // whichever eligible host frees up first.
 func TestRunWaitsAtControllerAndTakesFirstHostWithCapacity(t *testing.T) {
+	t.Parallel()
 	workerClock := &clock{}
 	c := newFleetWith(t, 2, clusterOpts{engine: []func(*worker.EngineConfig){func(cfg *worker.EngineConfig) {
 		cfg.Now = workerClock.Now
@@ -247,7 +252,7 @@ func TestRunWaitsAtControllerAndTakesFirstHostWithCapacity(t *testing.T) {
 	c.ok(nil, "session", "start", S)
 	agent := filepath.Join(t.TempDir(), "agent")
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
-	t.Chdir(agent)
+	c.chdir(agent)
 
 	// Both nodes hold new work; mini looks slightly busier than asahimbp, so
 	// eager placement would have locked the run onto asahimbp.
@@ -306,6 +311,7 @@ func TestRunWaitsAtControllerAndTakesFirstHostWithCapacity(t *testing.T) {
 // races workspace creation across both, uses the first ready winner, and
 // releases the losing workspace.
 func TestRunRacesWorkspaceCreationAcrossTwoHosts(t *testing.T) {
+	t.Parallel()
 	c := newFleet(t, 2) // asahimbp and mini, both idle (equal cost)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -313,7 +319,7 @@ func TestRunRacesWorkspaceCreationAcrossTwoHosts(t *testing.T) {
 	c.ok(nil, "session", "start", S)
 	agent := filepath.Join(t.TempDir(), "agent")
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
-	t.Chdir(agent)
+	c.chdir(agent)
 
 	// Stall asahimbp's CreateWorkspace so mini wins the 2-host race without
 	// waiting on asahimbp.

@@ -108,7 +108,10 @@ func newPrivateHTTPRepo(t *testing.T, repoPath, wantUser, wantPass string) (stri
 }
 
 func TestCentralizedGitAuthCLIAndEndToEndMultiNode(t *testing.T) {
-	c := newFleet(t, 2) // asahimbp and mini, neither with local git credentials
+	t.Parallel()
+	// asahimbp (arm64) and mini (amd64), neither with local git credentials:
+	// a run reaches each by its arch.
+	c := newMixedArchFleet(t)
 	c.online()
 
 	// Mock GitHub OAuth + REST + GraphQL endpoints for CLI auth login / auth api / worker `gh`.
@@ -188,7 +191,7 @@ func TestCentralizedGitAuthCLIAndEndToEndMultiNode(t *testing.T) {
 	c.ok(nil, "repo", "add", "hotbed", repoURL, "-p", "hotbed")
 	c.ok(nil, "session", "start", "auth-sess", "-p", "hotbed")
 
-	_, err := c.fails("run", "-s", "auth-sess", "-r", "hotbed", "--node", "asahimbp", "--", "true")
+	_, err := c.fails("run", "-s", "auth-sess", "-r", "hotbed", "--arch", "arm64", "--", "true")
 	if err.Code != api.CodeNotAuthorized || err.Retryable {
 		t.Fatalf("run before auth set = %+v, want non-retryable NOT_AUTHORIZED", err)
 	}
@@ -222,24 +225,24 @@ func TestCentralizedGitAuthCLIAndEndToEndMultiNode(t *testing.T) {
 	}
 
 	// 7. End-to-end across BOTH worker nodes: HTTPS git, SSH proxy git, AND worker fake `gh` (REST + GraphQL)!
-	for _, node := range []string{"asahimbp", "mini"} {
-		code, out, stderr := c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--node", node, "--", "git", "ls-remote", "origin", "HEAD")
+	for node, arch := range map[string]string{"asahimbp": "arm64", "mini": "amd64"} {
+		code, out, stderr := c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--arch", arch, "--", "git", "ls-remote", "origin", "HEAD")
 		if code != 0 || !strings.Contains(out, "HEAD") {
 			t.Fatalf("HTTPS git on %s failed (code=%d): out=%q err=%q", node, code, out, stderr)
 		}
-		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--node", node, "--", "git", "ls-remote", sshURL, "HEAD")
+		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--arch", arch, "--", "git", "ls-remote", sshURL, "HEAD")
 		if code != 0 || !strings.Contains(out, "HEAD") {
 			t.Fatalf("SSH proxy git on %s failed (code=%d): out=%q err=%q", node, code, out, stderr)
 		}
-		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--node", node, "--", "gh", "auth", "status")
+		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--arch", arch, "--", "gh", "auth", "status")
 		if code != 0 || !strings.Contains(out, "semistrict") {
 			t.Fatalf("worker gh auth status on %s failed (code=%d): out=%q err=%q", node, code, out, stderr)
 		}
-		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--node", node, "--", "gh", "api", "--hostname", "github.com", "/user")
+		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--arch", arch, "--", "gh", "api", "--hostname", "github.com", "/user")
 		if code != 0 || !strings.Contains(out, `"semistrict"`) {
 			t.Fatalf("worker gh api /user on %s failed (code=%d): out=%q err=%q", node, code, out, stderr)
 		}
-		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--node", node, "--", "gh", "api", "--hostname", "github.com", "graphql", "-f", "query=query { viewer { login } }")
+		code, out, stderr = c.hotbed("run", "-s", "auth-sess", "-r", "hotbed", "--arch", arch, "--", "gh", "api", "--hostname", "github.com", "graphql", "-f", "query=query { viewer { login } }")
 		if code != 0 || !strings.Contains(out, `"semistrict"`) {
 			t.Fatalf("worker gh api graphql on %s failed (code=%d): out=%q err=%q", node, code, out, stderr)
 		}

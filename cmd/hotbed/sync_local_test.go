@@ -19,6 +19,7 @@ import (
 // controller. The socket here answers 503 to everything, so a call that
 // reaches it fails, and one that does not would succeed.
 func TestSyncReachesThisMachinesWorkerOnItsSocket(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -52,7 +53,7 @@ func TestSyncReachesThisMachinesWorkerOnItsSocket(t *testing.T) {
 
 	checkout := filepath.Join(t.TempDir(), "agent")
 	gitIn(t, filepath.Dir(checkout), "clone", "--quiet", origin, checkout)
-	t.Chdir(checkout)
+	c.chdir(checkout)
 	if code, out, stderr := c.hotbed("sync", "-s", sess.Id, "-r", "app"); code == 0 {
 		t.Errorf("sync with the local worker's socket answering 503 succeeded: stdout %q, stderr %q", out, stderr)
 	}

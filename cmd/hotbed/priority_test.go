@@ -9,6 +9,7 @@ import (
 )
 
 func TestPriorityFlagParsingAndLimits(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "prio-fox")

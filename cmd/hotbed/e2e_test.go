@@ -244,7 +244,7 @@ func (c *cluster) addProject(origin string) {
 	c.t.Helper()
 	c.ok(nil, "project", "add", "app", "--repo", origin)
 	c.ok(nil, "repo", "add", "app", origin)
-	c.t.Setenv("HOTBED_PROJECT", "app")
+	c.setenv("HOTBED_PROJECT", "app")
 }
 
 // workspace is the session's workspace of app for a run placed by p that
@@ -266,7 +266,7 @@ func (c *cluster) tryWorkspace(session string, p *pb.Placement) (*pb.Workspace, 
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	f := controllerClient{Controller: addr}
+	f := controllerClient{Controller: addr, Getenv: c.cli.getenv}
 	d := c.cli
 	d.stdout, d.stderr = io.Discard, io.Discard
 	ws, w, err := f.workspaceFor(c.t.Context(), d, &pb.CreateWorkspaceRequest{SessionId: session, Repo: "app", Placement: p})
@@ -334,6 +334,7 @@ func upstream(t *testing.T) string {
 const freshen = `cd app && mkdir -p target "$XDG_CACHE_HOME" && cp -R src target/ && echo "   Compiling app v0.1.0 (/work/app)" && echo warm > "$XDG_CACHE_HOME/marker"`
 
 func TestSessionWithSyncedCheckout(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -352,7 +353,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 
 	// A run in a checkout of the repo syncs it first: it sees the agent's
 	// edits, the base's build and caches, in the fork.
-	t.Chdir(agent)
+	c.chdir(agent)
 	code, stdout, stderr := c.hotbed("run", "-s", S, "-r", "app", "--", "sh", "-c", `cat src/lib.txt src/new.txt target/src/keep.txt "$XDG_CACHE_HOME/marker"`)
 	if code != 0 || stdout != "edited\nnew\nkeep\nwarm\n" || !strings.Contains(stderr, "synced 2 changed files") {
 		t.Fatalf("run: exit %d, stdout %q, stderr %q", code, stdout, stderr)
@@ -462,6 +463,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 }
 
 func TestRemoteOnlyWorkspace(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	sess := &pb.Session{}
@@ -490,6 +492,7 @@ func TestRemoteOnlyWorkspace(t *testing.T) {
 }
 
 func TestAbandonedSessionEnds(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "idle-yak")
@@ -526,6 +529,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 // in its own project, with no workspaces; a live one is as it is. Without
 // --resume, its name is taken.
 func TestSessionResumes(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "back-bear")
@@ -568,6 +572,7 @@ func TestSessionResumes(t *testing.T) {
 // An attached hotbed run keeps its session alive for as long as it runs,
 // however long: an agent waiting on it needs no hotbed poll loop beside it.
 func TestAttachedRunKeepsSessionAlive(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "busy-elk")
@@ -636,6 +641,7 @@ func (c *cluster) base(id string) *pb.Base {
 // since the newest: commit-only freshens respect the node's min-interval /
 // duty-cycle cap, while an explicit rebuild runs at once from nothing.
 func TestBasesFreshenOnDemand(t *testing.T) {
+	t.Parallel()
 	wclock := &clock{}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = wclock.Now })
 	origin := upstream(t)
@@ -692,6 +698,7 @@ func TestBasesFreshenOnDemand(t *testing.T) {
 // A project holding a remote no repo has can have no workspace made, so its
 // bases are not kept: they go once no workspace uses them.
 func TestRemovedRepoBasesAreDeleted(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	origin := upstream(t)
 	c.addRepo(origin)
@@ -722,6 +729,7 @@ func TestRemovedRepoBasesAreDeleted(t *testing.T) {
 }
 
 func TestRunOfAnUnreachableRepoIsRetryable(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addProject("/nonexistent/repo")
 	c.ok(nil, "session", "start", "eager-gnu")
@@ -732,6 +740,7 @@ func TestRunOfAnUnreachableRepoIsRetryable(t *testing.T) {
 }
 
 func TestRunFailsWhenFreshenFails(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addProject(upstream(t))
 	c.ok(nil, "step", "set", "-p", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")
@@ -750,6 +759,21 @@ func countWhat(events []*pb.SessionEvent, what string) int {
 		}
 	}
 	return n
+}
+
+// ended says whether session's commands list id as ended: one not listed yet,
+// as when the worker's events have not reached the controller since it was
+// queued, has not.
+func (c *cluster) ended(session, id string) bool {
+	c.t.Helper()
+	ps := &pb.ListCommandsResponse{}
+	c.ok(ps, "ps", "-s", session, "-e")
+	for _, cmd := range ps.Commands {
+		if cmd.Id == id {
+			return !api.Live(cmd.State)
+		}
+	}
+	return false
 }
 
 func containsLive(cmds []*pb.Command, id string) bool {
@@ -781,6 +805,7 @@ func (c *cluster) runs(session, file string) int {
 // script changes, while an every-pull step also runs whenever the branch
 // moved.
 func TestStepsRunLikeMigrations(t *testing.T) {
+	t.Parallel()
 	wclock := &clock{}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = wclock.Now })
 	origin := upstream(t)
@@ -848,6 +873,7 @@ func TestStepsRunLikeMigrations(t *testing.T) {
 // step add gives the agent's workspace what the step installs at once, and
 // saves only a step that works twice.
 func TestStepAddTriesItTwice(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "keen-elk")
@@ -891,6 +917,7 @@ func TestStepAddTriesItTwice(t *testing.T) {
 // A step that breaks the freshen does not stop work: workspaces get the
 // newest warm base with a note, and the broken recipe is not built again.
 func TestFailingStepFallsBackToTheWarmBase(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "old-gnu")
@@ -931,6 +958,7 @@ func TestFailingStepFallsBackToTheWarmBase(t *testing.T) {
 // being that tmp is the real unit's (internal/unit's systemd tests): here it
 // is only TMPDIR.
 func TestCommandsHaveTheirOwnTmp(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "step", "set", "-p", "app", "litter", "--every-pull", "--", `mkdir "$TMPDIR/litter" && cd "$TMPDIR/litter" && seq 1 3000 | xargs touch`)
@@ -971,6 +999,7 @@ func (w *flushNotifyWriter) Unwrap() http.ResponseWriter { return w.ResponseWrit
 // A deploy restarts the worker under a run waiting for its workspace: the
 // watch drops, and run watches again rather than failing.
 func TestRunWatchesAgainWhenTheStreamDrops(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addProject(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
@@ -1045,6 +1074,7 @@ func TestRunWatchesAgainWhenTheStreamDrops(t *testing.T) {
 
 // The cockpit shows sessions that ended, with the workspaces they had.
 func TestSnapshotKeepsEndedSessions(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "spent-owl")
@@ -1080,6 +1110,7 @@ func (c *cluster) commandStates(session string) map[string]pb.CommandState {
 // its repo after it, is dropped: it would only hold memory and CPUs, and
 // on a full machine be parked forever.
 func TestSupersededBaseBuildIsDropped(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addProject(upstream(t))
 	c.ok(nil, "step", "set", "-p", "app", "build", "--every-pull", "--", "sleep 30")
@@ -1114,6 +1145,7 @@ func TestSupersededBaseBuildIsDropped(t *testing.T) {
 // A base's freshen log, which a failed run names, can be read from the
 // session.
 func TestFreshenLogIsReadable(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addProject(upstream(t))
 	c.ok(nil, "step", "set", "-p", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")

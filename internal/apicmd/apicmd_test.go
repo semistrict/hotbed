@@ -555,7 +555,7 @@ func buildWith(t *testing.T, c *apicmd.Command, input string, given map[string]a
 			a.Given[p] = v
 		}
 	}
-	r := &apicmd.Runner{Hooks: hooks, Sessions: noSessions{}}
+	r := &apicmd.Runner{Hooks: hooks, Sessions: noSessions{}, Getenv: testEnv}
 	req, _, err := r.Build(t.Context(), c, a)
 	if err != nil {
 		return nil, err
@@ -666,11 +666,15 @@ func TestLocalFieldIsReadAndNotSent(t *testing.T) {
 	}
 }
 
-// env:VAR defaults read the process environment; proto3 optional scalars keep
-// an explicitly given zero value (presence = true) while remaining unset when
+// testEnv is the environment buildWith's runner reads.
+func testEnv(k string) string {
+	return map[string]string{"APICMD_TEST_ENV": "hello-env"}[k]
+}
+
+// env:VAR defaults read the Runner's Getenv; proto3 optional scalars keep an
+// explicitly given zero value (presence = true) while remaining unset when
 // omitted.
 func TestEnvDefaultAndOptionalScalarZero(t *testing.T) {
-	t.Setenv("APICMD_TEST_ENV", "hello-env")
 	req, err := build(t, `{}`, nil)
 	if err != nil {
 		t.Fatal(err)

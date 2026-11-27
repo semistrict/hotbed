@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -246,7 +245,7 @@ func (f controllerClient) locate(ctx context.Context, d deps, session, node stri
 // caller named, if it named one: otherwise repo was inferred from this very
 // checkout.
 func (f controllerClient) checkoutOf(ctx context.Context, d deps, session, explicit, repo string) (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := d.getwd()
 	if err != nil {
 		return "", err
 	}

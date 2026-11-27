@@ -46,6 +46,7 @@ func (b *syncBuffer) String() string {
 // restart, and exit with the command's real exit code (never 0 prematurely)
 // (board 7945).
 func TestAttachRidesOutWorkerRestartMidCommand(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.cli.rideOut = 30 * time.Second
 	c.addRepo(upstream(t))
@@ -182,6 +183,7 @@ func TestAttachFollowLogGivesUpAfterFollowRideOut(t *testing.T) {
 // followStatus must never exit 0 for a live, unspecified, cancelled, or failed
 // command, even if a malformed response carries a 0 exit code (board 7945).
 func TestAttachFollowStatusNeverExitsZeroForLiveOrFailedCommand(t *testing.T) {
+	t.Parallel()
 	zero := int32(0)
 	seven := int32(7)
 

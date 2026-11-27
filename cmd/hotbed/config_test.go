@@ -17,6 +17,7 @@ import (
 )
 
 func TestWorkerConfigCLI(t *testing.T) {
+	t.Parallel()
 	c := newFleet(t, 1)
 	kernelSHA := sha256.Sum256([]byte("test-vmlinux"))
 	kernelSHAHex := hex.EncodeToString(kernelSHA[:])
@@ -125,6 +126,7 @@ func TestWorkerConfigCLI(t *testing.T) {
 }
 
 func TestSystemUpgradeCLI(t *testing.T) {
+	t.Parallel()
 	payload := []byte("cladefsd-release-binary")
 	sumBytes := sha256.Sum256(payload)
 	sumHex := hex.EncodeToString(sumBytes[:])

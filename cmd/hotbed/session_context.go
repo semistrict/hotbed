@@ -141,20 +141,16 @@ func (p bindPlace) String() string {
 
 // startPlace returns where session start binds; ok is false outside a T3
 // thread and a git checkout, where nothing binds.
-func startPlace(ctx context.Context) (p bindPlace, ok bool) {
-	if tid := strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID")); tid != "" {
+func (h here) startPlace(ctx context.Context) (p bindPlace, ok bool) {
+	if tid := h.t3codeThreadID(); tid != "" {
 		return bindPlace{Source: "thread", Key: tid}, true
 	}
-	return worktreePlace(ctx)
+	return h.worktreePlace(ctx)
 }
 
 // worktreePlace is the git worktree around the working directory.
-func worktreePlace(ctx context.Context) (p bindPlace, ok bool) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return bindPlace{}, false
-	}
-	root, err := gitCheckoutRoot(ctx, cwd)
+func (h here) worktreePlace(ctx context.Context) (p bindPlace, ok bool) {
+	root, err := h.checkoutRoot(ctx)
 	if err != nil || root == "" {
 		return bindPlace{}, false
 	}
@@ -243,7 +239,7 @@ func unbindSession(d deps, sessionID string) error {
 //  3. current git worktree mapping in ~/.hotbed/sessions.json
 func (f sessionFlag) lookupBinding(ctx context.Context, d deps) (b sessionBinding, found bool, err error) {
 	if s := strings.TrimSpace(f.Session); s != "" {
-		if strings.TrimSpace(os.Getenv("HOTBED_SESSION")) == s {
+		if d.env("HOTBED_SESSION") == s {
 			return sessionBinding{ID: s, Source: "env", Key: "HOTBED_SESSION"}, true, nil
 		}
 		return sessionBinding{ID: s, Source: "flag"}, true, nil
@@ -254,10 +250,10 @@ func (f sessionFlag) lookupBinding(ctx context.Context, d deps) (b sessionBindin
 	}
 	// A thread with no session of its own uses its worktree's.
 	var places []bindPlace
-	if tid := strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID")); tid != "" {
+	if tid := d.t3codeThreadID(); tid != "" {
 		places = append(places, bindPlace{Source: "thread", Key: tid})
 	}
-	if p, ok := worktreePlace(ctx); ok {
+	if p, ok := d.worktreePlace(ctx); ok {
 		places = append(places, p)
 	}
 	for _, p := range places {

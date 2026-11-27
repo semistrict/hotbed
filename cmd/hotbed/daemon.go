@@ -70,13 +70,13 @@ func (c *daemonRunCmd) Exec(ctx context.Context, d deps) (any, error) {
 			if d.controller != nil {
 				return d.controller()
 			}
-			return localController()
+			return localController(d.getenv)
 		},
 		TokenFunc: func(tctx context.Context, controller string) (string, error) {
-			return resolveControllerAuthToken(tctx, controller, d.http)
+			return resolveControllerAuthToken(tctx, d.getenv, controller, d.http)
 		},
 		ClusterClient: func(controller string) (hotbedv1connect.ClusterServiceClient, error) {
-			ic, err := controllerAuthInterceptors(controller, d.http)
+			ic, err := controllerAuthInterceptors(d.getenv, controller, d.http)
 			if err != nil {
 				return nil, err
 			}

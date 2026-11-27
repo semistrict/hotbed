@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,7 +46,7 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	remote, err := checkoutRemote(ctx)
+	remote, err := d.checkoutRemote(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +58,7 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if c.Resume && c.Name == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "say which session to resume").WithSuggestion("hotbed session start NAME --resume")
 	}
-	place, binds := startPlace(ctx)
+	place, binds := d.startPlace(ctx)
 	// prevBound is whatever was bound here before StartSession; replaced is the
 	// live session bound here that the new one replaces.
 	var prevBound, replaced string
@@ -226,7 +225,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 		req     *pb.GetSessionRequest
 	)
 	if tid := strings.TrimSpace(c.T3CodeThreadID); tid != "" {
-		if s := strings.TrimSpace(c.Session); s != "" && s != strings.TrimSpace(os.Getenv("HOTBED_SESSION")) {
+		if s := strings.TrimSpace(c.Session); s != "" && s != d.env("HOTBED_SESSION") {
 			return nil, api.Errorf(api.CodeInvalidArgs, "--session and --t3code-thread-id can't be used together")
 		}
 		binding = sessionBinding{Source: "t3code-thread", Key: tid}
@@ -439,7 +438,7 @@ func (c *sessionSearchCmd) Exec(ctx context.Context, d deps) (any, error) {
 		tid = flagTID
 	}
 	if tid == "" {
-		tid = strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID"))
+		tid = d.t3codeThreadID()
 	}
 	if tid == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "no T3 Code thread ID specified and T3CODE_THREAD_ID is not set").
@@ -1060,12 +1059,8 @@ func (c *runCmd) Exec(context.Context, deps) (any, error) { return nil, errors.N
 // none: the run starts in /work, where every repo of the project is.
 func (c *runCmd) runRepo(ctx context.Context, d deps, session string) (string, error) {
 	if c.Repo == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
+		if in, err := d.inCheckout(ctx); err != nil || !in {
 			return "", err
-		}
-		if _, err := gitCheckoutRoot(ctx, cwd); err != nil {
-			return "", nil
 		}
 	}
 	return c.resolveRepo(ctx, d, session, c.Repo, "")

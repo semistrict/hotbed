@@ -17,7 +17,8 @@ import (
 // `hotbed board` CLI against the cf-controller Durable Object test harness
 // (satisfies cmd/hotbed/coverage_test.go).
 func TestBoardCLIEndToEnd(t *testing.T) {
-	c := newCluster(t)
+	t.Parallel()
+	c := newControllerOnly(t)
 
 	// Seed two projects so project-scoped board operations work cleanly.
 	if _, err := c.store.AddProject(t.Context(), "hotbed", []string{"github.com/org/hotbed"}, nil); err != nil {

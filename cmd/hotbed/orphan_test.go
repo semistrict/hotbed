@@ -13,6 +13,7 @@ import (
 // and base snapshots before accepting new work, so the repo's next base builds
 // cleanly (board 7923).
 func TestOrphanSweepAfterLostWorkerDatabase(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	c := newCluster(t)
 	c.addRepo(upstream(t))

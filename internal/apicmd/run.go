@@ -26,6 +26,9 @@ type Runner struct {
 	// Calls calls the API; Waits, for commands that wait, has no deadline.
 	Calls, Waits *connect.Client
 	Sessions     Sessions
+	// Getenv reads the environment env:VAR defaults name: the caller's, which
+	// is not always the process's (each of a test's CLIs has its own).
+	Getenv func(string) string
 }
 
 // Args is what a command was given, by the CLI or an MCP client.
@@ -134,7 +137,7 @@ func (r *Runner) Build(ctx context.Context, c *Command, a Args) (*dynamicpb.Mess
 		return nil, nil, api.Errorf(api.CodeInvalidArgs, "%s needs hooks this hotbed does not have: %s", c.Name(), strings.Join(missing, ", ")).
 			WithSuggestion("run hotbed upgrade: the controller's API is newer than this client")
 	}
-	call := &Call{Command: c, given: a.Session, sessions: r.Sessions}
+	call := &Call{Command: c, given: a.Session, sessions: r.Sessions, getenv: r.Getenv}
 	req := dynamicpb.NewMessage(c.Method.Input())
 
 	if c.Input != nil {

@@ -17,6 +17,7 @@ import (
 // prints them with a line in place of what was dropped, and ps says how
 // much was dropped.
 func TestLogsOfACommandPastItsLogLimit(t *testing.T) {
+	t.Parallel()
 	limit := cmdlog.Limit{Head: 1 << 20, Tail: 2 << 20}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.LogLimit = limit })
 	c.addRepo(upstream(t))
@@ -72,6 +73,7 @@ func TestLogsOfACommandPastItsLogLimit(t *testing.T) {
 // which resumes it and keeps its session in use) and stopping it take its
 // own session.
 func TestACommandReadsByItsIDFromAnySession(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "own-ox")
@@ -84,7 +86,7 @@ func TestACommandReadsByItsIDFromAnySession(t *testing.T) {
 		return out == "hello\n"
 	})
 	for _, bound := range []string{"", "other-elk"} {
-		t.Setenv("HOTBED_SESSION", bound)
+		c.setenv("HOTBED_SESSION", bound)
 		if code, out, errOut := c.hotbed("logs", cmd.Id); code != 0 || out != "hello\n" {
 			t.Errorf("logs with session %q bound: exit %d, %q (stderr %q), want hello", bound, code, out, errOut)
 		}
@@ -104,7 +106,7 @@ func TestACommandReadsByItsIDFromAnySession(t *testing.T) {
 		Suggestion: cmd.Id + " is session own-ox's: pass -s own-ox to act on it"}); *e != want {
 		t.Errorf("stop from other-elk: %+v, want %+v", *e, want)
 	}
-	t.Setenv("HOTBED_SESSION", "")
+	c.setenv("HOTBED_SESSION", "")
 	c.ok(nil, "stop", "-s", "own-ox", cmd.Id)
 }
 
@@ -113,6 +115,7 @@ func TestACommandReadsByItsIDFromAnySession(t *testing.T) {
 // restart, and even after a newer generation supersedes and collects the failed
 // base (board 7951 AC #2).
 func TestFreshenLogReadableAfterWorkerForgetsItAndControllerRestarts(t *testing.T) {
+	t.Parallel()
 	workerClock := &clock{}
 	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = workerClock.Now })
 	c.addProject(upstream(t))
@@ -175,6 +178,7 @@ func TestFreshenLogReadableAfterWorkerForgetsItAndControllerRestarts(t *testing.
 // controller restart and a worker restart that lost its worker database before
 // emitting FinishedCommand (board 7917 AC #2).
 func TestLogsReadableAfterControllerAndWorkerRestartWithLostDB(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "crab-log")
@@ -219,6 +223,7 @@ func TestLogsReadableAfterControllerAndWorkerRestartWithLostDB(t *testing.T) {
 // hotbed logs --timestamps (-t) prefixes every line with its local receive time
 // across full replay, --tail (-n), and live follow (-f).
 func TestLogsTimestampsOption(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "ts-owl")

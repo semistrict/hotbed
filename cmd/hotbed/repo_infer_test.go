@@ -18,10 +18,11 @@ import (
 // inside a checkout using T3CODE_THREAD_ID, git worktree fallback, HOTBED_SESSION,
 // and HOTBED_REPO.
 func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("T3CODE_THREAD_ID", "thread-alpha-123")
+	c.setenv("T3CODE_THREAD_ID", "thread-alpha-123")
 	// Sessions join the project holding their checkout's repo.
-	t.Setenv("HOTBED_PROJECT", "")
+	c.setenv("HOTBED_PROJECT", "")
 	remote := upstream(t)
 	// Register the repo under a different name than the local checkout folder
 	// (like ~/src/fxdax -> cladefs).
@@ -36,7 +37,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(sub)
+	c.chdir(sub)
 
 	// 1. Start session with T3CODE_THREAD_ID set -> bound to thread in sessions.json.
 	var sess pb.Session
@@ -90,7 +91,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	}
 
 	// 2. Without T3CODE_THREAD_ID, session binds to the git worktree root.
-	t.Setenv("T3CODE_THREAD_ID", "")
+	c.setenv("T3CODE_THREAD_ID", "")
 	c.ok(&pb.Session{}, "session", "start", "wt-owl")
 	c.ok(&cur, "session", "current")
 	if cur.ID != "wt-owl" || cur.Source != "worktree" || cur.Key != gitops.CanonicalPath(checkout) {
@@ -98,9 +99,9 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	}
 
 	// 3. HOTBED_SESSION + HOTBED_REPO override both thread and worktree, even outside a checkout.
-	t.Chdir(t.TempDir())
-	t.Setenv("HOTBED_SESSION", "wt-owl")
-	t.Setenv("HOTBED_REPO", "cladefs")
+	c.chdir(t.TempDir())
+	c.setenv("HOTBED_SESSION", "wt-owl")
+	c.setenv("HOTBED_REPO", "cladefs")
 	c.ok(&cur, "session", "current")
 	if cur.ID != "wt-owl" || cur.Source != "env" {
 		t.Fatalf("env session current = %+v, want wt-owl from env", cur)
@@ -114,19 +115,20 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	}
 
 	// Outside a checkout, step ls is the session's project's.
-	t.Setenv("HOTBED_REPO", "")
+	c.setenv("HOTBED_REPO", "")
 	c.ok(&steps, "step", "ls")
 	if len(steps.Steps) != 0 {
 		t.Errorf("step ls of the session's project = %+v, want none", steps.Steps)
 	}
 	// With no session either, it needs the project named.
-	t.Setenv("HOTBED_SESSION", "")
+	c.setenv("HOTBED_SESSION", "")
 	if _, e := c.fails("step", "ls"); e.Code != api.CodeInvalidArgs {
 		t.Errorf("step ls with no session outside a checkout = %+v, want INVALID_ARGS", e)
 	}
 }
 
 func TestSessionStatus(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	// Track in-flight controller Heartbeat handlers so we can drain any
 	// background worker.Connect heartbeat before advancing the fake clock.
@@ -147,8 +149,8 @@ func TestSessionStatus(t *testing.T) {
 	if _, err := (gitops.Git{}).Run(t.Context(), "clone", up, checkout); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(checkout)
-	t.Setenv("T3CODE_THREAD_ID", "thread-status-test")
+	c.chdir(checkout)
+	c.setenv("T3CODE_THREAD_ID", "thread-status-test")
 
 	// Reject positional session argument.
 	if code, err := c.fails("session", "status", "tidy-owl"); code != exitInvalidArgs || err.Code != api.CodeInvalidArgs {
@@ -252,7 +254,7 @@ func TestSessionStatus(t *testing.T) {
 	}
 
 	// Stale local binding in sessions.json returns active=false, state="not_found" cleanly.
-	place, ok := startPlace(t.Context())
+	place, ok := c.cli.startPlace(t.Context())
 	if !ok {
 		t.Fatal("the test runs in no T3 thread or git worktree")
 	}
@@ -270,11 +272,12 @@ func TestSessionStatus(t *testing.T) {
 // to start another unless told to replace it, which ends the old one; a
 // bound session that ended or that the controller never had is no obstacle.
 func TestSessionStartReplacesOnlyWhenTold(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
-	t.Setenv("T3CODE_THREAD_ID", "thread-replace")
+	c.setenv("T3CODE_THREAD_ID", "thread-replace")
 	bindHere := func(id string) {
 		t.Helper()
-		place, ok := startPlace(t.Context())
+		place, ok := c.cli.startPlace(t.Context())
 		if !ok {
 			t.Fatal("no T3 thread to bind to")
 		}

@@ -43,10 +43,6 @@ type reviewCmd struct {
 	Responses reviewResponsesCmd `cmd:"" help:"The responses to a review since you last asked (or --after N; --all for every one), the user's above all."`
 }
 
-func currentT3CodeThreadID() string {
-	return strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID"))
-}
-
 // reviewID is the argument of the commands that act on one review.
 type reviewID struct {
 	ID int32 `arg:"" help:"The review's number."`
@@ -75,7 +71,7 @@ func (c *reviewRequestCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	v, err := versionToReview(ctx, c.Base, c.Head, c.Whole)
+	v, err := d.versionToReview(ctx, c.Base, c.Head, c.Whole)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +90,7 @@ func (c *reviewRequestCmd) Exec(ctx context.Context, d deps) (any, error) {
 		SnapshotOf:         v.snapshotOf,
 		Model:              strings.TrimSpace(c.Model),
 		Subagent:           strings.TrimSpace(c.Subagent),
-		T3CodeThreadId:     currentT3CodeThreadID(),
+		T3CodeThreadId:     d.t3codeThreadID(),
 		ImplementerSession: strings.TrimSpace(c.ImplementerSession),
 	})
 }
@@ -108,9 +104,9 @@ type reviewedVersion struct {
 // (given, or HEAD, or a snapshot commit of uncommitted changes on HEAD),
 // pinned under refs/hotbed/reviews so git keeps it, and the base its
 // changes are from.
-func versionToReview(ctx context.Context, base, head string, whole bool) (reviewedVersion, error) {
+func (h here) versionToReview(ctx context.Context, base, head string, whole bool) (reviewedVersion, error) {
 	var v reviewedVersion
-	root, err := gitCheckoutRoot(ctx, ".")
+	root, err := h.checkoutRoot(ctx)
 	if err != nil {
 		return v, api.Errorf(api.CodeInvalidArgs, "a review is of a version in a git checkout; this is not in one").
 			WithSuggestion("run hotbed review request in the checkout to review")
@@ -274,7 +270,7 @@ func (c *reviewStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 		SessionId:      session,
 		Model:          c.Model,
 		Subagent:       strings.TrimSpace(c.Subagent),
-		T3CodeThreadId: currentT3CodeThreadID(),
+		T3CodeThreadId: d.t3codeThreadID(),
 		NewReviewer:    c.New,
 	})
 }
@@ -309,7 +305,7 @@ func (c *reviewFindingsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	req.ReviewerId = c.Reviewer
 	req.Model = strings.TrimSpace(c.Model)
 	req.Subagent = strings.TrimSpace(c.Subagent)
-	req.T3CodeThreadId = currentT3CodeThreadID()
+	req.T3CodeThreadId = d.t3codeThreadID()
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
@@ -393,7 +389,7 @@ func finishReview(ctx context.Context, d deps, cc controllerClient, sf sessionFl
 		ReviewerId:     reviewer,
 		Model:          strings.TrimSpace(model),
 		Subagent:       strings.TrimSpace(subagent),
-		T3CodeThreadId: currentT3CodeThreadID(),
+		T3CodeThreadId: d.t3codeThreadID(),
 	})
 }
 
@@ -421,7 +417,7 @@ func (c *reviewCancelCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Reason:         c.Reason,
 		Model:          strings.TrimSpace(c.Model),
 		Subagent:       strings.TrimSpace(c.Subagent),
-		T3CodeThreadId: currentT3CodeThreadID(),
+		T3CodeThreadId: d.t3codeThreadID(),
 	})
 }
 
@@ -459,7 +455,7 @@ func (c decideCmd) send(ctx context.Context, d deps, req *pb.DecideFindingsReque
 		req.SessionId = session
 		req.Model = strings.TrimSpace(c.Model)
 		req.Subagent = strings.TrimSpace(c.Subagent)
-		req.T3CodeThreadId = currentT3CodeThreadID()
+		req.T3CodeThreadId = d.t3codeThreadID()
 	}
 	return cl.reviews.DecideFindings(ctx, req)
 }
@@ -500,7 +496,7 @@ type reviewFixedCmd struct {
 }
 
 func (c *reviewFixedCmd) Exec(ctx context.Context, d deps) (any, error) {
-	commit, err := fixingCommit(ctx, c.Commit)
+	commit, err := d.fixingCommit(ctx, c.Commit)
 	if err != nil {
 		return nil, err
 	}
@@ -521,8 +517,8 @@ func (c *reviewFixedCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 // fixingCommit is ref in full: resolved in this checkout, or, outside one,
 // as given.
-func fixingCommit(ctx context.Context, ref string) (string, error) {
-	root, err := gitCheckoutRoot(ctx, ".")
+func (h here) fixingCommit(ctx context.Context, ref string) (string, error) {
+	root, err := h.checkoutRoot(ctx)
 	if err != nil {
 		return ref, nil // the controller holds it to a full commit
 	}
@@ -632,7 +628,7 @@ func (c *reviewRespondCmd) Exec(ctx context.Context, d deps) (any, error) {
 			req.SessionId = session
 			req.Model = strings.TrimSpace(c.Model)
 			req.Subagent = strings.TrimSpace(c.Subagent)
-			req.T3CodeThreadId = currentT3CodeThreadID()
+			req.T3CodeThreadId = d.t3codeThreadID()
 		} else {
 			req.ActorKind = pb.ActorKind_ACTOR_KIND_USER
 		}

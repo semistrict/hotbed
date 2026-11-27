@@ -22,6 +22,7 @@ import (
 // returns instead of overwriting concurrent edits with the pre-RPC snapshot
 // (board 7894).
 func TestSessionStartDoesNotClobberConcurrentSessionsFile(t *testing.T) {
+	t.Parallel()
 	sessionsFile := filepath.Join(t.TempDir(), "sessions.json")
 	var once sync.Once
 
@@ -47,10 +48,9 @@ func TestSessionStartDoesNotClobberConcurrentSessionsFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("T3CODE_THREAD_ID", "my-thread")
-	t.Setenv("HOTBED_SESSION", "")
 	var stdout, stderr bytes.Buffer
 	d := deps{
+		here:         newTestHere(t, map[string]string{"T3CODE_THREAD_ID": "my-thread"}).here(),
 		http:         &http.Client{Timeout: 5 * time.Second},
 		stream:       &http.Client{},
 		stdin:        strings.NewReader(""),
@@ -113,11 +113,12 @@ func (b *barrierRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 // session. If the concurrent winner has already ended/disappeared, the caller
 // cleanly re-claims the binding (board 8295).
 func TestSessionStartConcurrentSamePlaceDoesNotOverwriteBinding(t *testing.T) {
+	t.Parallel()
 	t.Run("concurrent starts converge on one live binding without orphan", func(t *testing.T) {
 		c := newCluster(t)
 		c.addRepo(upstream(t))
-		t.Setenv("T3CODE_THREAD_ID", "race-thread")
-		t.Setenv("HOTBED_SESSION", "")
+		c.setenv("T3CODE_THREAD_ID", "race-thread")
+		c.setenv("HOTBED_SESSION", "")
 
 		base := c.cli.http.Transport
 		if base == nil {
@@ -208,8 +209,8 @@ func TestSessionStartConcurrentSamePlaceDoesNotOverwriteBinding(t *testing.T) {
 		c.ok(nil, "session", "start", "gone-fox", "-p", "app")
 		c.ok(nil, "session", "end", "-s", "gone-fox")
 
-		t.Setenv("T3CODE_THREAD_ID", "reclaim-thread")
-		t.Setenv("HOTBED_SESSION", "")
+		c.setenv("T3CODE_THREAD_ID", "reclaim-thread")
+		c.setenv("HOTBED_SESSION", "")
 
 		base := c.cli.http.Transport
 		if base == nil {
@@ -269,6 +270,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 // timeout) rather than d.http so slow base preparation or heavy worker load
 // does not fail with Client.Timeout exceeded while awaiting headers (board 7957).
 func TestReachWorkspaceForUsesStreamClientNotShortHTTPTimeout(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "slow-ws")
@@ -340,6 +342,7 @@ func TestReachWorkspaceForTimesOutOnStuckController(t *testing.T) {
 
 		var stdout, stderr bytes.Buffer
 		d := deps{
+			here:       newTestHere(t, nil).here(),
 			http:       &http.Client{Timeout: 5 * time.Second},
 			stream:     &http.Client{},
 			stdin:      strings.NewReader(""),

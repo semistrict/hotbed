@@ -10,6 +10,7 @@ import (
 // at 0 B, board 9141) heartbeats with the reason: hotbed nodes lists it
 // offline and says why, not only that it went quiet.
 func TestNodesSayWhyAWorkerHasNoStorage(t *testing.T) {
+	t.Parallel()
 	c := newFleet(t, 1)
 	nd := c.nodes[0]
 	nd.halt()

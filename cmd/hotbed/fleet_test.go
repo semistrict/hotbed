@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/cfbundle"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
@@ -35,7 +37,7 @@ type cluster struct {
 	t        *testing.T
 	id       string
 	doName   string
-	harness  *cfHarness
+	harness  *cfbundle.Harness
 	tn       *tailnettest.Fake
 	server   *testServer
 	store    *testStore
@@ -50,7 +52,61 @@ type cluster struct {
 	reported  chan error
 	serverCfg testServerConfig
 	handler   atomic.Pointer[http.Handler]
+	// where is where the cluster's CLI runs (c.cli.here): set it with
+	// setenv and chdir, never the process's (t.Setenv, t.Chdir), so tests
+	// run side by side.
+	where *testHere
 }
+
+// testHere is a test CLI's environment and working directory, which the test
+// changes as it goes, while the CLI may be running.
+type testHere struct {
+	mu  sync.Mutex
+	env map[string]string
+	wd  string
+}
+
+func (h *testHere) getenv(k string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.env[k]
+}
+
+func (h *testHere) getwd() (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.wd, nil
+}
+
+func (h *testHere) setenv(k, v string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.env[k] = v
+}
+
+func (h *testHere) chdir(dir string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.wd = dir
+}
+
+// here is the CLI's view of h.
+func (h *testHere) here() here { return here{getenv: h.getenv, getwd: h.getwd} }
+
+// newTestHere is where a test's CLI starts: in a directory of its own, outside
+// any checkout, with nothing in its environment but what is given.
+func newTestHere(t *testing.T, env map[string]string) *testHere {
+	t.Helper()
+	h := &testHere{env: map[string]string{}, wd: t.TempDir()}
+	maps.Copy(h.env, env)
+	return h
+}
+
+// setenv sets the variable k of the environment the cluster's CLI runs in.
+func (c *cluster) setenv(k, v string) { c.where.setenv(k, v) }
+
+// chdir moves the cluster's CLI into dir.
+func (c *cluster) chdir(dir string) { c.where.chdir(dir) }
 
 // node is a worker: its engine, its server, its controller WebSocket tunnel,
 // and what outlives a restart of it (its state directory, its volumes, its
@@ -109,6 +165,13 @@ func newClusterWith(t *testing.T, opts clusterOpts) *cluster {
 	return newFleetWith(t, 1, opts)
 }
 
+// newControllerOnly is a controller with no workers, for tests of what the
+// controller alone keeps (questions, reviews, memories, the board...).
+func newControllerOnly(t *testing.T) *cluster {
+	t.Helper()
+	return newFleetWith(t, 0, clusterOpts{})
+}
+
 // newFleet is a controller with n workers: asahimbp, mini and oldpc.
 func newFleet(t *testing.T, n int) *cluster {
 	t.Helper()
@@ -142,7 +205,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	}
 	c.clock = &clock{
 		onChange: func(offset time.Duration) {
-			if err := h.doJSON(context.Background(), doName, http.MethodPost, "/__test/clock", map[string]any{
+			if err := h.DoJSON(context.Background(), doName, http.MethodPost, "/__test/clock", map[string]any{
 				"offsetMs": offset.Milliseconds(),
 			}, nil); err != nil {
 				t.Errorf("sync controller test clock: %v", err)
@@ -174,7 +237,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		c.nodes = append(c.nodes, nd)
 	}
 
-	target, err := url.Parse(h.url)
+	target, err := url.Parse(h.URL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +257,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		r2 := r.Clone(r.Context())
 		r2.Header.Set("X-Hotbed-Test-DO", doName)
 		if r2.Header.Get("Authorization") == "" {
-			r2.Header.Set("Authorization", "Bearer "+h.token)
+			r2.Header.Set("Authorization", "Bearer "+h.Token())
 		}
 		r2.Header.Set("X-Hotbed-Node-Id", peer.NodeID)
 		r2.Header.Set("X-Hotbed-Host", peer.Hostname)
@@ -236,7 +299,9 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		nd.start()
 		t.Cleanup(nd.halt)
 	}
-	c.asWorker, c.reported = c.nodes[0].cluster, c.nodes[0].reported
+	if n > 0 {
+		c.asWorker, c.reported = c.nodes[0].cluster, c.nodes[0].reported
+	}
 	// Send an initial heartbeat synchronously so every node is online with its
 	// resources populated before the test starts, avoiding CPU-load races
 	// against worker.Connect's first background heartbeat (board 7949).
@@ -249,15 +314,12 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	if _, err := c.store.AddProject(t.Context(), "test", nil, &pb.Stamp{At: time.Now().UnixMilli(), Reason: "the tests' project"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOTBED_PROJECT", "test")
 	// Where the tests run says nothing of where sessions bind: they start
 	// outside any T3 thread or checkout, so a session binds to nothing and
 	// a command names its session, unless a test goes somewhere itself.
-	for _, k := range []string{"T3CODE_THREAD_ID", "HOTBED_SESSION", "HOTBED_REPO", "HOTBED_AGENT"} {
-		t.Setenv(k, "")
-	}
-	t.Chdir(t.TempDir())
+	c.where = newTestHere(t, map[string]string{"HOTBED_PROJECT": "test"})
 	c.cli = deps{
+		here:       c.where.here(),
 		controller: at(ctrl),
 		// The CLI runs on the laptop: its tailnet says so, and its calls
 		// come from the laptop.
@@ -311,7 +373,7 @@ func (c *cluster) applyServerConfig() {
 		OK        bool   `json:"ok"`
 		ClusterID string `json:"clusterId"`
 	}
-	if err := c.harness.doJSON(c.t.Context(), c.doName, http.MethodPost, "/__test/config", payload, &res); err != nil {
+	if err := c.harness.DoJSON(c.t.Context(), c.doName, http.MethodPost, "/__test/config", payload, &res); err != nil {
 		c.t.Fatal(err)
 	}
 	if res.ClusterID != "" {
@@ -337,14 +399,20 @@ func (p partition) RoundTrip(r *http.Request) (*http.Response, error) {
 // database, as a deploy/eviction does: whatever it knows must come from there.
 func (c *cluster) restart() {
 	c.t.Helper()
-	if err := c.harness.doJSON(c.t.Context(), c.doName, http.MethodPost, "/__test/restart", map[string]any{}, nil); err != nil {
+	if err := c.harness.DoJSON(c.t.Context(), c.doName, http.MethodPost, "/__test/restart", map[string]any{}, nil); err != nil {
 		c.t.Fatal(err)
 	}
 	c.applyServerConfig()
 }
 
 // engine is the first worker's engine as it is now.
-func (c *cluster) engine() *worker.Engine { return c.nodes[0].eng() }
+func (c *cluster) engine() *worker.Engine {
+	c.t.Helper()
+	if len(c.nodes) == 0 {
+		c.t.Fatal("the cluster has no workers (newControllerOnly): its test needs one")
+	}
+	return c.nodes[0].eng()
+}
 
 func (nd *node) eng() *worker.Engine {
 	nd.mu.Lock()
@@ -409,7 +477,7 @@ func (nd *node) start() {
 				tctx,
 				eng,
 				ctrlURL,
-				nd.c.harness.token,
+				nd.c.harness.Token(),
 				tailnet.Self{Peer: nd.peer},
 				"",
 				ubu1.Peer.NodeID,

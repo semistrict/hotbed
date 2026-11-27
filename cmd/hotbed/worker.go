@@ -54,7 +54,7 @@ func (c *workerInitCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	token := strings.TrimSpace(c.Token)
 	if token == "" {
-		token = controllerAuthToken(c.Controller)
+		token = controllerAuthToken(d.getenv, c.Controller)
 	}
 	res, err := setup.Setup(ctx, setup.Options{
 		Controller:     c.Controller,

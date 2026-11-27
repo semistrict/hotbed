@@ -3,7 +3,6 @@ package apicmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -17,7 +16,7 @@ import (
 // Supported forms:
 //   - "session"        the session the command acts as (string field; requires command session: true)
 //   - "named_session"  the session named by -s/HOTBED_SESSION (string field; requires command session: true)
-//   - "env:VAR"        os.Getenv("VAR") (string field)
+//   - "env:VAR"        the variable VAR of the Runner's Getenv (string field)
 //   - literals         quoted string ('...' or "..."), bool (true/false),
 //     integer, float, enum (EnumType.VALUE, VALUE, or word), or a bracketed
 //     list of literals ([a, b]) for repeated fields.
@@ -92,7 +91,12 @@ func compileExpr(raw string, f protoreflect.FieldDescriptor) (expr, error) {
 			return expr{}, fmt.Errorf("%q is string, not %s", raw, fieldTypeName(f))
 		}
 		return expr{
-			eval: func(context.Context, *Call) (any, error) { return os.Getenv(varName), nil },
+			eval: func(_ context.Context, c *Call) (any, error) {
+				if c.getenv == nil {
+					return nil, fmt.Errorf("%q: the runner has no Getenv to read it from", raw)
+				}
+				return c.getenv(varName), nil
+			},
 		}, nil
 	}
 	if f.IsList() {

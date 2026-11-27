@@ -30,14 +30,16 @@ func main() {
 	worker.Main(os.Args[1:])
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	h := processHere()
 	code := run(ctx, os.Args[1:], deps{
+		here:         h,
 		tailnet:      &tailnet.Local{},
 		http:         api.NewResilientHTTPClient(60 * time.Second),
 		stream:       api.NewResilientStreamClient(),
 		rideOut:      peerRideOut,
 		check:        worker.CheckMachine,
 		stdin:        os.Stdin,
-		controller:   localController,
+		controller:   func() (string, error) { return localController(h.getenv) },
 		stdout:       os.Stdout,
 		stderr:       os.Stderr,
 		cache:        cacheDir(),
@@ -54,7 +56,7 @@ func main() {
 // run parses args, runs the command they name, and prints its output to
 // stdout. It returns the exit status.
 func run(ctx context.Context, args []string, d deps) int {
-	cmd, name, opts, exitCode, err := parse(args, d.stdout)
+	cmd, name, opts, exitCode, err := parse(args, d.stdout, d.getenv)
 	if exitCode != nil {
 		return *exitCode
 	}
@@ -132,8 +134,8 @@ func cacheDir() string {
 // localController is the controller this machine's client commands call:
 // HOTBED_CONTROLLER, the controller `hotbed worker init` joined it to, or the
 // default controller recorded by `hotbed login`.
-func localController() (string, error) {
-	if addr := os.Getenv("HOTBED_CONTROLLER"); addr != "" {
+func localController(getenv func(string) string) (string, error) {
+	if addr := getenv("HOTBED_CONTROLLER"); addr != "" {
 		return addr, nil
 	}
 	addr, err := setup.JoinedController("")

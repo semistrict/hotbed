@@ -16,6 +16,7 @@ import (
 // Every message with a cockpit_url has a page, so no output leaves one empty
 // (or panics filling it); and those are exactly the cockpit's pages.
 func TestEveryCockpitURLHasAPage(t *testing.T) {
+	t.Parallel()
 	c := cockpit{base: "http://ubu1:7120"}
 	var with []string
 	var visit func(protoreflect.MessageDescriptors)
@@ -65,6 +66,7 @@ func (c *cluster) cockpit() cockpit {
 // A command made from the API's descriptors prints messages of no Go type,
 // which carry their pages too.
 func TestDescriptorMessagesCarryCockpitURLs(t *testing.T) {
+	t.Parallel()
 	s, err := apiSchema()
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +85,7 @@ func TestDescriptorMessagesCarryCockpitURLs(t *testing.T) {
 }
 
 func TestOutputsCarryCockpitURLs(t *testing.T) {
+	t.Parallel()
 	c := newCluster(t)
 	// Spelled out rather than made by c.cockpit(), to check what it makes.
 	addr, err := c.cli.controller()

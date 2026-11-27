@@ -123,6 +123,7 @@ type Call struct {
 	Command  *Command
 	given    string // -s's value
 	sessions Sessions
+	getenv   func(string) string // Runner.Getenv
 }
 
 // Session is the session the command acts as, "" for none: a hook that

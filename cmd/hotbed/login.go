@@ -404,7 +404,7 @@ func (c *orgAPITokenRmCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 func (f controllerClient) controllerJSON(ctx context.Context, d deps, method, path string, reqBody any, out any) error {
-	tok, err := resolveControllerAuthToken(ctx, f.Controller, d.http)
+	tok, err := resolveControllerAuthToken(ctx, d.getenv, f.Controller, d.http)
 	if err != nil {
 		return err
 	}

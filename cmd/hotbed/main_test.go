@@ -31,6 +31,7 @@ func at(addr string) func() (string, error) {
 }
 
 func TestTildePath(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in, home, want string
 	}{
@@ -48,10 +49,12 @@ func TestTildePath(t *testing.T) {
 }
 
 func TestInterruptedExits130(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, []string{"nodes"}, deps{
+		here:       newTestHere(t, nil).here(),
 		http:       &http.Client{},
 		stream:     &http.Client{},
 		controller: at("127.0.0.1:1"),

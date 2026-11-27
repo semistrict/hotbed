@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -25,7 +24,7 @@ func (f controllerClient) resolveRepo(ctx context.Context, d deps, session, expl
 	}
 	if dir == "" {
 		var err error
-		dir, err = os.Getwd()
+		dir, err = d.getwd()
 		if err != nil {
 			return "", err
 		}
