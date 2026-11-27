@@ -130,6 +130,7 @@ type cli struct {
 	Logout    logoutCmd    `cmd:"" help:"Remove locally stored credentials for a Hotbed controller."`
 	Whoami    whoamiCmd    `cmd:"" help:"Show the signed-in user, active organization, and role."`
 	Org       orgCmd       `cmd:"" help:"Manage WorkOS organizations, members, invitations, worker join tokens, and personal API tokens (ls, switch, create, members, invite, join-token, api-token)."`
+	Admin     adminCmd     `cmd:"" help:"Admin Explorer tools for org admins: discover Durable Objects, inspect SQLite schemas, run read-only SQL, check health/CladeFS GC, and query Cloudflare APIs (discover, schema, sql, health, gc, cf-dos, cf-logs, cf-get)."`
 	MCP       mcpCmd       `cmd:"" name:"mcp" help:"Serve hotbed's commands as MCP tools on stdin and stdout, for an agent to start. The server is a session: the one HOTBED_SESSION or this T3 thread or git worktree names (resumed if it ended), or a new one bound here; it ends when the server does, and the next server started here resumes it."`
 	Daemon    daemonCmd    `cmd:"" name:"daemon" help:"Run or manage the local Hotbed host service (T3 Code question notifications, a Mac's worker and machined, and macOS menubar status app: run, install, uninstall, status)."`
 	Join      joinCmd      `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`

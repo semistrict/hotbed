@@ -174,6 +174,9 @@ func report(data any, timestamps bool) (text string, ok bool, err error) {
 	if text, ok := formatSkillReport(data); ok {
 		return text, true, nil
 	}
+	if text, ok := formatAdminReport(data); ok {
+		return text, true, nil
+	}
 	msg, ok := data.(proto.Message)
 	if !ok {
 		return "", false, nil

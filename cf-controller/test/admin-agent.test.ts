@@ -69,10 +69,12 @@ describe("Durable Object SQL & schema RPCs", () => {
 	it("runs read-only SQL and schema inspection on ControllerDO, TenantRegistryDO, and CommandDO (by name and by hex ID)", async () => {
 		const e = testEnv();
 
-		// 1. TenantRegistryDO
+		// 1. TenantRegistryDO (other test files share the "global" DO under isolate:false,
+		// so tenant 0 may already belong to an earlier test org)
 		const regStub = e.TENANT_REGISTRY!.getByName("global");
 		const assigned = await regStub.assignTenant("org_admin_test", { isDefault: true });
-		expect(assigned).toBe("0");
+		expect(Number.isInteger(Number(assigned))).toBe(true);
+		expect(Number(assigned)).toBeGreaterThanOrEqual(0);
 
 		const regSchema = await regStub.adminInspectSchema();
 		expect(regSchema.tables.some((t) => t.name === "org_tenants")).toBe(true);
@@ -81,7 +83,10 @@ describe("Durable Object SQL & schema RPCs", () => {
 			["org_admin_test"],
 		);
 		expect(regSql.rowCount).toBe(1);
-		expect(regSql.rows[0]).toMatchObject({ org_key: "org_admin_test", tenant_id: 0 });
+		expect(regSql.rows[0]).toMatchObject({
+			org_key: "org_admin_test",
+			tenant_id: Number(assigned),
+		});
 
 		// 2. ControllerDO (default org)
 		const ctrlStub = e.CONTROLLER.getByName("default");
@@ -330,6 +335,53 @@ describe("Per-organization tenant isolation", () => {
 		expect(filtered.totalObjects).toBe(100);
 		expect(filtered.totalBytes).toBe(1000);
 		expect(filtered.usage.map((u) => u.tenant)).toEqual(["1"]);
+
+		// 7. Account-wide /api/admin-agent/cf/* routes are denied (403) for non-global org admins
+		for (const [method, path, body] of [
+			["GET", "/api/admin-agent/cf/do-objects", undefined],
+			["POST", "/api/admin-agent/cf/observability", JSON.stringify({ view: "events" })],
+			["POST", "/api/admin-agent/cf/get", JSON.stringify({ path: "workers/scripts" })],
+		] as const) {
+			const cfRes = await handleAdminAgentRoute(
+				new Request(`https://hotbed.test${path}`, {
+					method,
+					headers: { ...alphaHeaders, ...(body ? { "Content-Type": "application/json" } : {}) },
+					body,
+				}),
+				new URL(`https://hotbed.test${path}`),
+				e,
+			);
+			expect(cfRes?.status).toBe(403);
+			const cfBody = (await cfRes!.json()) as { code: string; message: string };
+			expect(cfBody.code).toBe("permission_denied");
+		}
+
+		// 8. Org-scoped /api/admin-agent/health and commandId shorthand work strictly within org_alpha
+		const alphaHealthRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/health", { headers: alphaHeaders }),
+			new URL("https://hotbed.test/api/admin-agent/health"),
+			e,
+		);
+		expect(alphaHealthRes?.status).toBe(200);
+		const alphaHealthBody = (await alphaHealthRes!.json()) as { clusterId: string };
+		expect(alphaHealthBody.clusterId).toBe(alphaHealth.clusterId);
+
+		const alphaCmdShorthand = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/sql", {
+				method: "POST",
+				headers: { ...alphaHeaders, "Content-Type": "application/json" },
+				body: JSON.stringify({
+					commandId: "cmd-alpha-1",
+					sql: "SELECT key, value FROM command_meta",
+				}),
+			}),
+			new URL("https://hotbed.test/api/admin-agent/sql"),
+			e,
+		);
+		expect(alphaCmdShorthand?.status).toBe(200);
+		const alphaCmdBody = (await alphaCmdShorthand!.json()) as { target: string; rowCount: number };
+		expect(alphaCmdBody.target).toBe(`COMMAND(cmd:${alphaHealth.clusterId}:cmd-alpha-1)`);
+		expect(alphaCmdBody.rowCount).toBe(1);
 	});
 });
 
@@ -524,5 +576,36 @@ describe("handleAdminAgentRoute & AdminAgentDO", () => {
 			.map((c) => (typeof c.delta === "string" ? c.delta : ""))
 			.join("");
 		expect(joinedText).toContain("Summary text.");
+	});
+
+	it("serves /health, /gc (503 when unbound), and /cf/* (config error for global owner)", async () => {
+		const e = testEnv();
+
+		const healthRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/health", { headers: OWNER_AUTH }),
+			new URL("https://hotbed.test/api/admin-agent/health"),
+			e,
+		);
+		expect(healthRes?.status).toBe(200);
+		const health = (await healthRes!.json()) as { ok: boolean; clusterId: string };
+		expect(health.ok).toBe(true);
+		expect(health.clusterId).toBeTruthy();
+
+		const gcRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/gc?action=status", { headers: OWNER_AUTH }),
+			new URL("https://hotbed.test/api/admin-agent/gc?action=status"),
+			e,
+		);
+		expect(gcRes?.status).toBe(503);
+
+		// Global admin reaches Cloudflare REST routes (fails with 400 missing secret rather than 403)
+		const cfRes = await handleAdminAgentRoute(
+			new Request("https://hotbed.test/api/admin-agent/cf/do-objects", { headers: OWNER_AUTH }),
+			new URL("https://hotbed.test/api/admin-agent/cf/do-objects"),
+			e,
+		);
+		expect(cfRes?.status).toBe(400);
+		const cfBody = (await cfRes!.json()) as { message: string };
+		expect(cfBody.message).toMatch(/CLOUDFLARE_API_TOKEN/);
 	});
 });

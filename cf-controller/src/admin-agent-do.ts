@@ -214,6 +214,79 @@ export function filterGcUsageForTenant(usageBody: unknown, tenantId: string): un
 	};
 }
 
+export async function inspectGcForScope(
+	env: ControllerEnv,
+	scope: AdminOrgScope,
+	input: { action: "status" | "dry_run_cell" | "live_cell"; cell?: string },
+): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+	const token = (env.GC_TOKEN ?? "").trim();
+	const workerUrl = (env.GC_WORKER_URL ?? "").trim();
+	const hasBinding = Boolean(env.GC_WORKER && typeof env.GC_WORKER.fetch === "function");
+	if ((!hasBinding && !workerUrl) || !token) {
+		return {
+			ok: false,
+			status: 503,
+			body: {
+				ok: false,
+				error: "CladeFS GC worker is not configured on this controller",
+			},
+		};
+	}
+
+	const health = await env.CONTROLLER.getByName(scope.controllerDoName).getHealth();
+	const tenantId =
+		health.cladefsTenantId !== undefined && health.cladefsTenantId !== null
+			? String(health.cladefsTenantId)
+			: null;
+	if (tenantId === null) {
+		return {
+			ok: false,
+			status: 400,
+			body: {
+				ok: false,
+				error: "this organization does not have a CladeFS tenant ID assigned yet",
+			},
+		};
+	}
+
+	if (input.action === "status") {
+		const [gcHealth, usage] = await Promise.all([
+			callGcWorkerAdmin(env, "/healthz"),
+			callGcWorkerAdmin(env, "/usage"),
+		]);
+		const ok = gcHealth.ok && usage.ok;
+		return {
+			ok,
+			status: ok ? 200 : !gcHealth.ok ? gcHealth.status : usage.status,
+			body: {
+				ok,
+				tenantId,
+				health: gcHealth.body,
+				usage: usage.ok ? filterGcUsageForTenant(usage.body, tenantId) : usage.body,
+			},
+		};
+	}
+
+	const cell = (input.cell ?? "").trim();
+	if (!cell) {
+		return {
+			ok: false,
+			status: 400,
+			body: { ok: false, error: "cell is required for cell inspection" },
+		};
+	}
+	const path =
+		input.action === "dry_run_cell"
+			? `/dry-run/${encodeURIComponent(tenantId)}/${encodeURIComponent(cell)}`
+			: `/live/${encodeURIComponent(tenantId)}/${encodeURIComponent(cell)}`;
+	const res = await callGcWorkerAdmin(env, path);
+	return {
+		ok: res.ok,
+		status: res.status,
+		body: { ok: res.ok, status: res.status, tenantId, cell, result: res.body },
+	};
+}
+
 export function createAdminAgentTools(env: ControllerEnv, scope: AdminOrgScope): ToolSet {
 	const allowedBindings = allowedBindingsForScope(scope);
 	const doBindingEnum = scope.isGlobalAdmin
@@ -432,40 +505,8 @@ export function createAdminAgentTools(env: ControllerEnv, scope: AdminOrgScope):
 			}),
 			execute: async ({ action, cell }) => {
 				try {
-					const health = await env.CONTROLLER.getByName(scope.controllerDoName).getHealth();
-					const tenantId =
-						health.cladefsTenantId !== undefined && health.cladefsTenantId !== null
-							? String(health.cladefsTenantId)
-							: null;
-					if (tenantId === null) {
-						return {
-							ok: false,
-							error: "this organization does not have a CladeFS tenant ID assigned yet",
-						};
-					}
-
-					if (action === "status") {
-						const [gcHealth, usage] = await Promise.all([
-							callGcWorkerAdmin(env, "/healthz"),
-							callGcWorkerAdmin(env, "/usage"),
-						]);
-						return {
-							ok: gcHealth.ok && usage.ok,
-							tenantId,
-							health: gcHealth.body,
-							usage: usage.ok ? filterGcUsageForTenant(usage.body, tenantId) : usage.body,
-						};
-					}
-
-					if (!cell) {
-						return { error: "cell is required for cell inspection" };
-					}
-					const path =
-						action === "dry_run_cell"
-							? `/dry-run/${encodeURIComponent(tenantId)}/${encodeURIComponent(cell)}`
-							: `/live/${encodeURIComponent(tenantId)}/${encodeURIComponent(cell)}`;
-					const res = await callGcWorkerAdmin(env, path);
-					return { ok: res.ok, status: res.status, tenantId, result: res.body };
+					const res = await inspectGcForScope(env, scope, { action, cell });
+					return res.body;
 				} catch (err) {
 					return { error: err instanceof Error ? err.message : String(err) };
 				}

@@ -1,17 +1,26 @@
-// Edge authentication and per-organization routing for the Hotbed Admin Agent:
+// Edge authentication and per-organization routing for the Hotbed Admin Explorer:
 //   - /agents/admin-agent/:threadId/*  -> Org-isolated Agents SDK WebSocket & HTTP transport
 //   - /api/admin-agent/status          -> Model, scope & capability status + org's DOs
 //   - /api/admin-agent/sql             -> Org-scoped direct read-only SQL
 //   - /api/admin-agent/schema          -> Org-scoped direct schema inspection
+//   - /api/admin-agent/health          -> Org ControllerDO live health
+//   - /api/admin-agent/gc              -> Tenant-scoped CladeFS R2 usage / GC inspection
+//   - /api/admin-agent/cf/do-objects   -> Cluster-owner Cloudflare DO namespace/object listing
+//   - /api/admin-agent/cf/observability -> Cluster-owner Workers Observability query
+//   - /api/admin-agent/cf/get          -> Cluster-owner read-only Cloudflare REST API GET
 
 import { getAgentByName } from "agents";
 import { isOrgAdminCaller } from "./auth.ts";
-import { listAvailableAdminModels } from "./admin-agent-do.ts";
+import { inspectGcForScope, listAvailableAdminModels } from "./admin-agent-do.ts";
 import {
 	adminAgentDoName,
 	AdminScopeError,
 	allowedBindingsForScope,
+	cloudflareAccountGet,
 	getCloudflareApiConfig,
+	listCfDoNamespaces,
+	listCfDoObjects,
+	queryCfObservability,
 	resolveScopedInspectableDo,
 	type AdminOrgScope,
 	type DoBindingName,
@@ -48,7 +57,10 @@ async function authorizeAdminAgentRequest(
 			return {
 				ok: false,
 				response: withSetCookie(
-					Response.json({ message: "organization selection required" }, { status: 403 }),
+					Response.json(
+						{ code: "permission_denied", message: "organization selection required" },
+						{ status: 403 },
+					),
 					setCookie,
 				),
 			};
@@ -60,7 +72,10 @@ async function authorizeAdminAgentRequest(
 				ok: false,
 				response: withSetCookie(
 					Response.json(
-						{ message: "Admin Agent is restricted to organization admins" },
+						{
+							code: "permission_denied",
+							message: "Admin tools are restricted to organization admins",
+						},
 						{ status: 403 },
 					),
 					setCookie,
@@ -86,12 +101,16 @@ async function authorizeAdminAgentRequest(
 		const message = err instanceof Error ? err.message : "authentication required";
 		return {
 			ok: false,
-			response: withSetCookie(Response.json({ message }, { status: 401 }), setCookie),
+			response: withSetCookie(
+				Response.json({ code: "unauthenticated", message }, { status: 401 }),
+				setCookie,
+			),
 		};
 	}
 }
 
-async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope) {
+async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope, commandLimit = 10) {
+	const limit = Math.max(1, Math.min(50, Math.floor(commandLimit) || 10));
 	const ctrlName = scope.controllerDoName;
 	let clusterId = "";
 	let cladefsTenantId: number | null = null;
@@ -104,9 +123,9 @@ async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope) {
 		cladefsTenantId = health.cladefsTenantId ?? null;
 		if (clusterId) {
 			const rows = await stub.adminQuerySql(
-				"SELECT id FROM commands ORDER BY created_at DESC LIMIT 10",
-				[],
-				{ maxRows: 10 },
+				"SELECT id FROM commands ORDER BY created_at DESC LIMIT ?",
+				[limit],
+				{ maxRows: limit },
 			);
 			for (const r of rows.rows) {
 				const id = String(r.id ?? "");
@@ -135,6 +154,40 @@ async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope) {
 		],
 		recentCommands,
 	};
+}
+
+async function resolveCommandIdToName(
+	env: ControllerEnv,
+	scope: AdminOrgScope,
+	commandId: string,
+): Promise<string> {
+	const cleaned = commandId.trim();
+	if (!cleaned) {
+		throw new Error("commandId must not be empty");
+	}
+	if (cleaned.startsWith("cmd:")) {
+		return cleaned;
+	}
+	const health = await env.CONTROLLER.getByName(scope.controllerDoName).getHealth();
+	if (!health.clusterId) {
+		throw new AdminScopeError("organization controller has no clusterId yet");
+	}
+	return commandDoName(health.clusterId, cleaned);
+}
+
+function errorCodeForStatus(status: number): string {
+	switch (status) {
+		case 400:
+			return "invalid_args";
+		case 401:
+			return "unauthenticated";
+		case 403:
+			return "permission_denied";
+		case 404:
+			return "not_found";
+		default:
+			return "internal";
+	}
 }
 
 /**
@@ -194,10 +247,14 @@ export async function handleAdminAgentRoute(
 
 	// ---- /api/admin-agent/* REST helpers ----
 	const sub = url.pathname.slice("/api/admin-agent".length);
+	const fail = (message: string, status: number) =>
+		reply({ code: errorCodeForStatus(status), message }, status);
 
 	if (request.method === "GET" && sub === "/status") {
+		const rawLimit = Number(url.searchParams.get("limit") ?? "10");
+		const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 10;
 		const { defaultModel, models } = listAvailableAdminModels(env);
-		const targets = await discoverOrgTargets(env, scope);
+		const targets = await discoverOrgTargets(env, scope, limit);
 		return reply({
 			ok: true,
 			scope: {
@@ -223,14 +280,62 @@ export async function handleAdminAgentRoute(
 		});
 	}
 
-	if (request.method === "GET" && sub === "/schema") {
-		const binding = (url.searchParams.get("binding") ?? "CONTROLLER").trim().toUpperCase();
-		if (!VALID_BINDINGS.has(binding as DoBindingName)) {
-			return reply({ message: `invalid binding "${binding}"` }, 400);
+	if (request.method === "GET" && sub === "/health") {
+		try {
+			const health = await env.CONTROLLER.getByName(scope.controllerDoName).getHealth();
+			return reply(health);
+		} catch (err) {
+			return fail(err instanceof Error ? err.message : String(err), 500);
 		}
-		const name = url.searchParams.get("name") ?? undefined;
+	}
+
+	if (request.method === "GET" && sub === "/gc") {
+		const rawAction = (url.searchParams.get("action") ?? "status").trim();
+		if (rawAction !== "status" && rawAction !== "dry_run_cell" && rawAction !== "live_cell") {
+			return fail(
+				`invalid gc action "${rawAction}" (expected status, dry_run_cell, or live_cell)`,
+				400,
+			);
+		}
+		const cell = url.searchParams.get("cell") ?? undefined;
+		try {
+			const res = await inspectGcForScope(env, scope, { action: rawAction, cell });
+			if (!res.ok) {
+				const errMsg =
+					typeof res.body.error === "string"
+						? res.body.error
+						: `GC worker inspection failed (HTTP ${res.status})`;
+				return reply(
+					{ code: errorCodeForStatus(res.status), message: errMsg, ...res.body },
+					res.status,
+				);
+			}
+			return reply(res.body);
+		} catch (err) {
+			return fail(err instanceof Error ? err.message : String(err), 500);
+		}
+	}
+
+	if (request.method === "GET" && sub === "/schema") {
+		const commandId = (url.searchParams.get("commandId") ?? "").trim();
+		const binding = (url.searchParams.get("binding") ?? (commandId ? "COMMAND" : "CONTROLLER"))
+			.trim()
+			.toUpperCase();
+		if (!VALID_BINDINGS.has(binding as DoBindingName)) {
+			return fail(`invalid binding "${binding}"`, 400);
+		}
+		let name = url.searchParams.get("name") ?? undefined;
 		const id = url.searchParams.get("id") ?? undefined;
 		try {
+			if (commandId) {
+				if (binding !== "COMMAND") {
+					return fail("commandId may only be used with binding COMMAND", 400);
+				}
+				if (name?.trim() || id?.trim()) {
+					return fail("specify either commandId or name/id, not both", 400);
+				}
+				name = await resolveCommandIdToName(env, scope, commandId);
+			}
 			const target = await resolveScopedInspectableDo(env, scope, {
 				binding: binding as DoBindingName,
 				name,
@@ -245,8 +350,8 @@ export async function handleAdminAgentRoute(
 				...schema,
 			});
 		} catch (err) {
-			return reply(
-				{ message: err instanceof Error ? err.message : String(err) },
+			return fail(
+				err instanceof Error ? err.message : String(err),
 				err instanceof AdminScopeError ? 403 : 400,
 			);
 		}
@@ -257,22 +362,34 @@ export async function handleAdminAgentRoute(
 			binding?: string;
 			name?: string;
 			id?: string;
+			commandId?: string;
 			sql?: string;
 			params?: SqlParamValue[];
 			maxRows?: number;
 		} | null;
 		if (!body || typeof body.sql !== "string") {
-			return reply({ message: "`sql` string is required" }, 400);
+			return fail("`sql` string is required", 400);
 		}
-		const binding = (body.binding ?? "CONTROLLER").trim().toUpperCase();
+		const commandId = (body.commandId ?? "").trim();
+		const binding = (body.binding ?? (commandId ? "COMMAND" : "CONTROLLER")).trim().toUpperCase();
 		if (!VALID_BINDINGS.has(binding as DoBindingName)) {
-			return reply({ message: `invalid binding "${binding}"` }, 400);
+			return fail(`invalid binding "${binding}"`, 400);
 		}
 		try {
 			validateReadOnlySql(body.sql);
+			let name = body.name;
+			if (commandId) {
+				if (binding !== "COMMAND") {
+					return fail("commandId may only be used with binding COMMAND", 400);
+				}
+				if (body.name?.trim() || body.id?.trim()) {
+					return fail("specify either commandId or name/id, not both", 400);
+				}
+				name = await resolveCommandIdToName(env, scope, commandId);
+			}
 			const target = await resolveScopedInspectableDo(env, scope, {
 				binding: binding as DoBindingName,
-				name: body.name,
+				name,
 				id: body.id,
 			});
 			const result = await target.stub.adminQuerySql(body.sql, body.params ?? [], {
@@ -287,12 +404,98 @@ export async function handleAdminAgentRoute(
 				...result,
 			});
 		} catch (err) {
-			return reply(
-				{ message: err instanceof Error ? err.message : String(err) },
+			return fail(
+				err instanceof Error ? err.message : String(err),
 				err instanceof AdminScopeError ? 403 : 400,
 			);
 		}
 	}
 
-	return reply({ message: "not found" }, 404);
+	// ---- Account-wide Cloudflare REST API routes (cluster-owner / global admin only) ----
+	if (sub.startsWith("/cf/")) {
+		if (!scope.isGlobalAdmin) {
+			return fail(
+				"access denied: Cloudflare account API tools are restricted to cluster-owner / default-organization admins",
+				403,
+			);
+		}
+
+		if (request.method === "GET" && sub === "/cf/do-objects") {
+			const namespaceId = (url.searchParams.get("namespaceId") ?? "").trim();
+			const script = url.searchParams.get("script") ?? undefined;
+			const rawLimit = url.searchParams.get("limit");
+			const limit = rawLimit ? Number(rawLimit) : undefined;
+			const cursor = url.searchParams.get("cursor") ?? undefined;
+			try {
+				if (namespaceId) {
+					const res = await listCfDoObjects(env, namespaceId, {
+						limit: Number.isFinite(limit) ? limit : undefined,
+						cursor,
+					});
+					return reply(res);
+				}
+				const res = await listCfDoNamespaces(env, {
+					script: script === "*" ? undefined : (script ?? "hotbed-controller"),
+				});
+				return reply(res);
+			} catch (err) {
+				return fail(err instanceof Error ? err.message : String(err), 400);
+			}
+		}
+
+		if (request.method === "POST" && sub === "/cf/observability") {
+			const body = (await request.json().catch(() => null)) as {
+				view?: "events" | "invocations" | "calculations";
+				scriptName?: string;
+				minutesBack?: number;
+				limit?: number;
+				search?: string;
+				level?: "debug" | "info" | "warn" | "error";
+			} | null;
+			try {
+				const res = await queryCfObservability(env, {
+					view: body?.view ?? "events",
+					scriptName: body?.scriptName,
+					minutesBack: body?.minutesBack,
+					limit: body?.limit,
+					search: body?.search,
+					level: body?.level,
+				});
+				return reply(res);
+			} catch (err) {
+				return fail(err instanceof Error ? err.message : String(err), 400);
+			}
+		}
+
+		if (sub === "/cf/get" && (request.method === "POST" || request.method === "GET")) {
+			let apiPath = "";
+			let query: Record<string, string | number | boolean> | undefined;
+			if (request.method === "POST") {
+				const body = (await request.json().catch(() => null)) as {
+					path?: string;
+					query?: Record<string, string | number | boolean>;
+				} | null;
+				apiPath = (body?.path ?? "").trim();
+				query = body?.query;
+			} else {
+				apiPath = (url.searchParams.get("path") ?? "").trim();
+				const q: Record<string, string> = {};
+				for (const [k, v] of url.searchParams.entries()) {
+					if (k !== "path") q[k] = v;
+				}
+				if (Object.keys(q).length > 0) query = q;
+			}
+			if (!apiPath) {
+				return fail("`path` is required", 400);
+			}
+			try {
+				const res = await cloudflareAccountGet(env, apiPath, { query });
+				return reply(res);
+			} catch (err) {
+				return fail(err instanceof Error ? err.message : String(err), 400);
+			}
+		}
+	}
+
+	return fail("not found", 404);
 }
