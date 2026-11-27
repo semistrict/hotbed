@@ -470,6 +470,22 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 	if _, err := eng.OpenPipe(ctx, "port", wsID, guestPort); api.CodeOf(err) != api.CodeNotFound {
 		t.Fatalf("OpenPipe after the server stopped: %v, want NOT_FOUND", err)
 	}
+	// The server's VM stops once a step sees it ended, which the engine's
+	// own loop may not have taken yet: released before then, the release
+	// would stop it in place of that retire (CI's "3, want 4").
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		eng.step(ctx)
+		rt.mu.Lock()
+		n := rt.torn[wsID]
+		rt.mu.Unlock()
+		if n == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Teardown count after the server stopped = %d, want 3", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	// 6. ReleaseWorkspace calls Runtime.Teardown cleanly.
 	if err := eng.ReleaseWorkspace(ctx, wsID); err != nil {
