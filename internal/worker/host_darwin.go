@@ -38,8 +38,9 @@ func hostUnits() Units { return nil }
 func hostSystem(string) System { return darwinSystem{} }
 
 // darwinSystem measures a Mac. macOS has no pressure stall information or
-// OOM kill count, and its CPU ticks are a Mach call (host_processor_info)
-// that a binary without cgo cannot make: those are errors.ErrUnsupported.
+// OOM kill count (errors.ErrUnsupported); CPU load comes from sysctl
+// vm.loadavg divided by logical CPUs (clamped to [0, 1]) so placement sees
+// host and VM load without requiring cgo/Mach traps.
 type darwinSystem struct{}
 
 func (darwinSystem) Resources() (*pb.Resources, error) {
@@ -68,8 +69,46 @@ func (darwinSystem) Resources() (*pb.Resources, error) {
 
 func (darwinSystem) Meminfo() (sysinfo.Mem, error)    { return darwinMemory() }
 func (darwinSystem) Pressure(string) (float64, error) { return 0, errors.ErrUnsupported }
-func (darwinSystem) CPU() (sysinfo.CPUShare, error)   { return sysinfo.CPUShare{}, errors.ErrUnsupported }
+func (darwinSystem) CPU() (sysinfo.CPUShare, error)   { return darwinCPU() }
 func (darwinSystem) OOMKills() (int64, error)         { return 0, errors.ErrUnsupported }
+
+// darwinCPU estimates host CPU utilization from the 1-minute load average
+// (sysctl vm.loadavg) divided by logical CPU count, clamped to [0, 1].
+func darwinCPU() (sysinfo.CPUShare, error) {
+	raw, err := unix.SysctlRaw("vm.loadavg")
+	if err != nil {
+		return sysinfo.CPUShare{}, fmt.Errorf("sysctl vm.loadavg: %w", err)
+	}
+	busy, err := parseDarwinLoadavg(raw, runtime.NumCPU())
+	if err != nil {
+		return sysinfo.CPUShare{}, err
+	}
+	return sysinfo.CPUShare{Busy: busy}, nil
+}
+
+// parseDarwinLoadavg parses macOS struct loadavg ({ uint32 ldavg[3]; uint32 pad;
+// int64 fscale; } on 64-bit darwin) and returns ldavg[0] / fscale / cpus,
+// clamped to [0, 1].
+func parseDarwinLoadavg(raw []byte, cpus int) (float64, error) {
+	if len(raw) < 24 {
+		return 0, fmt.Errorf("sysctl vm.loadavg: short payload (%d bytes)", len(raw))
+	}
+	ld0 := binary.LittleEndian.Uint32(raw[0:4])
+	fscale := int64(binary.LittleEndian.Uint64(raw[16:24]))
+	if fscale <= 0 {
+		return 0, fmt.Errorf("sysctl vm.loadavg: invalid fscale %d", fscale)
+	}
+	if cpus <= 0 {
+		cpus = 1
+	}
+	busy := (float64(ld0) / float64(fscale)) / float64(cpus)
+	if busy < 0 {
+		busy = 0
+	} else if busy > 1 {
+		busy = 1
+	}
+	return busy, nil
+}
 
 // darwinMemory is the Mac's memory as Activity Monitor counts it: used is
 // apps' memory (anonymous pages, less purgeable ones), wired memory, and

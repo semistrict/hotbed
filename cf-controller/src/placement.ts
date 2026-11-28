@@ -55,6 +55,7 @@ export interface Candidate {
 	upgrading: number;
 	cpus: number;
 	cpuBusy: number;
+	running?: number;
 	queued: number;
 	parked: number;
 	ram: bigint;
@@ -118,6 +119,10 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 	const add = (name: string, value: number, detail: string) => {
 		out.push(create(CostPartSchema, { name, value, detail }));
 	};
+	const running = c.running ?? 0;
+	if (running > 0) {
+		add("running", running / Math.max(c.cpus, 1), `${running} running on ${c.cpus} CPUs`);
+	}
 	if (candidateHolds(c, p)) {
 		add("holding", HOLDING_COST, `it holds new work: ${c.admission?.reason ?? ""}`);
 	}
@@ -246,7 +251,7 @@ export function buildCandidates(
 	project: string,
 	mine: Map<string, string>,
 	follows: (res: Resources | undefined) => number,
-	sharedWarm?: (arch: string, runtimes: string[]) => boolean,
+	sharedWarm?: (arch: string, runtimes: string[], os: string) => boolean,
 ): Candidate[] {
 	const out: Candidate[] = [];
 	for (const nv of nvs) {
@@ -267,7 +272,7 @@ export function buildCandidates(
 			!warm &&
 			sharedWarm &&
 			nodeRuntimes.length > 0 &&
-			sharedWarm(res?.arch ?? "", nodeRuntimes)
+			sharedWarm(res?.arch ?? "", nodeRuntimes, res?.os ?? "")
 		) {
 			warm = true;
 		}
@@ -291,10 +296,12 @@ export function buildCandidates(
 			free = ram - (used > reserved ? used : reserved);
 		}
 
+		let running = 0;
 		let queued = 0;
 		let parked = 0;
 		for (const cmd of nv.commands) {
-			if (cmd.state === CommandState.QUEUED) queued++;
+			if (cmd.state === CommandState.RUNNING) running++;
+			else if (cmd.state === CommandState.QUEUED) queued++;
 			else if (cmd.state === CommandState.PARKED) parked++;
 		}
 
@@ -308,6 +315,7 @@ export function buildCandidates(
 			upgrading,
 			cpus,
 			cpuBusy,
+			running,
 			queued,
 			parked,
 			ram,

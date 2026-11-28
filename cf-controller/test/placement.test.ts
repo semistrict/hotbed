@@ -3,12 +3,18 @@ import { describe, expect, it } from "vitest";
 import {
 	AdmissionSchema,
 	AdmissionSignalSchema,
+	CommandSchema,
+	CommandState,
+	HeartbeatRequestSchema,
+	NodeSchema,
 	PlacementSchema,
 	ResourcesSchema,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
 import {
 	type Candidate,
+	buildCandidates,
 	buildPlacementDecision,
+	candidateCost,
 	candidateHasCapacity,
 	candidateUnfit,
 	chooseCandidate,
@@ -175,5 +181,60 @@ describe("late-binding capacity and 2-host racing", () => {
 		expect(far.chosen?.host).toBe("a");
 		expect(far.runnerUp?.host).toBe("b");
 		expect(far.raceImmediate).toBe(false);
+	});
+
+	it("prefers an idle smaller-RAM node over a bigger node already running a command", () => {
+		const mbp = vmNode({
+			host: "ramons-macbook-pro",
+			cpus: 15,
+			ram: 48n << 30n,
+			free: 16n << 30n,
+			running: 1,
+		});
+		const mac = vmNode({
+			host: "mac",
+			cpus: 11,
+			ram: 18n << 30n,
+			free: 9n << 30n,
+			running: 0,
+		});
+		expect(candidateCost(mbp)).toBeGreaterThan(candidateCost(mac));
+		const res = chooseCandidate([mbp, mac], undefined, [], true, { waitForCapacity: true });
+		expect(res.chosen?.host).toBe("mac");
+		expect(res.runnerUp?.host).toBe("ramons-macbook-pro");
+	});
+
+	it("counts running commands and passes os to sharedWarm in buildCandidates", () => {
+		const seenOS: string[] = [];
+		const cs = buildCandidates(
+			[
+				{
+					node: create(NodeSchema, { id: "n-mac", hostname: "mac", online: true }),
+					online: true,
+					hb: create(HeartbeatRequestSchema, {
+						resources: create(ResourcesSchema, {
+							os: "darwin",
+							arch: "arm64",
+							cpus: 11,
+							memoryBytes: 18n << 30n,
+							runtimes: ["vm"],
+						}),
+					}),
+					bases: [],
+					workspaces: [],
+					commands: [create(CommandSchema, { id: "c1", state: CommandState.RUNNING })],
+				},
+			],
+			"cladefs",
+			new Map(),
+			() => 0,
+			(_arch, _runtimes, os) => {
+				seenOS.push(os);
+				return os !== "darwin";
+			},
+		);
+		expect(seenOS).toEqual(["darwin"]);
+		expect(cs[0].warm).toBe(false);
+		expect(cs[0].running).toBe(1);
 	});
 });

@@ -124,6 +124,63 @@ export class CladefsStore {
 	}
 
 	/**
+	 * Removes every shared-base record and holder entry owned by nodeId (used
+	 * for local-only darwin/machined workers whose cells never live in R2) and
+	 * restores replaced_at = NULL on the newest remaining base in any chain
+	 * left without an active head.
+	 */
+	purgeNodeSharedBases(nodeId: string): void {
+		this.sql.tx(() => {
+			this.sql.exec("DELETE FROM shared_base_holders WHERE node_id = ?", nodeId);
+			const affected = this.sql
+				.exec(
+					`SELECT DISTINCT project, arch, runtime, tenant FROM shared_bases
+					 WHERE node_id = ?`,
+					nodeId,
+				)
+				.toArray();
+			if (affected.length === 0) return;
+			this.sql.exec("DELETE FROM shared_bases WHERE node_id = ?", nodeId);
+			for (const row of affected) {
+				const project = str(row.project);
+				const arch = str(row.arch);
+				const runtime = str(row.runtime);
+				const tenant = str(row.tenant);
+				const active = this.sql
+					.exec(
+						`SELECT 1 FROM shared_bases
+						 WHERE project = ? AND arch = ? AND runtime = ? AND tenant = ? AND replaced_at IS NULL
+						 LIMIT 1`,
+						project,
+						arch,
+						runtime,
+						tenant,
+					)
+					.toArray();
+				if (active.length > 0) continue;
+				const latest = this.sql
+					.exec(
+						`SELECT tenant, cell FROM shared_bases
+						 WHERE project = ? AND arch = ? AND runtime = ? AND tenant = ?
+						 ORDER BY seen_at DESC LIMIT 1`,
+						project,
+						arch,
+						runtime,
+						tenant,
+					)
+					.toArray();
+				if (latest.length > 0) {
+					this.sql.exec(
+						"UPDATE shared_bases SET replaced_at = NULL WHERE tenant = ? AND cell = ?",
+						str(latest[0].tenant),
+						str(latest[0].cell),
+					);
+				}
+			}
+		});
+	}
+
+	/**
 	 * The base cells for nodeId to delete from the shared bucket: a newer base
 	 * of the same project, arch and runtime replaced each at least graceMs ago,
 	 * and no worker has held it for graceMs. The newest base of each chain is

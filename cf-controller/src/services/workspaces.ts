@@ -487,17 +487,20 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		syncHost: string,
 	): CreateWorkspaceRequest {
 		const chosenArch = node.view.hb?.resources?.arch ?? "";
+		const chosenLocalOnly = node.view.hb?.resources?.os === "darwin";
 		const reqRuntime = req.placement?.runtime ?? "";
 		const chosenRuntimes = (node.view.hb?.resources?.runtimes ?? []).filter(
 			(r) => r === "vm" || r === "cladefs",
 		);
 		const sharedBaseRuntime = reqRuntime || chosenRuntimes[0] || "";
-		const latest = ctrl.store.cladefs.latestSharedBaseWithMeta(
-			projectName,
-			chosenArch,
-			ctrl.cladefsTenantId,
-			sharedBaseRuntime,
-		);
+		const latest = chosenLocalOnly
+			? undefined
+			: ctrl.store.cladefs.latestSharedBaseWithMeta(
+					projectName,
+					chosenArch,
+					ctrl.cladefsTenantId,
+					sharedBaseRuntime,
+				);
 		const nowMs = ctrl.now();
 		const captureKey = ctrl.baseCaptureKey(projectName, chosenArch, sharedBaseRuntime);
 		const captureBase = shouldCaptureProjectBase({
@@ -986,7 +989,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					p.name,
 					mine,
 					(res) => ctrl.follows(res),
-					(arch, runtimes) => {
+					(arch, runtimes, os) => {
+						if (os === "darwin") return false;
 						const targetRuntimes = reqRuntimeForWarm
 							? runtimes.includes(reqRuntimeForWarm)
 								? [reqRuntimeForWarm]

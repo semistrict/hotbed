@@ -1,10 +1,12 @@
 package worker
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
 
+	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 	"google.golang.org/grpc"
 
 	"github.com/semistrict/hotbed/internal/cladefs"
@@ -474,5 +476,184 @@ func TestSteppedProjectPreservesStepsOnCaptureAndRefusesBareOSCapture(t *testing
 	}
 	if gotFresh.CaptureBase {
 		t.Fatalf("--fresh workspace on stepped project must not be capture-eligible (would poison warm base)")
+	}
+}
+
+// Local-only machined (macOS) workers keep every cell strictly on local disk
+// with no R2 bucket: they must never publish held bases in HeartbeatMeta and
+// must never adopt or fork a controller-supplied SharedBase from another node.
+func TestVMBackendOnMachinedNeverReportsOrAdoptsSharedBases(t *testing.T) {
+	ctx := t.Context()
+	api := newStrictVMCladefsClient()
+	fl := newFakeVMLauncher()
+	vmb, baseKey := newTestVMBackend(t, api, fl)
+	vmb.machined = &grpc.ClientConn{}
+
+	// Seed a local OS base image so a cold synced workspace can fork locally
+	// without contacting R2 or provisioning from OCI.
+	vmb.imagesMu.Lock()
+	vmb.baseImages[baseKey] = cladefs.CellRef{Tenant: vmb.tenantID(), Cell: 99, Version: 1}
+	vmb.imagesMu.Unlock()
+
+	// Record a locally captured base and confirm HeartbeatMeta hides it.
+	vmb.heldBases().hold("localproj", &projectBase{
+		Ref:          cladefs.CellRef{Tenant: 0, Cell: 100, Version: 5},
+		BaseID:       "localproj-vm-cap-1",
+		BaseKey:      baseKey,
+		AutoCaptured: true,
+	}, true, true)
+	if peer, inc, held, retired := vmb.HeartbeatMeta(); peer != "" || inc != 0 || len(held) != 0 || len(retired) != 0 {
+		t.Fatalf("machined HeartbeatMeta = (%q, %d, %d held, %d retired), want all empty", peer, inc, len(held), len(retired))
+	}
+
+	dir := t.TempDir()
+	eng, err := NewEngine(ctx, EngineConfig{
+		Dir:     dir,
+		NodeID:  "mac-node",
+		Host:    "mac",
+		Store:   &fake.Store{Root: filepath.Join(dir, "volumes")},
+		Units:   &fake.Units{},
+		System:  fake.NewSystem(),
+		VM:      vmb,
+		Runtime: vmb.Runtime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { eng.Close() })
+	baseKey = vmb.baseKeyFor(eng.cfg.BaseSpec)
+	vmb.imagesMu.Lock()
+	vmb.baseImages[baseKey] = cladefs.CellRef{Tenant: vmb.tenantID(), Cell: 99, Version: 1}
+	vmb.imagesMu.Unlock()
+
+	// Controller hands down another node's SharedBase (cell 777, not on this Mac).
+	remoteShared := &pb.SharedBase{
+		Cell: &pb.CladefsCell{
+			Tenant:  0,
+			Cell:    777,
+			Version: 12,
+			BaseId:  "other-mac-cap",
+			Project: "cladefs",
+			Arch:    "arm64",
+			Runtime: "vm",
+		},
+		BaseKey:      baseKey,
+		AutoCaptured: true,
+	}
+	proj := &pb.HostedProject{
+		Name:  "cladefs",
+		Repos: []*pb.Repo{{Id: "cladefs", Url: "https://example.invalid/cladefs.git", Branch: "main"}},
+	}
+	ws, err := eng.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
+		Id:         "macws1",
+		SessionId:  "sess-mac",
+		Agent:      "agent",
+		Repo:       "cladefs",
+		SyncDir:    "/local/cladefs",
+		SyncHost:   "laptop",
+		Runtime:    "vm",
+		Project:    proj,
+		SharedBase: remoteShared,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace on machined: %v", err)
+	}
+	if ws.State != pb.WorkspaceState_WORKSPACE_STATE_IDLE {
+		t.Fatalf("fast local fork returned state %v, want IDLE", ws.State)
+	}
+	api.mu.Lock()
+	for _, fr := range api.forkReqs {
+		if fr.GetCell() == 777 {
+			api.mu.Unlock()
+			t.Fatalf("machined forked controller-supplied remote SharedBase cell 777: %+v", fr)
+		}
+	}
+	api.mu.Unlock()
+	if held, _ := vmb.heldBases().get("cladefs"); held != nil && held.Ref.Cell == 777 {
+		t.Fatalf("machined poisoned heldBases with remote SharedBase cell 777: %+v", held)
+	}
+}
+
+// Releasing a PREPARING cladefs workspace (e.g. a losing 2-host race) must
+// cancel its in-flight prepare context immediately instead of hanging until
+// ReleaseWorkspace times out.
+func TestReleaseCancelsSlowCladefsPrepareAndDoesNotPoisonHeldBase(t *testing.T) {
+	ctx := t.Context()
+	api := newStrictVMCladefsClient()
+	forkStarted := make(chan struct{}, 1)
+	api.forkHook = func(fctx context.Context, _ *cladefsdv1.ForkCellRequest) error {
+		select {
+		case forkStarted <- struct{}{}:
+		default:
+		}
+		<-fctx.Done()
+		return fctx.Err()
+	}
+	fl := newFakeVMLauncher()
+	vmb, _ := newTestVMBackend(t, api, fl)
+
+	dir := t.TempDir()
+	eng, err := NewEngine(ctx, EngineConfig{
+		Dir:     dir,
+		NodeID:  "node-slow",
+		Host:    "slow",
+		Store:   &fake.Store{Root: filepath.Join(dir, "volumes")},
+		Units:   &fake.Units{},
+		System:  fake.NewSystem(),
+		VM:      vmb,
+		Runtime: vmb.Runtime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { eng.Close() })
+	baseKey := vmb.baseKeyFor(eng.cfg.BaseSpec)
+
+	shared := &pb.SharedBase{
+		Cell: &pb.CladefsCell{
+			Tenant:  0,
+			Cell:    555,
+			Version: 3,
+			BaseId:  "demo-vm-shared",
+			Project: "demo",
+			Arch:    "arm64",
+			Runtime: "vm",
+		},
+		BaseKey:      baseKey,
+		AutoCaptured: true,
+	}
+	proj := &pb.HostedProject{
+		Name:  "demo",
+		Repos: []*pb.Repo{{Id: "demo", Url: "https://example.invalid/demo.git", Branch: "main"}},
+	}
+
+	// Start CreateWorkspace with a short caller context; prepare stays running
+	// in the background until ReleaseWorkspace cancels forkCtx.
+	createCtx, cancelCreate := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancelCreate()
+	_, _ = eng.CreateWorkspace(createCtx, &pb.CreateWorkspaceRequest{
+		Id:         "slowws1",
+		SessionId:  "sess-race",
+		Agent:      "agent",
+		Repo:       "demo",
+		SyncDir:    "/local/demo",
+		SyncHost:   "laptop",
+		Runtime:    "vm",
+		Project:    proj,
+		SharedBase: shared,
+	})
+	select {
+	case <-forkStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ForkVersion never started")
+	}
+
+	relCtx, cancelRel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancelRel()
+	if err := eng.ReleaseWorkspace(relCtx, "slowws1"); err != nil {
+		t.Fatalf("ReleaseWorkspace blocked or failed on hung prepare: %v", err)
+	}
+	if held, _ := vmb.heldBases().get("demo"); held != nil {
+		t.Fatalf("failed/canceled prepare poisoned heldBases with %+v", held)
 	}
 }

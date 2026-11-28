@@ -687,7 +687,9 @@ func (e *Engine) scheduleOptionalFreshen(p *pb.HostedProject, rt string, shared 
 	}
 	var sb *pb.SharedBase
 	if shared != nil {
-		sb = clone(shared)
+		if b := e.cladefs(); b == nil || !b.IsLocalOnly() {
+			sb = clone(shared)
+		}
 	}
 	reqAt := now
 	if existing, ok := e.pendingFreshens[key]; ok {

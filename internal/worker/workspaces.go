@@ -68,7 +68,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 		return nil, err
 	}
 	if b := e.cladefs(); b != nil && wsRuntime == b.Kind() {
-		return e.createCladefsWorkspace(req, b)
+		return e.createCladefsWorkspace(ctx, req, b)
 	}
 	lock := e.projectLock(p.Name)
 	lock.Lock()
@@ -403,6 +403,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 	}
 	var w *workspace
 	var releaseDone, forkDone, captureDone chan struct{}
+	var forkCancel context.CancelFunc
 	var running []string
 	var shells []*activeShell
 	for {
@@ -442,6 +443,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 		w.releaseDone = releaseDone
 		w.releaseErr = nil
 		forkDone = w.forkDone
+		forkCancel = w.forkCancel
 		captureDone = w.captureDone
 		for _, c := range e.commands {
 			if c.cmd().WorkspaceId == id && api.Live(c.cmd().State) {
@@ -502,8 +504,11 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 		e.mu.Unlock()
 	}()
 
-	// Wait for any in-flight Store.Clone or base capture on this workspace
-	// before destroying its volume.
+	// Cancel any in-flight cladefs prepare and wait for Store.Clone or base
+	// capture on this workspace before destroying its volume.
+	if forkCancel != nil {
+		forkCancel()
+	}
 	if forkDone != nil {
 		select {
 		case <-forkDone:

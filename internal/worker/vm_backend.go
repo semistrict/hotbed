@@ -291,6 +291,30 @@ func (b *VMBackend) OnMachined() bool { return b.machined != nil }
 // disk without uploading to R2 (machined).
 func (b *VMBackend) IsLocalOnly() bool { return b.OnMachined() }
 
+// HeartbeatMeta omits cladefs peer and shared-base metadata on machined:
+// machined keeps every cell strictly on local disk with no R2 bucket, so
+// reporting held bases to the controller would hand local-only cell IDs to
+// other arm64 workers (which then stall trying to fetch them from a remote
+// bucket that does not exist).
+func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, held []*pb.SharedBase, retired []*pb.CladefsCell) {
+	if b.IsLocalOnly() {
+		return "", 0, nil, nil
+	}
+	return b.cladefsCore.HeartbeatMeta()
+}
+
+// ApplyHeartbeat skips shared peer-mesh and shared-bucket retirement on
+// machined, keeping only local base retirement sweeps.
+func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommission []uint64, retire []*pb.CladefsCell) {
+	if b.IsLocalOnly() {
+		if st := b.currentStore(); st != nil {
+			b.retirer.sweep(ctx, st, time.Now())
+		}
+		return
+	}
+	b.cladefsCore.ApplyHeartbeat(ctx, peers, decommission, retire)
+}
+
 // Runtime returns the GuestRuntime implementing runtime.WorkspaceRuntime.
 func (b *VMBackend) Runtime() runtime.WorkspaceRuntime { return b.rt }
 

@@ -101,10 +101,13 @@ const DEFAULT_FRESHEN_LIMIT = 30;
 // hold them again.
 const SHARED_BASE_RETIRE_GRACE_MS = 15 * 60_000;
 
-// Whether a heartbeat says which bases its worker holds: one whose cladefs
-// backend is up (it offers vm or cladefs) on the controller's build (an older
-// one may not know held_bases). Others keep the holds they last reported.
+// Whether a heartbeat says which shared-bucket bases its worker holds: one
+// whose cladefs backend is up (it offers vm or cladefs), shares the R2 bucket
+// (macOS/darwin uses local-only machined), and is on the controller's build
+// (an older one may not know held_bases). Others keep the holds they last
+// reported.
 export function reportsHeldBases(req: HeartbeatRequest, wantBuild: number): boolean {
+	if (req.resources?.os === "darwin") return false;
 	if (!(req.resources?.runtimes ?? []).some((r) => r === "vm" || r === "cladefs")) return false;
 	return wantBuild === 0 || parseBuildNumber(req.resources?.version ?? "") >= wantBuild;
 }
@@ -622,7 +625,12 @@ export function createClusterService(
 			const sample = ctrl.store.fleet.beat(caller.nodeId, req, nowMs);
 			await ctrl.workers.recordSample(caller.nodeId, caller.hostname, sample);
 			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources));
-			if (holdsBases) {
+			if (req.resources?.os === "darwin") {
+				// macOS workers run machined with strictly local cells; purge any
+				// local-only bases recorded by older builds so no other worker tries
+				// to fork them from R2.
+				ctrl.store.cladefs.purgeNodeSharedBases(caller.nodeId);
+			} else if (holdsBases) {
 				const recorded = ctrl.store.cladefs.recordHeldBases(
 					caller.nodeId,
 					req.resources?.arch ?? "",

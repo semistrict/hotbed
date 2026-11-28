@@ -36,6 +36,7 @@ type strictVMCladefsClient struct {
 	dropped     []uint64
 	nextCellID  uint64
 	nextVersion uint64
+	forkHook    func(context.Context, *cladefsdv1.ForkCellRequest) error
 }
 
 func newStrictVMCladefsClient() *strictVMCladefsClient {
@@ -45,7 +46,15 @@ func newStrictVMCladefsClient() *strictVMCladefsClient {
 	}
 }
 
-func (c *strictVMCladefsClient) ForkCell(_ context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
+func (c *strictVMCladefsClient) ForkCell(ctx context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
+	c.mu.Lock()
+	hook := c.forkHook
+	c.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, req); err != nil {
+			return nil, err
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.forkReqs = append(c.forkReqs, req)

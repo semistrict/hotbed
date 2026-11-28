@@ -398,8 +398,9 @@ type workspace struct {
 	// workspace's VM (a sync, a file read, a shell): retireVMs stops the VM
 	// only while it holds it exclusively.
 	vm            sync.RWMutex
-	forking       bool          // guarded by e.mu: Store.Clone is in flight
-	forkDone      chan struct{} // guarded by e.mu: closed when in-flight fork finishes
+	forking       bool               // guarded by e.mu: Store.Clone or cladefs prepare is in flight
+	forkDone      chan struct{}      // guarded by e.mu: closed when in-flight fork finishes
+	forkCancel    context.CancelFunc // guarded by e.mu: cancels in-flight cladefs prepare on release
 	pendingFork   *forkOutcome  // guarded by e.mu: fork outcome deferred while releasing
 	releasing     bool          // guarded by e.mu: ReleaseWorkspace is in progress
 	releaseQueued bool          // guarded by e.mu: background release goroutine is queued

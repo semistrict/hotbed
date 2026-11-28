@@ -716,11 +716,19 @@ func tenantCellRoot(baseRoot string, tenantID uint64) string {
 // defaultCellRoot is where cladefsd keeps a node's cells unless configured.
 const defaultCellRoot = "/mnt/fxdax-scratch/cladefsd/cells/hotbed"
 
+// cladefsCreateReadyWait is how long CreateWorkspace waits for a cladefs/VM
+// workspace's asynchronous prepare (warm fork) to finish before returning
+// WORKSPACE_STATE_PREPARING. Warm forks normally finish well within this
+// window and return IDLE directly, letting controller 2-host workspace races
+// pick whichever worker actually becomes ready first while cold base builds
+// still return PREPARING promptly.
+const cladefsCreateReadyWait = 1500 * time.Millisecond
+
 // createCladefsWorkspace creates a workspace on b from the project's warm base
 // (or the bare OS base image on a cold project / --fresh), without touching the
 // host's ZFS/btrfs store. Synced runs and runs with an existing warm base fork
 // immediately without polling remotes or running a freshen job.
-func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladefsBackend) (*pb.Workspace, error) {
+func (e *Engine) createCladefsWorkspace(ctx context.Context, req *pb.CreateWorkspaceRequest, b cladefsBackend) (*pb.Workspace, error) {
 	p := req.Project
 	l := b.labels()
 	now := e.nowMs()
@@ -747,6 +755,8 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 	w.forking = true
 	done := make(chan struct{})
 	w.forkDone = done
+	forkCtx, forkCancel := context.WithCancel(e.bgCtx)
+	w.forkCancel = forkCancel
 	if b.Kind() == runtime.KindVM {
 		e.vmWorkspaces.Store(req.Id, struct{}{})
 	}
@@ -754,12 +764,17 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 	e.saveWorkspace(w, change{what: "created", detail: l.created})
 	e.mu.Unlock()
 
-	prepare := func(bgCtx context.Context) {
+	prepare := func(_ context.Context) {
+		defer forkCancel()
 		start := e.now()
 		baseSpec, prov := e.cfg.BaseSpec, e.baseProvisioner()
 		baseKey := b.baseKeyFor(baseSpec)
 		held, heldFresh := b.heldBases().get(p.Name)
-		shared := sharedProjectBase(req.GetSharedBase(), b.tenantID())
+		var reqShared *pb.SharedBase
+		if !b.IsLocalOnly() {
+			reqShared = req.GetSharedBase()
+		}
+		shared := sharedProjectBase(reqShared, b.tenantID())
 		projBase := pickAutoCaptureBase(held, shared, req.GetFresh(), heldFresh, p, baseKey)
 
 		var (
@@ -783,14 +798,12 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 		fastPath := projBase != nil || req.GetFresh() || (!hasSteps && req.GetSyncDir() != "")
 		if fastPath {
 			if projBase != nil {
-				projBase = b.heldBases().hold(p.Name, projBase, false, false)
-				e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
 				fromRef = projBase.Ref
 				baseID = projBase.BaseID
 				baseSetupHash = projBase.SetupHash
 				baseStepHashes = maps.Clone(projBase.StepHashes)
 			} else {
-				fromRef, err = b.EnsureProvisionedBaseImage(bgCtx, baseSpec, prov)
+				fromRef, err = b.EnsureProvisionedBaseImage(forkCtx, baseSpec, prov)
 				baseID = "baseimage-" + baseKey
 			}
 			// Never auto-capture a workspace that started from the bare OS
@@ -806,16 +819,22 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 				}
 			}
 			if err == nil {
-				cell, err = b.PrepareWorkspace(bgCtx, req.Id, fromRef, req.GetFencingToken(), captureBase)
-				if err != nil && projBase != nil && cladefs.IsGone(err) {
+				cell, err = b.PrepareWorkspace(forkCtx, req.Id, fromRef, req.GetFencingToken(), captureBase)
+				if err == nil && projBase != nil {
+					// Hold and record an adopted shared base only after
+					// PrepareWorkspace actually forked it, so an unreachable
+					// remote cell can never poison this node's base cache.
+					projBase = b.heldBases().hold(p.Name, projBase, false, false)
+					e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
+				} else if err != nil && projBase != nil && cladefs.IsGone(err) {
 					b.heldBases().forget(p.Name, projBase.Ref)
 					projBase = nil
 					baseSetupHash = ""
 					baseStepHashes = nil
 					if !hasSteps {
 						baseID = "baseimage-" + baseKey
-						if imgRef, ierr := b.EnsureProvisionedBaseImage(bgCtx, baseSpec, prov); ierr == nil {
-							cell, err = b.PrepareWorkspace(bgCtx, req.Id, imgRef, req.GetFencingToken(), captureBase)
+						if imgRef, ierr := b.EnsureProvisionedBaseImage(forkCtx, baseSpec, prov); ierr == nil {
+							cell, err = b.PrepareWorkspace(forkCtx, req.Id, imgRef, req.GetFencingToken(), captureBase)
 						} else {
 							err = ierr
 						}
@@ -831,12 +850,12 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 			}
 		}
 		if !fastPath {
-			heads, herr := e.remoteHeads(bgCtx, p)
+			heads, herr := e.remoteHeads(forkCtx, p)
 			err = herr
 			var baseRes ensureBaseResult
 			if err == nil {
 				baseRes, err = b.ensureProjectBase(
-					bgCtx, p, heads, req.GetSharedBase(), baseSpec, prov, e.sandboxEnv(),
+					forkCtx, p, heads, reqShared, baseSpec, prov, e.sandboxEnv(),
 					func(id string) { e.setPreparingWorkspaceBase(req.Id, id) },
 					e.startManagedFreshen,
 					ensureBaseOpts{
@@ -854,7 +873,7 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 				baseStepHashes = maps.Clone(projBase.StepHashes)
 				note = baseRes.Note
 				e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
-				cell, err = b.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken(), false)
+				cell, err = b.PrepareWorkspace(forkCtx, req.Id, projBase.Ref, req.GetFencingToken(), false)
 				if cladefs.IsGone(err) {
 					b.heldBases().forget(p.Name, projBase.Ref)
 				}
@@ -865,6 +884,7 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 		e.mu.Lock()
 		w.forking = false
 		w.forkDone = nil
+		w.forkCancel = nil
 		close(done)
 		if w.ws().State == released || w.releasing {
 			e.mu.Unlock()
@@ -926,14 +946,24 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 	started := e.startBgLocked(prepare)
 	e.mu.Unlock()
 	if !started {
+		forkCancel()
 		e.mu.Lock()
 		w.forking = false
 		w.forkDone = nil
+		w.forkCancel = nil
 		close(done)
 		w.ws().State = failedWS
 		w.ws().Reason = "worker is shutting down"
 		e.mu.Unlock()
 		return nil, fmt.Errorf("worker is shutting down")
+	}
+	timer := time.NewTimer(cladefsCreateReadyWait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
 	}
 	return e.Workspace(req.Id)
 }
