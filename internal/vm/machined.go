@@ -104,6 +104,10 @@ func (d *Machined) Boot(ctx context.Context, m Machine, spec LaunchSpec, cfg Con
 		Labels:             map[string]string{"hotbed-vm": m.ID},
 		RootDaxWindowBytes: cfg.DAXWindowBytes,
 		Balloon:            true,
+		// /dev/kvm in the guest, as on Linux nodes, so Firecracker and
+		// guest tests run on Macs too (issue 33). A Mac without EL2
+		// (before M3) refuses the machine rather than boot one without.
+		NestedVirtualization: true,
 	}
 	if !cfg.DisableNetwork && !spec.DisableNet {
 		// Anywhere on the internet; hotbed's guests reach the host's

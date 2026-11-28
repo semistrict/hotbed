@@ -110,6 +110,14 @@ func TestLiveMachinedEndToEnd(t *testing.T) {
 		t.Fatalf("command output:\n%s\nwant cgroup /hotbed/live-check and LIVE_MACHINED_OK", out)
 	}
 
+	// Nested virtualization (issue 33): the guest's kernel boots at EL2 and
+	// has KVM, so Firecracker runs in a Mac's workspaces. Without it, dmesg
+	// says "CPU: All CPU(s) started at EL1" and "HYP mode not available".
+	out = run(rt, "live-kvm", "test -c /dev/kvm && echo KVM_OK || dmesg | grep -E 'CPU: All|kvm'")
+	if !strings.Contains(out, "KVM_OK") {
+		t.Fatalf("command output:\n%s\nwant KVM_OK: /dev/kvm in the guest", out)
+	}
+
 	// The guest's clock is the host's (the board's RTC), not 1970's: TLS and
 	// signed package indexes need it.
 	out = run(rt, "live-clock", "date +%s")

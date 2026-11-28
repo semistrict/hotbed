@@ -240,6 +240,8 @@ github.com/segmentio/encoding v0.5.4 h1:OW1VRern8Nw6ITAtwSZ7Idrl3MXCFwXHPgqESYfv
 github.com/segmentio/encoding v0.5.4/go.mod h1:HS1ZKa3kSN32ZHVZ7ZLPLXWvOVIiZtyJnO1gPH1sKt0=
 github.com/semistrict/cladefs/go v0.0.0-20261126204959-ef58351b30b0 h1:6A+tkd5Sg/Eonu4PAYfV9fITHrdMwieg28giFp+Evgc=
 github.com/semistrict/cladefs/go v0.0.0-20261126204959-ef58351b30b0/go.mod h1:Dkanzko22daorK2VOjZmKpPDg53/4L8AgcNDP2xZJ8I=
+github.com/semistrict/cladefs/go v0.0.0-20261128175454-c8cf65ecc8fc h1:f4iFwouzS7Tj3NZzRUA9/gfIaa/bKOyfAGQ4z9tkwdg=
+github.com/semistrict/cladefs/go v0.0.0-20261128175454-c8cf65ecc8fc/go.mod h1:Dkanzko22daorK2VOjZmKpPDg53/4L8AgcNDP2xZJ8I=
 github.com/sethvargo/go-retry v0.5.0 h1:JYfFKmVJ8ER06GReN1efzc5cm52BrVsFVzmcHiKJwfY=
 github.com/sethvargo/go-retry v0.5.0/go.mod h1:tvsjdKG6xfiCx4LSiUZ06kcv38xvdVQwv8R6/VnnVWg=
 github.com/sirupsen/logrus v1.10.2 h1:G2SED73/qrAu6YwbdxOD6peLkCBI3z7L+ykJFTXJBBo=
