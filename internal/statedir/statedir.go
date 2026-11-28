@@ -35,9 +35,6 @@ type WorkerConfig struct {
 	Controller string `json:"controller"` // host:port
 	// User runs every command; the worker itself runs as root.
 	User string `json:"user"`
-	// Dataset is the zfs dataset for volumes, when the state directory is on
-	// zfs and the default (<pool>/hotbed) will not do.
-	Dataset string `json:"dataset,omitempty"`
 	// UnitProperties are systemd properties every command gets.
 	UnitProperties []string `json:"unitProperties,omitempty"`
 	// Slice is the systemd slice commands run in; empty for hotbed.slice.

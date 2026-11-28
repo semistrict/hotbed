@@ -165,9 +165,6 @@ export function candidateCost(c: Candidate, p?: Placement): number {
 
 export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: string[]): string {
 	if (!c.view.online || !c.view.hb) {
-		if (c.view.node.storageError) {
-			return `${c.host} cannot open its storage: ${c.view.node.storageError}`;
-		}
 		return `${c.host} is offline`;
 	}
 	if (c.upgrading !== 0) {

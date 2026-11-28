@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -12,62 +11,17 @@ import (
 	"github.com/semistrict/hotbed/internal/storage"
 )
 
-// A VM worker keeps nothing of its workspaces on its own filesystem: it
-// opens no btrfs or ZFS store (it would wait forever on ext4 or xfs) and
-// keeps no local base rootfs to pull and provision.
-func TestVMWorkerOpensNoCopyOnWriteStoreOrBaseImage(t *testing.T) {
-	dir := t.TempDir()
-	cfg := statedir.WorkerConfig{
-		VM: &statedir.VMConfig{Enabled: true},
-		// Both enabled: VM wins, as Run's backend choice does.
-		CladefsFUSE: &statedir.CladefsFUSEConfig{Enabled: true},
+// Workers require the VM + cladefs runtime: a config without vm.enabled is not
+// runnable even if legacy cladefs_fuse is enabled.
+func TestRuntimeEnabledRequiresVM(t *testing.T) {
+	if runtimeEnabled(statedir.WorkerConfig{}) {
+		t.Fatal("empty config should not enable a runtime")
 	}
-	store, baseImg, err := openLocalRootfs(t.Context(), cfg, dir, baseimage.Spec{User: "dev", UID: 1001, GID: 1001},
-		func(context.Context) (storage.Store, error) {
-			t.Fatal("a VM worker opened a copy-on-write store")
-			return nil, nil
-		})
-	if err != nil {
-		t.Fatal(err)
+	if runtimeEnabled(statedir.WorkerConfig{CladefsFUSE: &statedir.CladefsFUSEConfig{Enabled: true}}) {
+		t.Fatal("cladefs_fuse alone must not enable a runtime; workers require VMs + cladefs")
 	}
-	if got := store.Kind(); got != "none" {
-		t.Fatalf("store kind = %q, want none", got)
-	}
-	if baseImg != nil {
-		t.Fatalf("a VM worker keeps a local base image: %+v", baseImg)
-	}
-}
-
-// A cladefs host-FUSE worker clones bases from a local base image and traces
-// against its rootfs: it opens its copy-on-write store and keeps the image
-// on it.
-func TestFUSEWorkerKeepsBaseImageOnItsCopyOnWriteStore(t *testing.T) {
-	cow := &fake.Store{Root: t.TempDir()}
-	spec := baseimage.Spec{User: "dev", UID: 1001, GID: 1001}
-	opened := false
-	store, baseImg, err := openLocalRootfs(t.Context(), statedir.WorkerConfig{CladefsFUSE: &statedir.CladefsFUSEConfig{Enabled: true}}, t.TempDir(), spec,
-		func(context.Context) (storage.Store, error) {
-			opened = true
-			return cow, nil
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !opened || store != cow {
-		t.Fatalf("store = %v (opened %v), want the copy-on-write store", store, opened)
-	}
-	if baseImg == nil || baseImg.Store != cow || baseImg.Spec != spec || baseImg.Provision == nil {
-		t.Fatalf("base image = %+v, want spec %+v provisioned on the copy-on-write store", baseImg, spec)
-	}
-}
-
-// What blocks a FUSE worker on its storage ends Run's wait with it.
-func TestFUSEWorkerStorageErrorEndsOpen(t *testing.T) {
-	want := errors.New("no pool")
-	_, _, err := openLocalRootfs(t.Context(), statedir.WorkerConfig{CladefsFUSE: &statedir.CladefsFUSEConfig{Enabled: true}}, t.TempDir(), baseimage.Spec{},
-		func(context.Context) (storage.Store, error) { return nil, want })
-	if !errors.Is(err, want) {
-		t.Fatalf("err = %v, want %v", err, want)
+	if !runtimeEnabled(statedir.WorkerConfig{VM: &statedir.VMConfig{Enabled: true}}) {
+		t.Fatal("vm.enabled=true should enable the runtime")
 	}
 }
 

@@ -129,14 +129,13 @@ export function NodeCard({ n, s, color, now, delay, onDelete }: { n: Node; s: Sn
             </div>
           </div>
           <div className="ml-auto flex shrink-0 flex-col items-end gap-1 text-right">
-            <OnlineBadge online={n.online} storageError={n.storageError} />
+            <OnlineBadge online={n.online} />
             {n.online && <AdmissionBadge a={admission} now={now} />}
             <div className="mt-1 font-mono text-[10px] text-faint">
               {n.online ? `${res?.cpus ?? 0} cpu · ${bytes(memBytes)}` : `seen ${ago(n.lastSeen ?? n.joinedAt, now)}`}
             </div>
           </div>
         </div>
-        {!n.online && n.storageError && <div className="mt-3 font-mono text-[11px] break-words text-serious-ink">{n.storageError}</div>}
 
         {n.online ? (
           <>
@@ -396,7 +395,7 @@ export function NodeTable({ s, onDelete }: { s: Snapshot; onDelete?: (n: Node) =
               <TableCell className="px-2 py-2 font-sans text-muted-foreground">{n.resources?.machine ?? ""}</TableCell>
               <TableCell className="px-2 py-2 text-muted-foreground">{n.resources?.arch || "—"}</TableCell>
               <TableCell className="px-2 py-2">
-                <OnlineBadge online={n.online} storageError={n.storageError} />
+                <OnlineBadge online={n.online} />
               </TableCell>
               <TableCell className="px-2 py-2" title={admission?.reason}>
                 {admission ? (admission.holding ? <span className="text-serious-ink">holding</span> : "starting") : "—"}

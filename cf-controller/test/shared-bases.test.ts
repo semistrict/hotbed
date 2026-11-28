@@ -3,10 +3,9 @@ import { describe, expect, it } from "vitest";
 import { HeartbeatRequestSchema, ResourcesSchema } from "../src/gen/hotbed/v1/hotbed_pb.ts";
 import { reportsHeldBases } from "../src/services/cluster.ts";
 
-function heartbeat(version: string, runtimes: string[], storageError = "") {
+function heartbeat(version: string, runtimes: string[]) {
 	return create(HeartbeatRequestSchema, {
 		resources: create(ResourcesSchema, { arch: "arm64", version, runtimes }),
-		storageError,
 	});
 }
 
@@ -31,11 +30,5 @@ describe("reportsHeldBases", () => {
 
 	it("leaves the holds of a worker whose cladefs runtime is down", () => {
 		expect(reportsHeldBases(heartbeat("build 300 (0123456789ab)", []), 300)).toBe(false);
-	});
-
-	it("leaves the holds of a worker that cannot open its storage", () => {
-		expect(reportsHeldBases(heartbeat("build 300 (0123456789ab)", ["vm"], "disk gone"), 300)).toBe(
-			false,
-		);
 	});
 });

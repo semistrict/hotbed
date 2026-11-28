@@ -23,20 +23,13 @@ import (
 	"strings"
 	"syscall"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
 const (
-	zfsSuperMagic       = 0x2fc12fc1
 	linuxWorkerService  = "hotbed-worker.service"
-	linuxTrimService    = "hotbed-worker-trim.service"
-	linuxTrimTimer      = "hotbed-worker-trim.timer"
-	legacyTrimService   = "hotbed-trim.service"
-	legacyTrimTimer     = "hotbed-trim.timer"
 	systemdUnitDir      = "/etc/systemd/system"
 	installedServiceBin = "/usr/local/bin/hotbed"
 )
@@ -44,19 +37,10 @@ const (
 var (
 	// linuxMetaDir stores root-owned worker setup metadata outside the
 	// user-owned baseDir so unprivileged users cannot tamper with fields read
-	// by root commands (start, stop, trim, destroy). Overridable in tests.
+	// by root commands (start, stop, destroy). Overridable in tests.
 	linuxMetaDir = "/etc/hotbed"
 
-	// ZFS module configuration paths. Overridable in tests.
-	zfsModprobeConfPath = "/etc/modprobe.d/hotbed-zfs.conf"
-	zfsParamDir         = "/sys/module/zfs/parameters"
-	zfsARCStatsPath     = "/proc/spl/kstat/zfs/arcstats"
-
-	// Device inspection and ownership hooks. Overridable in tests so Linux
-	// storage unit tests can run cleanly without root or real /dev block nodes.
-	evalZFSDeviceSymlinks = filepath.EvalSymlinks
-	statZFSDevice         = os.Stat
-	chownPath             = func(path string, uid, gid int) error {
+	chownPath = func(path string, uid, gid int) error {
 		if os.Geteuid() == 0 {
 			return os.Chown(path, uid, gid)
 		}
@@ -64,13 +48,11 @@ var (
 	}
 
 	linuxServiceNameRE = regexp.MustCompile(`^hotbed-[a-zA-Z0-9][a-zA-Z0-9._-]*(\.service)?$`)
-	linuxTrimTimerRE   = regexp.MustCompile(`^hotbed-[a-zA-Z0-9][a-zA-Z0-9._-]*\.timer$`)
-	linuxPoolNameRE    = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$`)
 )
 
 // joinLinuxWorker joins stateDir to controller, or reports the join it
 // already holds when it is joined to the same controller.
-func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, username, storageMode string, hc *http.Client, check worker.Check) (worker.JoinResult, error) {
+func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, username string, hc *http.Client, check worker.Check) (worker.JoinResult, error) {
 	existing, err := statedir.Load(stateDir)
 	switch {
 	case errors.Is(err, statedir.ErrNotInitialized):
@@ -80,7 +62,6 @@ func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, usern
 			Controller:     controller,
 			User:           username,
 			Token:          o.Token,
-			Dataset:        o.ZFSDataset,
 			UnitProperties: o.UnitProperties,
 			Slice:          o.Slice,
 		}, hc, check)
@@ -97,17 +78,17 @@ func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, usern
 		ClusterID:  existing.Worker.ClusterID,
 		Dir:        stateDir,
 		Controller: existing.Worker.Controller,
-		Storage:    storageMode,
+		Storage:    "cladefs",
 		User:       existing.Worker.User,
 		Node:       cmp.Or(existing.Worker.Host, o.Hostname),
 	}, nil
 }
 
 // Setup configures and starts a hotbed worker directly on this Linux host,
-// storing its state under o.Dir (default ~/.hotbed).
+// storing its state under o.Dir (default ~/.hotbed) on any filesystem.
 func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) (Result, error) {
 	if os.Geteuid() != 0 {
-		return Result{}, api.Errorf(api.CodeInvalidArgs, "setting up a Linux worker requires root privileges (for storage, join, and systemd)").
+		return Result{}, api.Errorf(api.CodeInvalidArgs, "setting up a Linux worker requires root privileges (for join and systemd)").
 			WithSuggestion("run with sudo: sudo hotbed worker init " + o.Controller)
 	}
 	controller, err := api.ControllerAddr(o.Controller)
@@ -133,50 +114,20 @@ func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) 
 	if err != nil {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "no user %q to run commands as", username)
 	}
-	if o.ZFSDevice != "" {
-		if _, err := resolveZFSBlockDevice(o.ZFSDevice); err != nil {
-			return Result{}, api.Errorf(api.CodeInvalidArgs, "--zfs-device: %v", err)
-		}
-		if _, err := exec.LookPath("zpool"); err != nil {
-			return Result{}, api.Errorf(api.CodeInvalidArgs, "zpool is not installed").
-				WithSuggestion("install ZFS (e.g. `sudo apt install zfsutils-linux`)")
-		}
-	}
-	stateDir := resolveLinuxStateDir(baseDir, o.Dir, o.ZFSDevice)
+
+	stateDir := filepath.Join(baseDir, "worker")
 	progressf(o.Progress, "setting up Linux worker in %s (command user %s)", baseDir, username)
 	if err := prepareLinuxDirs(baseDir, stateDir, u, chownPath); err != nil {
-		return Result{}, err
-	}
-	diskSize := o.DiskSize
-	if diskSize <= 0 {
-		diskSize = DefaultDiskSize
-	}
-
-	var storageMode, poolName, imgPath string
-	if o.ZFSDevice != "" {
-		storageMode, poolName, err = ensureLinuxZFSDeviceStorage(ctx, baseDir, stateDir, o.ZFSDevice, o.Progress, 0, runCmd)
-	} else {
-		storageMode, poolName, imgPath, err = ensureLinuxStorage(ctx, baseDir, stateDir, diskSize, o.Progress)
-	}
-	if err != nil {
 		return Result{}, err
 	}
 	if err := enforceRootStateDir(stateDir, chownPath); err != nil {
 		return Result{}, err
 	}
-	if storageMode == "zfs-file" || storageMode == "zfs-device" {
-		if err := configureZFSModule(o.ZFSARCMax); err != nil {
-			return Result{}, err
-		}
-	} else if o.ZFSARCMax > 0 {
-		return Result{}, api.Errorf(api.CodeInvalidArgs, "--zfs-arc-max applies only to a ZFS pool hotbed makes (a sparse image or --zfs-device); this worker uses %s storage", storageMode).
-			WithSuggestion("drop --zfs-arc-max and tune the ARC of your own pool yourself")
-	}
 	if err := worker.EnsureUserfaultfdAccess(ctx, username); err != nil {
 		return Result{}, fmt.Errorf("configure /dev/userfaultfd access for %s: %w", username, err)
 	}
 
-	joinRes, err := joinLinuxWorker(ctx, o, stateDir, controller, username, storageMode, hc, check)
+	joinRes, err := joinLinuxWorker(ctx, o, stateDir, controller, username, hc, check)
 	if err != nil {
 		return Result{}, err
 	}
@@ -189,17 +140,8 @@ func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) 
 		return Result{}, err
 	}
 
-	var zfsImportPre string
-	if storageMode == "zfs-file" {
-		zpoolBin, err := exec.LookPath("zpool")
-		if err != nil {
-			zpoolBin = "/sbin/zpool"
-		}
-		zfsImportPre = fmt.Sprintf("%s import -d %s %s", systemdQuote(zpoolBin), systemdQuote(baseDir), poolName)
-	}
-
 	servicePath := filepath.Join(systemdUnitDir, linuxWorkerService)
-	unitText := SystemdWorkerUnit(binPath, stateDir, strings.HasPrefix(storageMode, "zfs"), zfsImportPre)
+	unitText := SystemdWorkerUnit(binPath, stateDir)
 	if err := os.WriteFile(servicePath, []byte(unitText), 0o644); err != nil {
 		return Result{}, fmt.Errorf("write %s: %w", servicePath, err)
 	}
@@ -208,29 +150,9 @@ func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) 
 		StateDir:    stateDir,
 		User:        username,
 		Controller:  controller,
-		StorageMode: storageMode,
-		PoolName:    poolName,
-		ImagePath:   imgPath,
-		ZFSDevice:   o.ZFSDevice,
-		DiskSize:    diskSize,
+		StorageMode: "cladefs",
 		ServiceName: linuxWorkerService,
 	}
-	if storageMode == "zfs-device" {
-		meta.DiskSize = 0
-	}
-
-	if storageMode == "zfs-file" || storageMode == "zfs-device" {
-		cleanupLegacyTrimUnits(ctx, systemdUnitDir, runCmd)
-		trimSvc, trimTmr := SystemdTrimUnits(poolName)
-		if err := os.WriteFile(filepath.Join(systemdUnitDir, linuxTrimService), []byte(trimSvc), 0o644); err != nil {
-			return Result{}, fmt.Errorf("write %s: %w", linuxTrimService, err)
-		}
-		if err := os.WriteFile(filepath.Join(systemdUnitDir, linuxTrimTimer), []byte(trimTmr), 0o644); err != nil {
-			return Result{}, fmt.Errorf("write %s: %w", linuxTrimTimer, err)
-		}
-		meta.TrimTimer = linuxTrimTimer
-	}
-
 	if err := validateLinuxMeta(meta, baseDir); err != nil {
 		return Result{}, fmt.Errorf("invalid setup metadata: %w", err)
 	}
@@ -239,16 +161,9 @@ func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) 
 	}
 	removeLegacyMetaIfRegular(baseDir)
 
-	running, err := applyLinuxSystemdState(ctx, o.NoStart, linuxWorkerService, meta.TrimTimer, o.Progress, runCmd)
+	running, err := applyLinuxSystemdState(ctx, o.NoStart, linuxWorkerService, o.Progress, runCmd)
 	if err != nil {
 		return Result{}, err
-	}
-
-	var disks []DiskStat
-	if imgPath != "" {
-		if ds, err := FileDiskStat("zfs", imgPath, diskSize); err == nil {
-			disks = append(disks, ds)
-		}
 	}
 
 	return Result{
@@ -259,10 +174,9 @@ func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) 
 		User:       username,
 		Node:       joinRes.Node,
 		ClusterID:  joinRes.ClusterID,
-		Storage:    storageMode,
+		Storage:    "cladefs",
 		Running:    running,
 		Service:    linuxWorkerService,
-		Disks:      disks,
 		Next: []string{
 			"hotbed worker status",
 			"hotbed nodes",
@@ -270,20 +184,9 @@ func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) 
 	}, nil
 }
 
-func resolveLinuxStateDir(baseDir, rawDir, zfsDevice string) string {
-	if zfsDevice != "" && rawDir != "" {
-		if defDir, err := DefaultDir(); err != nil || filepath.Clean(baseDir) != filepath.Clean(defDir) {
-			return filepath.Clean(baseDir)
-		}
-	}
-	return filepath.Join(baseDir, "worker")
-}
-
 // prepareLinuxDirs ensures the directory hierarchy above stateDir is
 // traversable without ever chowning stateDir itself to the unprivileged
-// command user. When baseDir == stateDir (e.g. `--zfs-device --dir /var/lib/hotbed`),
-// only parent directories strictly above stateDir are created and stateDir stays
-// root-owned (0700).
+// command user.
 func prepareLinuxDirs(baseDir, stateDir string, u *user.User, chown func(string, int, int) error) error {
 	cleanBase := filepath.Clean(baseDir)
 	cleanState := filepath.Clean(stateDir)
@@ -336,7 +239,7 @@ func enforceRootStateDir(stateDir string, chown func(string, int, int) error) er
 func applyLinuxSystemdState(
 	ctx context.Context,
 	noStart bool,
-	serviceName, trimTimer string,
+	serviceName string,
 	progress io.Writer,
 	run func(context.Context, string, ...string) (string, error),
 ) (bool, error) {
@@ -353,510 +256,7 @@ func applyLinuxSystemdState(
 	if _, err := run(ctx, "systemctl", "restart", serviceName); err != nil {
 		return false, err
 	}
-	if trimTimer != "" {
-		if _, err := run(ctx, "systemctl", "enable", "--now", trimTimer); err != nil {
-			return false, err
-		}
-	}
 	return isSystemdActiveWith(ctx, run, serviceName), nil
-}
-
-// ensureLinuxStorage checks whether baseDir is already on btrfs or zfs; if
-// not, it creates a sparse file-backed ZFS pool in <baseDir>/zfs.img mounted
-// at stateDir with autotrim=on and compression=zstd so blocks are punched out
-// when workspaces or bases are deleted.
-func ensureLinuxStorage(ctx context.Context, baseDir, stateDir string, diskSize int64, progress io.Writer) (mode, poolName, imgPath string, err error) {
-	var st unix.Statfs_t
-	if err := unix.Statfs(baseDir, &st); err != nil {
-		return "", "", "", fmt.Errorf("statfs %s: %w", baseDir, err)
-	}
-	switch st.Type {
-	case unix.BTRFS_SUPER_MAGIC:
-		progressf(progress, "%s is on btrfs; using native copy-on-write storage", baseDir)
-		return "btrfs", "", "", nil
-	case zfsSuperMagic:
-		progressf(progress, "%s is on zfs; using native ZFS storage", baseDir)
-		return "zfs", "", "", nil
-	}
-
-	if _, err := exec.LookPath("zpool"); err != nil {
-		return "", "", "", api.Errorf(api.CodeInvalidArgs, "%s is not on btrfs or zfs, and zpool is not installed", baseDir).
-			WithSuggestion("install ZFS (e.g. `sudo apt install zfsutils-linux`) or place --dir on a btrfs/zfs filesystem")
-	}
-
-	return ensureLinuxZFSFileStorage(ctx, baseDir, stateDir, diskSize, progress, 0, runCmd)
-}
-
-func ensureLinuxZFSFileStorage(
-	ctx context.Context,
-	baseDir, stateDir string,
-	diskSize int64,
-	progress io.Writer,
-	expectedMetaUID uint32,
-	run func(context.Context, string, ...string) (string, error),
-) (mode, poolName, imgPath string, err error) {
-	imgPath = filepath.Join(baseDir, "zfs.img")
-	poolName, err = resolveLinuxPoolName(ctx, baseDir, stateDir, imgPath, expectedMetaUID, run)
-	if err != nil {
-		return "", "", "", err
-	}
-
-	if zpoolExistsWith(ctx, run, poolName) {
-		mp, err := run(ctx, "zfs", "get", "-H", "-o", "value", "mountpoint", poolName)
-		if err != nil {
-			return "", "", "", err
-		}
-		if got := strings.TrimSpace(mp); got != stateDir {
-			return "", "", "", api.Errorf(api.CodeConflict, "ZFS pool %q already exists and is mounted at %s, not %s", poolName, got, stateDir).
-				WithSuggestion("pass a different --dir or destroy the existing pool before retrying")
-		}
-		_, _ = run(ctx, "zpool", "set", "autotrim=on", poolName)
-		progressf(progress, "using existing sparse ZFS pool %s mounted at %s", poolName, stateDir)
-		return "zfs-file", poolName, imgPath, nil
-	}
-
-	if _, err := os.Stat(imgPath); err == nil {
-		progressf(progress, "importing existing sparse ZFS pool %s from %s", poolName, imgPath)
-		if _, err := run(ctx, "zpool", "import", "-d", baseDir, poolName); err != nil {
-			return "", "", "", fmt.Errorf("import existing ZFS pool from %s: %w", imgPath, err)
-		}
-		_, _ = run(ctx, "zpool", "set", "autotrim=on", poolName)
-		return "zfs-file", poolName, imgPath, nil
-	}
-
-	progressf(progress, "creating %s sparse ZFS image at %s (autotrim=on, compression=zstd)", FormatBytes(diskSize), imgPath)
-	f, err := os.OpenFile(imgPath, os.O_CREATE|os.O_RDWR|os.O_EXCL, 0o600)
-	if err != nil {
-		return "", "", "", fmt.Errorf("create sparse ZFS image %s: %w", imgPath, err)
-	}
-	if err := f.Truncate(diskSize); err != nil {
-		f.Close()
-		os.Remove(imgPath)
-		return "", "", "", fmt.Errorf("size sparse ZFS image %s: %w", imgPath, err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(imgPath)
-		return "", "", "", err
-	}
-
-	if err := enforceRootStateDir(stateDir, chownPath); err != nil {
-		return "", "", "", err
-	}
-	if _, err := run(ctx, "zpool", "create", "-f",
-		"-o", "ashift=12",
-		"-o", "autotrim=on",
-		"-O", "compression=zstd",
-		"-O", "atime=off",
-		"-O", "xattr=sa",
-		"-O", "dnodesize=auto",
-		"-m", stateDir,
-		poolName, imgPath,
-	); err != nil {
-		os.Remove(imgPath)
-		return "", "", "", fmt.Errorf("create ZFS pool %s: %w", poolName, err)
-	}
-	if err := enforceRootStateDir(stateDir, chownPath); err != nil {
-		return "", "", "", err
-	}
-	return "zfs-file", poolName, imgPath, nil
-}
-
-// configureZFSModule tunes the zfs module for a pool hotbed made, now and
-// from the next boot on (modprobe.d):
-//   - zfs_trim_txg_batch=1, so autotrim punches freed extents out of the
-//     sparse image promptly instead of batching 32 TXGs;
-//   - zfs_arc_max=arcMax, which caps the ARC; 0 is the module's default
-//     (nearly all of RAM), which hotbed then sets back live too.
-//
-// zfs takes a zfs_arc_max it cannot use (not above zfs_arc_min, say) without
-// an error and keeps the old cap, so the ARC's c_max is read back to check.
-func configureZFSModule(arcMax int64) error {
-	params := [][2]string{{"zfs_trim_txg_batch", "1"}, {"zfs_arc_max", strconv.FormatInt(arcMax, 10)}}
-	conf := "options zfs zfs_trim_txg_batch=1"
-	if arcMax > 0 {
-		conf += " zfs_arc_max=" + strconv.FormatInt(arcMax, 10)
-	}
-	if err := os.WriteFile(zfsModprobeConfPath, []byte(conf+"\n"), 0o644); err != nil {
-		return fmt.Errorf("configure zfs module: %w", err)
-	}
-	for _, p := range params {
-		if err := os.WriteFile(filepath.Join(zfsParamDir, p[0]), []byte(p[1]+"\n"), 0o644); err != nil {
-			return fmt.Errorf("set zfs module parameter %s=%s: %w", p[0], p[1], err)
-		}
-	}
-	if arcMax == 0 {
-		return nil
-	}
-	cMax, err := zfsARCStat("c_max")
-	if err != nil {
-		return err
-	}
-	if cMax != arcMax {
-		return api.Errorf(api.CodeInvalidArgs, "zfs kept its ARC cap at %s and ignored zfs_arc_max=%s", FormatBytes(cMax), FormatBytes(arcMax)).
-			WithSuggestion("pass a --zfs-arc-max above the ARC's minimum (c_min in " + zfsARCStatsPath + ") and below RAM")
-	}
-	return nil
-}
-
-// zfsARCStat is one counter of the ARC's kstats.
-func zfsARCStat(name string) (int64, error) {
-	b, err := os.ReadFile(zfsARCStatsPath)
-	if err != nil {
-		return 0, fmt.Errorf("read zfs ARC stats: %w", err)
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		f := strings.Fields(line)
-		if len(f) == 3 && f[0] == name {
-			v, err := strconv.ParseInt(f[2], 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("zfs ARC stat %s: %w", name, err)
-			}
-			return v, nil
-		}
-	}
-	return 0, fmt.Errorf("zfs ARC stats in %s have no %s", zfsARCStatsPath, name)
-}
-
-// resolveZFSBlockDevice verifies that dev is a valid path under /dev/, resolves
-// symlinks to a canonical path still under /dev/, and verifies the target is a
-// real block device (not a regular file, directory, or character device).
-func resolveZFSBlockDevice(dev string) (string, error) {
-	if err := validateZFSDevicePath(dev); err != nil {
-		return "", err
-	}
-	resolved, err := evalZFSDeviceSymlinks(dev)
-	if err != nil {
-		return "", fmt.Errorf("resolve ZFS device %s: %w", dev, err)
-	}
-	resolved = filepath.Clean(resolved)
-	if err := validateZFSDevicePath(resolved); err != nil {
-		return "", fmt.Errorf("ZFS device %s resolves to %s: %w", dev, resolved, err)
-	}
-	fi, err := statZFSDevice(resolved)
-	if err != nil {
-		return "", fmt.Errorf("stat ZFS device %s: %w", resolved, err)
-	}
-	mode := fi.Mode()
-	if mode&os.ModeDevice == 0 || mode&os.ModeCharDevice != 0 {
-		return "", fmt.Errorf("ZFS device %s (resolved to %s) is not a block device (mode %s)", dev, resolved, mode)
-	}
-	return resolved, nil
-}
-
-func poolBackingVdevs(ctx context.Context, run func(context.Context, string, ...string) (string, error), poolName string) ([]string, error) {
-	out, err := run(ctx, "zpool", "list", "-v", "-H", "-P", poolName)
-	if err != nil {
-		return nil, fmt.Errorf("inspect ZFS pool %s vdevs: %w", poolName, err)
-	}
-	var vdevs []string
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "\t") {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		for _, f := range fields {
-			f = strings.TrimSpace(f)
-			if f == "" {
-				continue
-			}
-			if strings.HasPrefix(f, "/") {
-				vdevs = append(vdevs, filepath.Clean(f))
-			}
-			break
-		}
-	}
-	if len(vdevs) == 0 {
-		return nil, fmt.Errorf("inspect ZFS pool %s vdevs: no backing device paths found", poolName)
-	}
-	return vdevs, nil
-}
-
-func vdevMatchesDevice(vdev, zfsDevice, canonicalDev string) bool {
-	cleanVdev := filepath.Clean(vdev)
-	cleanDev := filepath.Clean(zfsDevice)
-	cleanCanon := filepath.Clean(canonicalDev)
-	if cleanVdev == cleanDev || cleanVdev == cleanCanon || isPartitionOf(cleanVdev, cleanDev) || isPartitionOf(cleanVdev, cleanCanon) {
-		return true
-	}
-	if resolved, err := evalZFSDeviceSymlinks(cleanVdev); err == nil {
-		resolved = filepath.Clean(resolved)
-		if resolved == cleanCanon || isPartitionOf(resolved, cleanCanon) {
-			return true
-		}
-	}
-	return false
-}
-
-func isPartitionOf(cand, base string) bool {
-	if !strings.HasPrefix(cand, base) || len(cand) <= len(base) {
-		return false
-	}
-	rest := cand[len(base):]
-	if strings.HasPrefix(rest, "-part") {
-		return isAllDigits(rest[len("-part"):])
-	}
-	last := base[len(base)-1]
-	if last >= '0' && last <= '9' {
-		return strings.HasPrefix(rest, "p") && isAllDigits(rest[1:])
-	}
-	if (last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') {
-		return isAllDigits(rest)
-	}
-	return false
-}
-
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func verifyPoolBackingDevice(
-	ctx context.Context,
-	run func(context.Context, string, ...string) (string, error),
-	poolName, zfsDevice, canonicalDev string,
-) error {
-	vdevs, err := poolBackingVdevs(ctx, run, poolName)
-	if err != nil {
-		return err
-	}
-	for _, vdev := range vdevs {
-		if !vdevMatchesDevice(vdev, zfsDevice, canonicalDev) {
-			return api.Errorf(api.CodeConflict, "ZFS pool %q is backed by %s, not %s (%s)", poolName, strings.Join(vdevs, ", "), zfsDevice, canonicalDev).
-				WithSuggestion("destroy or export the conflicting pool, or pass the matching --zfs-device / --dir")
-		}
-	}
-	return nil
-}
-
-func isBlkidNoMatch(err error) bool {
-	var ee *exec.ExitError
-	return errors.As(err, &ee) && ee.ExitCode() == 2
-}
-
-// probeBlankBlockDevice checks blkid TYPE and PTTYPE on zfsDevice before
-// zpool create so an existing filesystem, foreign ZFS pool label, or partition
-// table is never silently wiped.
-func probeBlankBlockDevice(ctx context.Context, run func(context.Context, string, ...string) (string, error), zfsDevice string) error {
-	out, err := run(ctx, "blkid", "-o", "value", "-s", "TYPE", zfsDevice)
-	if err != nil && !isBlkidNoMatch(err) {
-		return fmt.Errorf("probe %s with blkid: %w", zfsDevice, err)
-	}
-	if fsType := strings.TrimSpace(out); fsType != "" {
-		return api.Errorf(api.CodeConflict, "refusing to create ZFS pool on %s: device already contains %q", zfsDevice, fsType).
-			WithSuggestion("wipe the device manually or pass a blank --zfs-device")
-	}
-	ptOut, ptErr := run(ctx, "blkid", "-o", "value", "-s", "PTTYPE", zfsDevice)
-	if ptErr != nil && !isBlkidNoMatch(ptErr) {
-		return fmt.Errorf("probe partition table on %s with blkid: %w", zfsDevice, ptErr)
-	}
-	if ptType := strings.TrimSpace(ptOut); ptType != "" {
-		return api.Errorf(api.CodeConflict, "refusing to create ZFS pool on %s: device already has a %q partition table", zfsDevice, ptType).
-			WithSuggestion("wipe the device manually or import the existing pool if it belongs to hotbed")
-	}
-	return nil
-}
-
-func ensureLinuxZFSDeviceStorage(
-	ctx context.Context,
-	baseDir, stateDir, zfsDevice string,
-	progress io.Writer,
-	expectedMetaUID uint32,
-	run func(context.Context, string, ...string) (string, error),
-) (mode, poolName string, err error) {
-	canonicalDev, err := resolveZFSBlockDevice(zfsDevice)
-	if err != nil {
-		return "", "", api.Errorf(api.CodeInvalidArgs, "--zfs-device: %v", err)
-	}
-	if _, err := run(ctx, "modprobe", "zfs"); err != nil {
-		return "", "", fmt.Errorf("load zfs kernel module: %w", err)
-	}
-
-	poolName, err = resolveLinuxPoolName(ctx, baseDir, stateDir, "", expectedMetaUID, run)
-	if err != nil {
-		return "", "", err
-	}
-
-	if zpoolExistsWith(ctx, run, poolName) {
-		if err := verifyPoolBackingDevice(ctx, run, poolName, zfsDevice, canonicalDev); err != nil {
-			return "", "", err
-		}
-		mp, err := run(ctx, "zfs", "get", "-H", "-o", "value", "mountpoint", poolName)
-		if err != nil {
-			return "", "", err
-		}
-		if got := strings.TrimSpace(mp); got != stateDir {
-			return "", "", api.Errorf(api.CodeConflict, "ZFS pool %q already exists and is mounted at %s, not %s", poolName, got, stateDir).
-				WithSuggestion("pass a different --dir or destroy the existing pool before retrying")
-		}
-		if err := enforceRootStateDir(stateDir, chownPath); err != nil {
-			return "", "", err
-		}
-		_, _ = run(ctx, "zpool", "set", "autotrim=on", poolName)
-		_, _ = run(ctx, "systemctl", "enable", "zfs-import-cache.service", "zfs-mount.service", "zfs.target")
-		progressf(progress, "using existing ZFS pool %s mounted at %s", poolName, stateDir)
-		return "zfs-device", poolName, nil
-	}
-
-	if _, err := run(ctx, "zpool", "import", "-d", filepath.Dir(zfsDevice), poolName); err == nil {
-		if verr := verifyPoolBackingDevice(ctx, run, poolName, zfsDevice, canonicalDev); verr != nil {
-			_, _ = run(ctx, "zpool", "export", poolName)
-			return "", "", verr
-		}
-		mp, merr := run(ctx, "zfs", "get", "-H", "-o", "value", "mountpoint", poolName)
-		if merr != nil {
-			_, _ = run(ctx, "zpool", "export", poolName)
-			return "", "", merr
-		}
-		if got := strings.TrimSpace(mp); got != stateDir {
-			_, _ = run(ctx, "zpool", "export", poolName)
-			return "", "", api.Errorf(api.CodeConflict, "imported ZFS pool %q is mounted at %s, not %s", poolName, got, stateDir).
-				WithSuggestion("pass a different --dir or destroy the existing pool before retrying")
-		}
-		if err := enforceRootStateDir(stateDir, chownPath); err != nil {
-			return "", "", err
-		}
-		_, _ = run(ctx, "zpool", "set", "autotrim=on", poolName)
-		_, _ = run(ctx, "systemctl", "enable", "zfs-import-cache.service", "zfs-mount.service", "zfs.target")
-		progressf(progress, "imported existing ZFS pool %s mounted at %s", poolName, stateDir)
-		return "zfs-device", poolName, nil
-	}
-
-	if err := probeBlankBlockDevice(ctx, run, zfsDevice); err != nil {
-		return "", "", err
-	}
-
-	progressf(progress, "creating ZFS pool %s on %s mounted at %s (autotrim=on, compression=zstd)", poolName, zfsDevice, stateDir)
-	if err := enforceRootStateDir(stateDir, chownPath); err != nil {
-		return "", "", err
-	}
-	if _, err := run(ctx, "zpool", "create",
-		"-o", "ashift=12",
-		"-o", "autotrim=on",
-		"-o", "cachefile=/etc/zfs/zpool.cache",
-		"-O", "compression=zstd",
-		"-O", "atime=off",
-		"-O", "xattr=sa",
-		"-O", "dnodesize=auto",
-		"-m", stateDir,
-		poolName, zfsDevice,
-	); err != nil {
-		return "", "", fmt.Errorf("create ZFS pool %s on %s: %w", poolName, zfsDevice, err)
-	}
-	if err := enforceRootStateDir(stateDir, chownPath); err != nil {
-		return "", "", err
-	}
-	_, _ = run(ctx, "systemctl", "enable", "zfs-import-cache.service", "zfs-mount.service", "zfs.target")
-	return "zfs-device", poolName, nil
-}
-
-// cleanupLegacyTrimUnits disables and removes the older hotbed-trim.{service,timer}
-// units created by earlier macOS VM provisioning before unification onto
-// hotbed-worker-trim.{service,timer}.
-func cleanupLegacyTrimUnits(ctx context.Context, unitDir string, run func(context.Context, string, ...string) (string, error)) {
-	timerPath := filepath.Join(unitDir, legacyTrimTimer)
-	svcPath := filepath.Join(unitDir, legacyTrimService)
-	_, timerErr := os.Lstat(timerPath)
-	_, svcErr := os.Lstat(svcPath)
-	if timerErr != nil && svcErr != nil {
-		return
-	}
-	_, _ = run(ctx, "systemctl", "disable", "--now", legacyTrimTimer)
-	_ = os.Remove(timerPath)
-	_ = os.Remove(svcPath)
-}
-
-func isValidLinuxPoolName(name string) bool {
-	return name != "" && linuxPoolNameRE.MatchString(name) && !strings.Contains(name, "..")
-}
-
-// resolveLinuxPoolName determines the ZFS pool name for baseDir without ever
-// trusting legacy <baseDir>/setup.json (which lives inside the non-root-owned
-// baseDir). When root-owned /etc/hotbed/worker-*.json does not yet exist (fresh
-// setup or pre-upgrade migration), it derives any existing pool name from
-// trusted live ZFS state (matching stateDir mountpoint) and falls back to
-// DefaultPoolName.
-func resolveLinuxPoolName(
-	ctx context.Context,
-	baseDir, stateDir, imgPath string,
-	expectedMetaUID uint32,
-	run func(context.Context, string, ...string) (string, error),
-) (string, error) {
-	metaPath := linuxMetaPath(baseDir)
-	if _, err := os.Lstat(metaPath); err == nil {
-		var prev LinuxSetupMeta
-		if err := readTrustedJSON(metaPath, expectedMetaUID, &prev); err != nil {
-			return "", api.Errorf(api.CodeInvalidArgs, "%v", err).
-				WithSuggestion("re-run `sudo hotbed worker init CONTROLLER` to write root-owned setup metadata")
-		}
-		if err := validateLinuxMeta(prev, baseDir); err != nil {
-			return "", api.Errorf(api.CodeInvalidArgs, "%s: %v", metaPath, err)
-		}
-		if prev.PoolName != "" {
-			return prev.PoolName, nil
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-
-	if pool, ok := findLivePoolForMountpoint(ctx, stateDir, run); ok {
-		return pool, nil
-	}
-	if imgPath != "" {
-		if _, err := os.Stat(imgPath); err == nil {
-			if pool, ok := findExportedPoolInDir(ctx, baseDir, run); ok {
-				return pool, nil
-			}
-		}
-	}
-	return DefaultPoolName, nil
-}
-
-func findLivePoolForMountpoint(ctx context.Context, stateDir string, run func(context.Context, string, ...string) (string, error)) (string, bool) {
-	out, err := run(ctx, "zpool", "list", "-H", "-o", "name")
-	if err != nil {
-		return "", false
-	}
-	for _, line := range strings.Split(out, "\n") {
-		name := strings.TrimSpace(line)
-		if !isValidLinuxPoolName(name) {
-			continue
-		}
-		mp, err := run(ctx, "zfs", "get", "-H", "-o", "value", "mountpoint", name)
-		if err == nil && strings.TrimSpace(mp) == stateDir {
-			return name, true
-		}
-	}
-	return "", false
-}
-
-func findExportedPoolInDir(ctx context.Context, baseDir string, run func(context.Context, string, ...string) (string, error)) (string, bool) {
-	out, err := run(ctx, "zpool", "import", "-d", baseDir)
-	if err != nil {
-		return "", false
-	}
-	var found string
-	for _, line := range strings.Split(out, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "pool:") {
-			continue
-		}
-		name := strings.TrimSpace(strings.TrimPrefix(trimmed, "pool:"))
-		if !isValidLinuxPoolName(name) {
-			continue
-		}
-		if found != "" && found != name {
-			return "", false
-		}
-		found = name
-	}
-	return found, found != ""
 }
 
 // resolveLinuxServiceBinary returns the binary path for systemd ExecStart.
@@ -1203,8 +603,8 @@ func isStrictSubpath(parent, child string) bool {
 }
 
 // validateLinuxMeta rejects unexpected or potentially dangerous fields read
-// from Linux setup metadata before any privileged systemctl, zpool, or
-// filesystem operation acts on them.
+// from Linux setup metadata before any privileged systemctl or filesystem
+// operation acts on them.
 func validateLinuxMeta(m LinuxSetupMeta, baseDir string) error {
 	cleanBase := filepath.Clean(baseDir)
 	if !filepath.IsAbs(cleanBase) || cleanBase == "/" {
@@ -1213,38 +613,8 @@ func validateLinuxMeta(m LinuxSetupMeta, baseDir string) error {
 	if !linuxServiceNameRE.MatchString(m.ServiceName) || strings.Contains(m.ServiceName, "..") {
 		return fmt.Errorf("invalid serviceName %q in setup metadata", m.ServiceName)
 	}
-	if m.TrimTimer != "" && (!linuxTrimTimerRE.MatchString(m.TrimTimer) || strings.Contains(m.TrimTimer, "..")) {
-		return fmt.Errorf("invalid trimTimer %q in setup metadata", m.TrimTimer)
-	}
-	switch m.StorageMode {
-	case "btrfs", "zfs", "zfs-file", "zfs-device":
-	default:
-		return fmt.Errorf("invalid storageMode %q in setup metadata", m.StorageMode)
-	}
-	if (m.StorageMode == "zfs-file" || m.StorageMode == "zfs-device") && m.PoolName == "" {
-		return fmt.Errorf("missing poolName for %s storage in setup metadata", m.StorageMode)
-	}
-	if m.PoolName != "" && (!linuxPoolNameRE.MatchString(m.PoolName) || strings.Contains(m.PoolName, "..")) {
-		return fmt.Errorf("invalid poolName %q in setup metadata", m.PoolName)
-	}
-	if m.StorageMode == "zfs-device" {
-		if m.StateDir != cleanBase && !isStrictSubpath(cleanBase, m.StateDir) {
-			return fmt.Errorf("invalid stateDir %q in setup metadata (must be %s or a clean path under it)", m.StateDir, cleanBase)
-		}
-		if err := validateZFSDevicePath(m.ZFSDevice); err != nil {
-			return fmt.Errorf("invalid zfsDevice in setup metadata: %w", err)
-		}
-	} else if !isStrictSubpath(cleanBase, m.StateDir) {
+	if !isStrictSubpath(cleanBase, m.StateDir) {
 		return fmt.Errorf("invalid stateDir %q in setup metadata (must be a clean path under %s)", m.StateDir, cleanBase)
-	}
-	if m.StorageMode != "zfs-device" && m.ZFSDevice != "" {
-		return fmt.Errorf("unexpected zfsDevice %q for %s storage in setup metadata", m.ZFSDevice, m.StorageMode)
-	}
-	if m.StorageMode == "zfs-file" && m.ImagePath == "" {
-		return errors.New("missing imagePath for zfs-file storage in setup metadata")
-	}
-	if m.ImagePath != "" && !isStrictSubpath(cleanBase, m.ImagePath) {
-		return fmt.Errorf("invalid imagePath %q in setup metadata (must be a clean path under %s)", m.ImagePath, cleanBase)
 	}
 	return nil
 }
@@ -1303,22 +673,16 @@ func GetStatus(ctx context.Context, dir string) (Status, error) {
 		}
 		return Status{}, err
 	}
-	st := Status{
+	return Status{
 		Platform:   "linux",
 		Dir:        baseDir,
 		StateDir:   meta.StateDir,
 		Controller: meta.Controller,
 		User:       meta.User,
-		Storage:    meta.StorageMode,
+		Storage:    "cladefs",
 		Running:    isSystemdActive(ctx, meta.ServiceName),
 		Service:    meta.ServiceName,
-	}
-	if meta.ImagePath != "" {
-		if ds, err := FileDiskStat("zfs", meta.ImagePath, meta.DiskSize); err == nil {
-			st.Disks = append(st.Disks, ds)
-		}
-	}
-	return st, nil
+	}, nil
 }
 
 // Start starts the local Linux worker systemd service.
@@ -1361,58 +725,8 @@ func Stop(ctx context.Context, dir string) (Status, error) {
 	return GetStatus(ctx, baseDir)
 }
 
-// Trim waits for ZFS async frees and advances TXGs so autotrim=on punches
-// freed blocks out of sparse ZFS backing storage without initializing
-// untouched metaslabs.
-func Trim(ctx context.Context, dir string) (TrimResult, error) {
-	if os.Geteuid() != 0 {
-		return TrimResult{}, api.Errorf(api.CodeInvalidArgs, "trimming ZFS storage requires root").
-			WithSuggestion("run with sudo: sudo hotbed worker trim")
-	}
-	baseDir, err := ResolveDir(dir)
-	if err != nil {
-		return TrimResult{}, err
-	}
-	meta, _, err := loadLinuxMeta(baseDir, true)
-	if err != nil {
-		return TrimResult{}, err
-	}
-	if meta.PoolName == "" {
-		return TrimResult{}, api.Errorf(api.CodeInvalidArgs, "worker storage (%s) is not a managed sparse ZFS pool", meta.StorageMode)
-	}
-	var beforeStat DiskStat
-	if meta.ImagePath != "" {
-		beforeStat, err = FileDiskStat("zfs", meta.ImagePath, meta.DiskSize)
-		if err != nil {
-			return TrimResult{}, err
-		}
-	}
-	// Wait for async frees and advance past ZFS's 2-TXG deferred-free window so
-	// autotrim=on punches freed holes out without initializing untouched metaslabs.
-	_, _ = runCmd(ctx, "zpool", "wait", "-t", "free", meta.PoolName)
-	for range 4 {
-		if _, err := runCmd(ctx, "zpool", "sync", meta.PoolName); err != nil {
-			return TrimResult{}, err
-		}
-	}
-	if meta.ImagePath == "" {
-		return TrimResult{Dir: baseDir}, nil
-	}
-	afterStat, err := FileDiskStat("zfs", meta.ImagePath, meta.DiskSize)
-	if err != nil {
-		return TrimResult{}, err
-	}
-	return TrimResult{
-		Dir:            baseDir,
-		BeforeBytes:    beforeStat.AllocatedBytes,
-		AfterBytes:     afterStat.AllocatedBytes,
-		ReclaimedBytes: max(0, beforeStat.AllocatedBytes-afterStat.AllocatedBytes),
-		Disks:          []DiskStat{afterStat},
-	}, nil
-}
-
-// Destroy stops the Linux worker service, removes its systemd units, and
-// deletes its sparse ZFS pool/image and state directory.
+// Destroy stops the Linux worker service, removes its systemd unit, and
+// deletes its state directory.
 func Destroy(ctx context.Context, o DestroyOptions) (DestroyResult, error) {
 	if os.Geteuid() != 0 {
 		return DestroyResult{}, api.Errorf(api.CodeInvalidArgs, "destroying a Linux worker requires root").
@@ -1456,51 +770,11 @@ func destroyLinuxWorker(
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return DestroyResult{}, fmt.Errorf("remove unit %s: %w", unitPath, err)
 		}
-	}
-	if meta.TrimTimer != "" {
-		timerPath := filepath.Join(unitDir, meta.TrimTimer)
-		_, statErr := os.Lstat(timerPath)
-		if statErr == nil || isSystemdActiveWith(ctx, run, meta.TrimTimer) {
-			if _, err := run(ctx, "systemctl", "disable", "--now", meta.TrimTimer); err != nil {
-				return DestroyResult{}, fmt.Errorf("disable trim timer %s: %w", meta.TrimTimer, err)
-			}
-		}
-		unitNames := []string{meta.TrimTimer}
-		if linuxTrimService != meta.TrimTimer {
-			unitNames = append(unitNames, linuxTrimService)
-		}
-		for _, name := range unitNames {
-			p := filepath.Join(unitDir, name)
-			if err := os.Remove(p); err == nil {
-				removed = append(removed, p)
-			} else if !errors.Is(err, fs.ErrNotExist) {
-				return DestroyResult{}, fmt.Errorf("remove unit %s: %w", p, err)
-			}
-		}
-	}
-	if meta.ServiceName != "" || meta.TrimTimer != "" {
 		if _, err := run(ctx, "systemctl", "daemon-reload"); err != nil {
 			return DestroyResult{}, fmt.Errorf("reload systemd: %w", err)
 		}
 	}
 
-	if (meta.StorageMode == "zfs-file" || meta.StorageMode == "zfs-device") && meta.PoolName != "" {
-		if zpoolExistsWith(ctx, run, meta.PoolName) {
-			if _, err := run(ctx, "zpool", "destroy", "-f", meta.PoolName); err != nil {
-				return DestroyResult{}, fmt.Errorf("destroy ZFS pool %s: %w", meta.PoolName, err)
-			}
-			removed = append(removed, "zpool:"+meta.PoolName)
-		}
-		if meta.StorageMode == "zfs-file" && meta.ImagePath != "" {
-			didRemove, err := removeAnchoredTarget(baseDir, meta.ImagePath, true)
-			if err != nil {
-				return DestroyResult{}, err
-			}
-			if didRemove {
-				removed = append(removed, meta.ImagePath)
-			}
-		}
-	}
 	if meta.StateDir != "" && isStrictSubpath(baseDir, meta.StateDir) {
 		didRemove, err := removeAnchoredTarget(baseDir, meta.StateDir, false)
 		if err != nil {
@@ -1653,15 +927,6 @@ func removeAnchoredTarget(baseDir, target string, expectRegular bool) (bool, err
 		return false, fmt.Errorf("remove %s: %w", target, err)
 	}
 	return true, nil
-}
-
-func zpoolExists(ctx context.Context, name string) bool {
-	return zpoolExistsWith(ctx, runCmd, name)
-}
-
-func zpoolExistsWith(ctx context.Context, run func(context.Context, string, ...string) (string, error), name string) bool {
-	_, err := run(ctx, "zpool", "list", "-H", "-o", "name", name)
-	return err == nil
 }
 
 func isSystemdActive(ctx context.Context, unit string) bool {

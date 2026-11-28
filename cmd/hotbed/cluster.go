@@ -167,10 +167,9 @@ func (f controllerClient) clients(hc *http.Client) (clients, error) {
 
 type joinCmd struct {
 	Controller     string   `arg:"" help:"The controller's HTTPS URL."`
-	Dir            string   `arg:"" type:"path" help:"State directory to create, on btrfs or zfs; volumes live under it."`
+	Dir            string   `arg:"" type:"path" help:"State directory to create."`
 	User           string   `required:"" help:"User every command runs as."`
 	Token          string   `env:"HOTBED_TOKEN" help:"Bearer token for authenticating to a remote HTTPS controller."`
-	ZFSDataset     string   `name:"zfs-dataset" help:"ZFS dataset for volumes, when the directory is on zfs (default <pool>/hotbed)."`
 	UnitProperties []string `name:"unit-property" help:"systemd property every command gets, such as AmbientCapabilities=CAP_SYS_ADMIN or DeviceAllow=/dev/kvm. Repeatable."`
 	Slice          string   `help:"systemd slice commands run in (default hotbed.slice). user-hotbed.slice puts them in user.slice, sharing its memory limit; hotbed admits and parks against the fullest limit above them."`
 }
@@ -181,7 +180,7 @@ func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 		token = controllerAuthToken(d.getenv, c.Controller)
 	}
 	return worker.Join(ctx, worker.JoinOptions{
-		Dir: c.Dir, Controller: c.Controller, User: c.User, Token: token, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,
+		Dir: c.Dir, Controller: c.Controller, User: c.User, Token: token, UnitProperties: c.UnitProperties, Slice: c.Slice,
 	}, d.http, d.check)
 }
 

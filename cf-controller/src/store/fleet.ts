@@ -136,7 +136,6 @@ export class FleetStore {
 			node.profiler = hb.profiler;
 			node.daemonLogs = hb.daemonLogs;
 			node.admission = hb.admission;
-			node.storageError = hb.storageError;
 			node.objectStore = hb.objectStore;
 		}
 		return { node, hb };

@@ -7,23 +7,13 @@ import (
 )
 
 // SystemdWorkerUnit renders the systemd unit file for hotbed-worker.service.
-// A worker whose state directory is on ZFS (zfs) starts once ZFS mounted it.
-// When zfsImportPre is non-empty (file-backed ZFS pool on Linux), it runs as
-// ExecStartPre so the pool imports before hotbed serve starts.
-func SystemdWorkerUnit(binaryPath, stateDir string, zfs bool, zfsImportPre string) string {
-	deps := "network-online.target"
-	if zfs {
-		deps += " zfs-mount.service"
-	}
+func SystemdWorkerUnit(binaryPath, stateDir string) string {
 	var b strings.Builder
 	b.WriteString("[Unit]\n")
 	b.WriteString("Description=hotbed worker\n")
-	fmt.Fprintf(&b, "After=%s\n", deps)
-	fmt.Fprintf(&b, "Wants=%s\n\n", deps)
+	b.WriteString("After=network-online.target\n")
+	b.WriteString("Wants=network-online.target\n\n")
 	b.WriteString("[Service]\n")
-	if zfsImportPre != "" {
-		fmt.Fprintf(&b, "ExecStartPre=-%s\n", zfsImportPre)
-	}
 	fmt.Fprintf(&b, "ExecStart=%s serve %s\n", systemdQuote(binaryPath), systemdQuote(stateDir))
 	b.WriteString("Restart=on-failure\n")
 	b.WriteString("RestartSec=5\n")
@@ -31,32 +21,6 @@ func SystemdWorkerUnit(binaryPath, stateDir string, zfs bool, zfsImportPre strin
 	b.WriteString("[Install]\n")
 	b.WriteString("WantedBy=multi-user.target\n")
 	return b.String()
-}
-
-// SystemdTrimUnits renders the periodic trim service and timer that flushes
-// ZFS async/deferred frees so autotrim=on punches freed extents out of sparse
-// backing files / disk images without initializing untouched metaslabs.
-func SystemdTrimUnits(poolName string) (service, timer string) {
-	cmd := fmt.Sprintf("zpool wait -t free %[1]s || true; zpool sync %[1]s || true; zpool sync %[1]s || true; zpool sync %[1]s || true", poolName)
-	service = fmt.Sprintf(`[Unit]
-Description=Reclaim free space from hotbed sparse storage
-
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c '%s'
-`, cmd)
-	timer = `[Unit]
-Description=Periodically trim hotbed sparse storage
-
-[Timer]
-OnBootSec=15m
-OnUnitActiveSec=1h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-`
-	return service, timer
 }
 
 // launchAgentExitTimeout is how many seconds launchd gives hotbed's daemon
@@ -104,16 +68,11 @@ func systemdQuote(s string) string {
 }
 
 // LinuxSetupMeta is persisted in root-owned /etc/hotbed/worker-*.json on Linux
-// so status, start, stop, trim and destroy know how the worker was configured.
+// so status, start, stop, and destroy know how the worker was configured.
 type LinuxSetupMeta struct {
 	StateDir    string `json:"stateDir"`
 	User        string `json:"user"`
 	Controller  string `json:"controller"`
-	StorageMode string `json:"storageMode"` // "btrfs", "zfs", "zfs-file", "zfs-device"
-	PoolName    string `json:"poolName,omitempty"`
-	ImagePath   string `json:"imagePath,omitempty"`
-	ZFSDevice   string `json:"zfsDevice,omitempty"`
-	DiskSize    int64  `json:"diskSize,omitempty"`
+	StorageMode string `json:"storageMode,omitempty"` // "cladefs"
 	ServiceName string `json:"serviceName"`
-	TrimTimer   string `json:"trimTimer,omitempty"`
 }

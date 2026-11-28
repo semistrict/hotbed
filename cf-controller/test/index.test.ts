@@ -1331,7 +1331,6 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 				id,
 				hostname,
 				online: true,
-				storageError: "",
 			} as never,
 			online: true,
 			bases: [],

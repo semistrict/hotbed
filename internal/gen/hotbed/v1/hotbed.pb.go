@@ -2932,10 +2932,6 @@ type Node struct {
 	DaemonLogs *DaemonLogSource `protobuf:"bytes,15,opt,name=daemon_logs,json=daemonLogs,proto3" json:"daemon_logs,omitempty"`
 	// How it decides whether to start new work, as of its last heartbeat.
 	Admission *Admission `protobuf:"bytes,16,opt,name=admission,proto3" json:"admission,omitempty"`
-	// Why the worker cannot open its storage (a ZFS pool not imported, its
-	// disk missing), as of its last heartbeat: it waits for it and serves
-	// nothing meanwhile, so it is not online. Empty when its storage is open.
-	StorageError string `protobuf:"bytes,19,opt,name=storage_error,json=storageError,proto3" json:"storage_error,omitempty"`
 	// Live cladefsd object-store (R2) counters when this node runs cladefsd.
 	ObjectStore   *ObjectStoreStats `protobuf:"bytes,20,opt,name=object_store,json=objectStore,proto3" json:"object_store,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -3082,13 +3078,6 @@ func (x *Node) GetAdmission() *Admission {
 		return x.Admission
 	}
 	return nil
-}
-
-func (x *Node) GetStorageError() string {
-	if x != nil {
-		return x.StorageError
-	}
-	return ""
 }
 
 func (x *Node) GetObjectStore() *ObjectStoreStats {
@@ -6770,7 +6759,7 @@ type Base struct {
 	PrepSeconds float64 `protobuf:"fixed64,28,opt,name=prep_seconds,json=prepSeconds,proto3" json:"prep_seconds,omitempty"`
 	// Time spent in git clone/fetch/checkout/submodule inside the freshen script.
 	GitSeconds float64 `protobuf:"fixed64,29,opt,name=git_seconds,json=gitSeconds,proto3" json:"git_seconds,omitempty"`
-	// Post-script finalization time (VM stop, FUSE detach, ZFS snapshot, R2 sync).
+	// Post-script finalization time (VM stop, cell snapshot, R2 sync).
 	FinalizeSeconds float64 `protobuf:"fixed64,30,opt,name=finalize_seconds,json=finalizeSeconds,proto3" json:"finalize_seconds,omitempty"`
 	// Currently running setup step name while building.
 	CurrentStep string `protobuf:"bytes,31,opt,name=current_step,json=currentStep,proto3" json:"current_step,omitempty"`
@@ -16728,10 +16717,6 @@ type HeartbeatRequest struct {
 	// Summary and rotation state of the worker's WARN/ERROR slog daemon logs.
 	DaemonLogs *DaemonLogSource `protobuf:"bytes,14,opt,name=daemon_logs,json=daemonLogs,proto3" json:"daemon_logs,omitempty"`
 	Admission  *Admission       `protobuf:"bytes,15,opt,name=admission,proto3" json:"admission,omitempty"`
-	// Set while the worker cannot open its storage: why. It heartbeats with
-	// this alone (and its resources' arch, CPUs and version, to follow the
-	// controller's build) until its storage opens.
-	StorageError string `protobuf:"bytes,16,opt,name=storage_error,json=storageError,proto3" json:"storage_error,omitempty"`
 	// This worker's cladefsd peer mTLS address (HOST:PORT) for LAN GetPart.
 	CladefsPeerAddr string `protobuf:"bytes,17,opt,name=cladefs_peer_addr,json=cladefsPeerAddr,proto3" json:"cladefs_peer_addr,omitempty"`
 	// This worker's cladefsd ephemeral host incarnation (for DecommissionHost).
@@ -16881,13 +16866,6 @@ func (x *HeartbeatRequest) GetAdmission() *Admission {
 		return x.Admission
 	}
 	return nil
-}
-
-func (x *HeartbeatRequest) GetStorageError() string {
-	if x != nil {
-		return x.StorageError
-	}
-	return ""
 }
 
 func (x *HeartbeatRequest) GetCladefsPeerAddr() string {
@@ -40024,7 +40002,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vother_bytes\x18\x03 \x01(\x03R\n" +
 	"otherBytes\x12\x1d\n" +
 	"\n" +
-	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\xf2\x05\n" +
+	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\xe2\x05\n" +
 	"\x04Node\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x14\n" +
@@ -40045,12 +40023,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\bprofiler\x18\x0e \x01(\v2\x19.hotbed.v1.ProfilerStatusR\bprofiler\x12;\n" +
 	"\vdaemon_logs\x18\x0f \x01(\v2\x1a.hotbed.v1.DaemonLogSourceR\n" +
 	"daemonLogs\x122\n" +
-	"\tadmission\x18\x10 \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12#\n" +
-	"\rstorage_error\x18\x13 \x01(\tR\fstorageError\x12>\n" +
+	"\tadmission\x18\x10 \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12>\n" +
 	"\fobject_store\x18\x14 \x01(\v2\x1b.hotbed.v1.ObjectStoreStatsR\vobjectStoreB\f\n" +
 	"\n" +
-	"_last_seenJ\x04\b\x11\x10\x12J\x04\b\x12\x10\x13R\x06asleepR\n" +
-	"host_usage\"\xc6\x14\n" +
+	"_last_seenJ\x04\b\x11\x10\x12J\x04\b\x12\x10\x13J\x04\b\x13\x10\x14R\x06asleepR\n" +
+	"host_usageR\rstorage_error\"\xc6\x14\n" +
 	"\x10ObjectStoreStats\x12%\n" +
 	"\x0euploaded_bytes\x18\x01 \x01(\x04R\ruploadedBytes\x126\n" +
 	"\x17uploaded_segments_bytes\x18\x02 \x01(\x04R\x15uploadedSegmentsBytes\x124\n" +
@@ -41427,7 +41404,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x0eWorkspaceUsage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fexclusive_bytes\x18\x02 \x01(\x03R\x0eexclusiveBytes\x12!\n" +
-	"\fshared_bytes\x18\x03 \x01(\x03R\vsharedBytes\"\xfb\a\n" +
+	"\fshared_bytes\x18\x03 \x01(\x03R\vsharedBytes\"\xeb\a\n" +
 	"\x10HeartbeatRequest\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x122\n" +
@@ -41449,14 +41426,13 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\bprofiler\x18\r \x01(\v2\x19.hotbed.v1.ProfilerStatusR\bprofiler\x12;\n" +
 	"\vdaemon_logs\x18\x0e \x01(\v2\x1a.hotbed.v1.DaemonLogSourceR\n" +
 	"daemonLogs\x122\n" +
-	"\tadmission\x18\x0f \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12#\n" +
-	"\rstorage_error\x18\x10 \x01(\tR\fstorageError\x12*\n" +
+	"\tadmission\x18\x0f \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12*\n" +
 	"\x11cladefs_peer_addr\x18\x11 \x01(\tR\x0fcladefsPeerAddr\x12/\n" +
 	"\x13cladefs_incarnation\x18\x12 \x01(\x04R\x12cladefsIncarnation\x12>\n" +
 	"\fobject_store\x18\x14 \x01(\v2\x1b.hotbed.v1.ObjectStoreStatsR\vobjectStore\x124\n" +
 	"\n" +
 	"held_bases\x18\x15 \x03(\v2\x15.hotbed.v1.SharedBaseR\theldBases\x12;\n" +
-	"\rretired_bases\x18\x16 \x03(\v2\x16.hotbed.v1.CladefsCellR\fretiredBasesJ\x04\b\x13\x10\x14R\fshared_bases\"\x8b\x03\n" +
+	"\rretired_bases\x18\x16 \x03(\v2\x16.hotbed.v1.CladefsCellR\fretiredBasesJ\x04\b\x13\x10\x14J\x04\b\x10\x10\x11R\fshared_basesR\rstorage_error\"\x8b\x03\n" +
 	"\x11HeartbeatResponse\x124\n" +
 	"\bprojects\x18\x04 \x03(\v2\x18.hotbed.v1.HostedProjectR\bprojects\x12\x18\n" +
 	"\arelease\x18\x02 \x03(\tR\arelease\x12&\n" +
@@ -43976,14 +43952,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	" BOARD_SCHEDULE_STATE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cBOARD_SCHEDULE_STATE_PENDING\x10\x01\x12\x1d\n" +
 	"\x19BOARD_SCHEDULE_STATE_DONE\x10\x02\x12!\n" +
-	"\x1dBOARD_SCHEDULE_STATE_CANCELED\x10\x032\xd0;\n" +
+	"\x1dBOARD_SCHEDULE_STATE_CANCELED\x10\x032\x82;\n" +
 	"\x0eClusterService\x127\n" +
 	"\x04Join\x12\x16.hotbed.v1.JoinRequest\x1a\x17.hotbed.v1.JoinResponse\x12I\n" +
 	"\n" +
 	"PushEvents\x12\x1c.hotbed.v1.PushEventsRequest\x1a\x1d.hotbed.v1.PushEventsResponse\x12F\n" +
-	"\tHeartbeat\x12\x1b.hotbed.v1.HeartbeatRequest\x1a\x1c.hotbed.v1.HeartbeatResponse\x12\xd6\x02\n" +
-	"\tListNodes\x12\x1b.hotbed.v1.ListNodesRequest\x1a\x1c.hotbed.v1.ListNodesResponse\"\x8d\x02\x82\xb5\x18\x85\x02\n" +
-	"\x05nodesP\x01b\xf9\x01{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n" +
+	"\tHeartbeat\x12\x1b.hotbed.v1.HeartbeatRequest\x1a\x1c.hotbed.v1.HeartbeatResponse\x12\x88\x02\n" +
+	"\tListNodes\x12\x1b.hotbed.v1.ListNodesRequest\x1a\x1c.hotbed.v1.ListNodesResponse\"\xbf\x01\x82\xb5\x18\xb7\x01\n" +
+	"\x05nodesP\x01b\xab\x01{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .online}}  online{{else}}  offline{{end}}\n" +
 	"{{end}}\x90\x02\x02\x12=\n" +
 	"\bGetBuild\x12\x1a.hotbed.v1.GetBuildRequest\x1a\x10.hotbed.v1.Build\"\x03\x90\x02\x02\x12\x8c\x01\n" +
 	"\tListRepos\x12\x1b.hotbed.v1.ListReposRequest\x1a\x1c.hotbed.v1.ListReposResponse\"D\x82\xb5\x18=\n" +

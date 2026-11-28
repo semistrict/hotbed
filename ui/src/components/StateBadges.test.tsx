@@ -4,24 +4,14 @@ import { CommandState, RunOutcome } from "../api";
 import { BuildingBadge, OnlineBadge, OutcomeBadge, StateBadge } from "./StateBadges";
 
 describe("OnlineBadge", () => {
-  it("names a node whose worker cannot open its storage, with the reason (board 9141)", () => {
-    const html = renderToStaticMarkup(<OnlineBadge online={false} storageError="ZFS pool not imported: pool hotbed" />);
-    expect(html).toContain('title="ZFS pool not imported: pool hotbed"');
-    expect(html).toContain("no storage");
-    expect(html).toContain("text-serious-ink");
-    expect(html).not.toContain("offline");
-  });
-
-  it("says offline for a node gone quiet without a storage error", () => {
+  it("says offline when offline", () => {
     const html = renderToStaticMarkup(<OnlineBadge online={false} />);
     expect(html).toContain("offline");
-    expect(html).not.toContain("no storage");
   });
 
-  it("says online when online, whatever an old storage error said", () => {
-    const html = renderToStaticMarkup(<OnlineBadge online={true} storageError="stale" />);
+  it("says online when online", () => {
+    const html = renderToStaticMarkup(<OnlineBadge online={true} />);
     expect(html).toContain("online");
-    expect(html).not.toContain("no storage");
   });
 
   it("renders as a plain non-interactive span without ghost badge hover classes", () => {

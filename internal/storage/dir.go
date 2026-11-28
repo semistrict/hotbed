@@ -4,18 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
 
-func ensureDir(dir string) error { return os.MkdirAll(dir, 0o755) }
-
 // NewDir is the store of a worker whose workspaces are all VMs' cladefs
-// cells, in state directory dir on whatever filesystem dir is on (ext4 and
-// xfs as well as btrfs and zfs): it keeps no volumes, so it needs no
-// copy-on-write filesystem.
+// cells, in state directory dir on any filesystem: it keeps no local volumes.
 func NewDir(dir string) Store { return NoVolumes{Root: filepath.Join(dir, "volumes")} }
 
 // ErrNoVolumes is a NoVolumes store's answer to making a volume.

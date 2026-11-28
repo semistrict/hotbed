@@ -112,13 +112,10 @@ jobs:
           set -euo pipefail
           tmp=$(mktemp -d)
           trap 'rm -rf "$tmp"' EXIT
-          for pkg in storage unit worker; do
+          for pkg in unit worker; do
             CGO_ENABLED=0 go test -tags systemdtest -c -o "$tmp/hotbed-${pkg}.test" "./internal/${pkg}"
             sudo install -m 0755 "$tmp/hotbed-${pkg}.test" "/usr/local/bin/hotbed-${pkg}.test"
           done
-      - name: Test storage (root)
-        working-directory: internal/storage
-        run: sudo env TMPDIR=/tmp /usr/local/bin/hotbed-storage.test -test.v -test.count=1
       - name: Test unit (root)
         working-directory: internal/unit
         run: sudo env TMPDIR=/tmp HOTBED_TEST_USER="$USER" HOTBED_TEST_DISK="$HOTBED_TEST_DISK" /usr/local/bin/hotbed-unit.test -test.v -test.count=1

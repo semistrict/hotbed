@@ -18,12 +18,12 @@ vi.mock("@tanstack/react-router", () => ({
 import { NodeCard, NodeTable } from "./Nodes";
 
 describe("Nodes cladefs stats rendering", () => {
-  it("shows cladefs disk, part cache, extent cache, R2, and DAX stats on VM nodes instead of zfs", () => {
+  it("shows cladefs disk, part cache, extent cache, R2, and DAX stats on VM nodes", () => {
     const n = create(NodeSchema, {
       id: "n1",
       hostname: "ubu1",
       online: true,
-      storage: "zfs",
+      storage: "local-disk",
       diskBytes: 2_000_000_000_000n,
       disk: create(DiskUsageSchema, { freeBytes: 1_500_000_000_000n }),
       resources: create(ResourcesSchema, { arch: "amd64", cpus: 32, memoryBytes: 64n * 1024n ** 3n }),
@@ -56,7 +56,7 @@ describe("Nodes cladefs stats rendering", () => {
     expect(cardHtml).toContain("90% local");
     expect(cardHtml).toContain("2 VMs · 512 MiB DAX");
     expect(cardHtml).toContain("peers ↓120 ↑45");
-    expect(cardHtml).not.toContain(">zfs<");
+    expect(cardHtml).not.toContain(">local-disk<");
 
     const tableHtml = renderToStaticMarkup(<NodeTable s={s} />);
     expect(tableHtml).toContain("part cache");
@@ -68,12 +68,12 @@ describe("Nodes cladefs stats rendering", () => {
     expect(tableHtml).toContain("sticky left-0 z-10 bg-card");
   });
 
-  it("shows page cache and FUSE cells on host-FUSE cladefs nodes instead of btrfs", () => {
+  it("shows page cache and FUSE cells when cladefs objectStore reports them", () => {
     const n = create(NodeSchema, {
       id: "n2",
       hostname: "asahimbp",
       online: true,
-      storage: "btrfs",
+      storage: "local-disk",
       diskBytes: 400_000_000_000n,
       disk: create(DiskUsageSchema, { freeBytes: 70_000_000_000n }),
       resources: create(ResourcesSchema, { arch: "arm64", cpus: 10, memoryBytes: 32n * 1024n ** 3n }),
@@ -97,15 +97,15 @@ describe("Nodes cladefs stats rendering", () => {
     expect(cardHtml).toContain("page cache");
     expect(cardHtml).toContain("4 MiB dirty");
     expect(cardHtml).toContain("3 FUSE cells");
-    expect(cardHtml).not.toContain(">btrfs<");
+    expect(cardHtml).not.toContain(">local-disk<");
   });
 
-  it("keeps legacy storage bar when a node has no cladefs objectStore telemetry", () => {
+  it("falls back to disk storage bar when a node has no cladefs objectStore telemetry", () => {
     const n = create(NodeSchema, {
       id: "n3",
-      hostname: "legacy",
+      hostname: "minimal",
       online: true,
-      storage: "zfs",
+      storage: "cladefs",
       diskBytes: 500n * 1024n ** 3n,
       disk: create(DiskUsageSchema, { freeBytes: 250n * 1024n ** 3n }),
       resources: create(ResourcesSchema, { arch: "amd64", cpus: 8, memoryBytes: 16n * 1024n ** 3n }),
@@ -113,7 +113,7 @@ describe("Nodes cladefs stats rendering", () => {
     });
     const s = create(SnapshotSchema, { now: 100_000n, nodes: [n] });
     const cardHtml = renderToStaticMarkup(<NodeCard n={n} s={s} color="#fff" now={100_000} delay={0} />);
-    expect(cardHtml).toContain(">zfs<");
+    expect(cardHtml).toContain(">cladefs<");
     expect(cardHtml).toContain("250 GiB free of 500 GiB");
   });
 });

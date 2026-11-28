@@ -184,16 +184,9 @@ so the reviewer can read it and git keeps it.
 
 ## Storage
 
-`internal/storage` is the abstraction: named writable **volumes**, read-only **snapshots** of
-them, and writable **clones** of snapshots, each O(1) and sharing blocks. Backends:
-
-- **btrfs**: volumes and clones are subvolumes, snapshots are read-only subvolumes.
-- **zfs**: volumes and clones are datasets, snapshots are `dataset@name`. Deleting a dataset whose
-  snapshot still has clones first promotes one of them.
-
-hotbed never changes a filesystem's configuration (no pools, quotas or mount options). The backend
-is detected from the state directory's filesystem; a ZFS worker keeps its datasets under
-`<pool>/hotbed`, mounted inside the state directory.
+Every workspace and project base is a **cladefs** Fxfs cell run inside a VM (Firecracker microVMs on
+Linux via `cladefsd`, or `machined` on macOS). Workers keep no local ZFS or btrfs volumes: their
+state directory works on any host filesystem (`internal/storage.NewDir`).
 
 ## Bases and workspaces
 
@@ -451,16 +444,14 @@ fxjob-isolate, which did it for fxjob before hotbed replaced it.
   run. A VM that can't be booted so (more vCPUs than CPUs, a VMM that can't pin) fails before
   it starts. cladefsd, which serves its disk, stays a host daemon on the other CPUs.
 - **Quiet disks.** Other commands may write at most a bound (`workWriteMB` in the bench config,
-  8 MB/s by default) to each disk or pool it uses. On a block device (the scratch disk, a btrfs
-  store's disk) the work slice's `io.max` caps them. A ZFS pool is written by ZFS's own threads,
-  which no cgroup cap reaches, so the worker reads each dataset's writes (its objset kstat) every
-  step and holds (parks) the commands of volumes writing past half the bound, just before the
-  measurement starts and while it runs. The VMs' disks are the same: cladefsd writes them for
-  every VM, so the worker reads what each VM's guest says it wrote (cladefsd's `GetStats`,
-  `device_write_bytes`) and holds (freezes in its guest) the loud ones' commands. Asking costs
-  every VM a little, so it is asked only while a measurement waits or runs, and a measurement
-  starts once two samples name the writers. Queued commands of other volumes wait for it to end.
-  The pool is synced before it starts. Held commands thaw once it ends.
+  8 MB/s by default) to each disk it uses. On a block device (the scratch disk) the work slice's
+  `io.max` caps them. On the VMs' disks, cladefsd writes from its own threads where no cgroup cap
+  reaches, so the worker reads what each VM's guest says it wrote (cladefsd's `GetStats`,
+  `device_write_bytes`) and holds (freezes in its guest) the loud ones' commands past half the
+  bound, just before the measurement starts and while it runs. Asking costs every VM a little, so
+  it is asked only while a measurement waits or runs, and a measurement starts once two samples
+  name the writers. Queued commands of other volumes wait for it to end. Held commands thaw once
+  it ends.
 - **Nothing in its way.** It never swaps (`MemorySwapMax=0`), is never parked, and runs in its own
   sibling slice at normal CPU and IO priority (nice 0, default IO class).
 - **Checked.** Its isolation is checked every second and as it ends: a measurement whose

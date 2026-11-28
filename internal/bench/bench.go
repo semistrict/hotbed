@@ -24,9 +24,8 @@
 //     Refused where a clock is shared with a measurement CPU (a cluster's,
 //     on Apple Silicon).
 //   - Disks (quiet.go): other work's writes to the scratch disk and to the
-//     disk or pool the node's volumes are on, and the VMs' disks, kept
-//     under Config.WorkWriteMB, capped by the kernel on a block device
-//     (io.max), held back by the worker on a ZFS pool or the VMs' disks,
+//     VMs' disks, kept under Config.WorkWriteMB, capped by the kernel on a
+//     block device (io.max), held back by the worker on the VMs' disks,
 //     which no cgroup's cap reaches, and checked.
 package bench
 
@@ -66,7 +65,7 @@ type Config struct {
 	// scratch disk): other work's IO on it is capped while one runs.
 	Disk string `json:"disk,omitempty"`
 	// WorkWriteMB is the most other work may write, in MB/s, to each disk
-	// or pool a measurement uses while it runs; 0 for DefaultWorkWriteMB.
+	// a measurement uses while it runs; 0 for DefaultWorkWriteMB.
 	WorkWriteMB int `json:"workWriteMB,omitempty"`
 }
 
@@ -89,7 +88,7 @@ func (i *Isolation) workIO() map[string]string {
 	}
 }
 
-// writeBound is what other work may write to each disk or pool, in bytes
+// writeBound is what other work may write to each disk, in bytes
 // a second.
 func (i *Isolation) writeBound() int64 {
 	mb := i.cfg.WorkWriteMB
@@ -115,25 +114,14 @@ type Options struct {
 	Slice     string // the measurement's slice
 	WorkSlice string // every other command's slice, whose IO is capped
 	Systemd   Systemd
-	// StoreDisk is a path on the block device the node's volumes are on,
-	// capped like the scratch disk (btrfs's); "" where they are on ZFS.
-	StoreDisk string
-	// Pool is the ZFS dataset the node's volumes are under (rpool/hotbed),
-	// whose writers the worker holds back (Loud); "" where they are not on
-	// ZFS. ZFS writes a pool from threads of its own, which no cgroup's IO
-	// cap reaches.
-	Pool string
-	// Writes reads what each volume (ws/3f2a01) has written so far where
-	// neither a cgroup's IO cap nor the pool's kstats see it: to the VMs'
-	// disks, which cladefsd writes for every VM. The worker holds the loud
-	// ones back as it does the pool's (Loud). It asks every VM, so Sample
-	// reads it only while a measurement waits or runs. Nil for none, and
-	// WritesTo names where they go, for people ("" for the VMs' disks).
+	// Writes reads what each volume (ws/3f2a01) has written so far to the
+	// VMs' disks, which cladefsd writes for every VM (no cgroup's IO cap
+	// reaches it). The worker holds the loud ones back (Loud). It asks
+	// every VM, so Sample reads it only while a measurement waits or runs.
+	// Nil for none, and WritesTo names where they go, for people ("" for
+	// the VMs' disks).
 	Writes   func() (map[string]int64, error)
 	WritesTo string
-	// SyncPool writes out what was written to a pool so far (zpool sync);
-	// nil for zpool's own.
-	SyncPool func(ctx context.Context, pool string) error
 	// Now is the time; nil for the clock's.
 	Now func() time.Time
 	// Mount mounts resctrl at target, and Mkdir and Rmdir make and remove a
@@ -198,9 +186,6 @@ func (o Options) defaults() Options {
 	}
 	if o.Rmdir == nil {
 		o.Rmdir = os.Remove
-	}
-	if o.SyncPool == nil {
-		o.SyncPool = syncPool
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -357,13 +342,6 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 			return err
 		}
 	}
-	if i.o.Pool != "" {
-		// What writers held back just now left in memory goes to disk
-		// before the measurement starts, not beside it.
-		if err := i.o.SyncPool(ctx, poolOf(i.o.Pool)); err != nil {
-			return err
-		}
-	}
 	i.mu.Lock()
 	i.since = i.o.Now()
 	i.mu.Unlock()
@@ -371,15 +349,12 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 }
 
 // disks is the paths on the block devices On caps work's IO on: the
-// scratch disk's and the store's.
+// scratch disk's.
 func (i *Isolation) disks() []string {
-	var out []string
-	for _, d := range []string{i.cfg.Disk, i.o.StoreDisk} {
-		if d != "" && !slices.Contains(out, d) {
-			out = append(out, d)
-		}
+	if i.cfg.Disk == "" {
+		return nil
 	}
-	return out
+	return []string{i.cfg.Disk}
 }
 
 // Off gives back what On took, where it took it (the slices and disk it

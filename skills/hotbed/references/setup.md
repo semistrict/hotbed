@@ -14,8 +14,8 @@ hotbed login https://CONTROLLER
 # A join token (hbj_...) comes from the cockpit's Organization page ("Mint join token").
 # Each worker (single command, sets up in ~/.hotbed; token via --token or HOTBED_TOKEN, or
 # taken from your hotbed login when you are signed in):
-# - Linux: reuses btrfs/zfs if ~/.hotbed is on one, else creates a sparse file-backed ZFS pool
-#   with autotrim=on, joins the cluster, and installs/starts hotbed-worker.service.
+# - Linux: joins the cluster in ~/.hotbed/worker (any filesystem; workspaces run in Firecracker
+#   microVMs on cladefs) and installs/starts hotbed-worker.service.
 sudo hotbed worker init https://CONTROLLER --token hbj_...
 # - macOS (Apple silicon): the worker runs natively, as you, in ~/.hotbed/worker, every
 #   workspace a VM of machined's (cladefs's VMM on Hypervisor.framework), one per workspace,
@@ -26,10 +26,9 @@ sudo hotbed worker init https://CONTROLLER --token hbj_...
 hotbed worker init https://CONTROLLER --token hbj_...
 #   hotbed worker status | start | stop | destroy
 
-# Or manually on Linux (as root; the directory on btrfs or zfs):
+# Or manually on Linux (as root):
 sudo hotbed join https://CONTROLLER /var/lib/hotbed --user you --token hbj_...
 sudo hotbed serve /var/lib/hotbed       # runs the worker; it exchanges the join token for its own hbw_ token
-#   --zfs-dataset pool/hotbed     where zfs volumes go (default <pool>/hotbed)
 #   --unit-property DeviceAllow=/dev/kvm  grant what builds need, repeatable
 
 # Client commands call the controller you signed in to (or HOTBED_CONTROLLER=https://CONTROLLER;

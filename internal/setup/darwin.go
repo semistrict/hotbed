@@ -27,9 +27,6 @@ import (
 // <dir>/worker whose every workspace is a VM of machined's. hotbed's daemon
 // (hotbed daemon install) runs the worker and machined.
 func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) (Result, error) {
-	if o.ZFSDevice != "" || o.ZFSDataset != "" || o.ZFSARCMax != 0 {
-		return Result{}, api.Errorf(api.CodeInvalidArgs, "a macOS worker keeps its workspaces in machined's cladefs cells, not ZFS: --zfs-* are for Linux workers")
-	}
 	if o.Slice != "" || len(o.UnitProperties) > 0 {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "--slice and --unit-property are systemd's: a macOS worker runs every command in a VM")
 	}
@@ -173,12 +170,6 @@ func setRunning(ctx context.Context, dir string, on bool) (Status, error) {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
-}
-
-// Trim has nothing to trim on a Mac: it has no disk images, machined's
-// cladefs daemon frees its own space.
-func Trim(context.Context, string) (TrimResult, error) {
-	return TrimResult{}, api.Errorf(api.CodePlatformNotSupported, "a macOS worker has no sparse disk images to trim: its cells' space is machined's cladefs daemon's to free")
 }
 
 // Destroy stops the Mac's worker and machined and removes them: the worker's

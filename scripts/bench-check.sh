@@ -18,7 +18,7 @@
 #   - a measurement whose isolation is broken mid-run (its slice's parent made to hand it one
 #     CPU fewer) fails, saying it lost its isolation;
 #   - a writer in another session's workspace is kept quiet beside a measurement: held (parked)
-#     where no cap reaches it (a ZFS pool, the VMs' disks), capped elsewhere; the measurement
+#     where no cap reaches it (the VMs' disks), capped elsewhere; the measurement
 #     holds and succeeds, and the writer goes on after;
 #   - after each, the node is given back: work on every CPU, workqueues too, IO uncapped,
 #     nothing exclusive, no cache class left, clocks as they were.
@@ -228,7 +228,7 @@ during=$(state2 "$writer")
 held_why=$(reason2 "$writer")
 until_over "$S" "$m"
 check "the measurement holds and succeeds beside the writer ($(state "$m") $(reason "$m"))" test "$(state "$m")" == COMMAND_STATE_SUCCEEDED
-if [[ $storage == zfs || -n $vm ]]; then
+if [[ -n $vm ]]; then
   check "the writer is held during it ($during: $held_why)" test "$during" == COMMAND_STATE_PARKED
 else
   check "the writer runs on, capped, during it ($during)" test "$during" == COMMAND_STATE_RUNNING

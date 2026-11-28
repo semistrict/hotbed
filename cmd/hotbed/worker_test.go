@@ -12,7 +12,7 @@ import (
 	"github.com/semistrict/hotbed/internal/update"
 )
 
-func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
+func TestWorkerInitParsesFlags(t *testing.T) {
 	t.Parallel()
 	var c cli
 	parser, err := kong.New(&c, kong.Name("hotbed"))
@@ -20,11 +20,10 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 		t.Fatalf("kong.New: %v", err)
 	}
 	kctx, err := parser.Parse([]string{
-		"--json", "worker", "init", "ctrl.ts.net:7120",
+		"--json", "worker", "init", "https://hotbed.example.com",
 		"--dir", "/var/lib/hotbed",
 		"--user", "alice",
-		"--zfs-device", "/dev/disk/by-id/virtio-hotbed-zfs",
-		"--hostname", "mac-worker",
+		"--hostname", "linux-worker",
 		"--slice", "work.slice",
 		"--unit-property", "DeviceAllow=/dev/kvm",
 		"--no-start",
@@ -36,31 +35,14 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 		t.Fatalf("got command=%q json=%v, want 'worker init <controller>' json=true", kctx.Command(), c.JSON)
 	}
 	initCmd := c.Worker.Init
-	if initCmd.Controller != "ctrl.ts.net:7120" ||
+	if initCmd.Controller != "https://hotbed.example.com" ||
 		initCmd.Dir != "/var/lib/hotbed" ||
 		initCmd.User != "alice" ||
-		initCmd.ZFSDevice != "/dev/disk/by-id/virtio-hotbed-zfs" ||
-		initCmd.Hostname != "mac-worker" ||
+		initCmd.Hostname != "linux-worker" ||
 		initCmd.Slice != "work.slice" ||
 		!slices.Equal(initCmd.UnitProperties, []string{"DeviceAllow=/dev/kvm"}) ||
 		!initCmd.NoStart {
 		t.Fatalf("parsed workerInitCmd = %+v", initCmd)
-	}
-
-	var c2 cli
-	parser2, err := kong.New(&c2, kong.Name("hotbed"))
-	if err != nil {
-		t.Fatalf("kong.New: %v", err)
-	}
-	if _, err := parser2.Parse([]string{
-		"--json", "worker", "init", "ctrl.ts.net:7120",
-		"--zfs-device", "/dev/disk/by-id/virtio-hotbed-zfs",
-		"--zfs-arc-max", "3221225472",
-	}); err != nil {
-		t.Fatalf("kong.Parse(--zfs-arc-max): %v", err)
-	}
-	if c2.Worker.Init.ZFSARCMax != "3221225472" {
-		t.Fatalf("ZFSARCMax = %q, want %q", c2.Worker.Init.ZFSARCMax, "3221225472")
 	}
 }
 

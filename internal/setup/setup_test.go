@@ -7,40 +7,6 @@ import (
 	"testing"
 )
 
-func TestValidateZFSDevicePath(t *testing.T) {
-	valid := []string{
-		"/dev/sdb",
-		"/dev/nvme0n1",
-		"/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_hotbed-zfs",
-		"/dev/disk/by-id/virtio-hotbed-zfs",
-	}
-	for _, dev := range valid {
-		if err := validateZFSDevicePath(dev); err != nil {
-			t.Errorf("validateZFSDevicePath(%q) = %v, want nil", dev, err)
-		}
-	}
-
-	invalid := []string{
-		"",
-		"dev/sdb",
-		"/dev",
-		"/dev/",
-		"/tmp/zfs.img",
-		"/etc/passwd",
-		"/dev/../etc/passwd",
-		"/dev/disk/../sdb",
-		"/dev//sdb",
-		"/dev/sdb/",
-		"/dev/sdb extra",
-		"/dev/sdb\n",
-	}
-	for _, dev := range invalid {
-		if err := validateZFSDevicePath(dev); err == nil {
-			t.Errorf("validateZFSDevicePath(%q) = nil, want error", dev)
-		}
-	}
-}
-
 func TestCopyFileAtomic(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
@@ -70,25 +36,15 @@ func TestCopyFileAtomic(t *testing.T) {
 	}
 }
 
-// The worker unit neither waits for nor pulls in tailscaled: a worker
-// needs no tailnet. It waits for ZFS's mounts only when its state directory
-// is on ZFS.
+// The worker unit depends only on network-online.target (no tailscaled or ZFS mounts).
 func TestSystemdWorkerUnitDependencies(t *testing.T) {
-	for _, c := range []struct {
-		zfs  bool
-		deps string
-	}{
-		{true, "network-online.target zfs-mount.service"},
-		{false, "network-online.target"},
-	} {
-		unit := SystemdWorkerUnit("/usr/local/bin/hotbed", "/var/lib/hotbed/worker", c.zfs, "")
-		for _, want := range []string{"After=" + c.deps + "\n", "Wants=" + c.deps + "\n"} {
-			if !strings.Contains(unit, want) {
-				t.Fatalf("zfs=%v: unit lacks %q:\n%s", c.zfs, want, unit)
-			}
+	unit := SystemdWorkerUnit("/usr/local/bin/hotbed", "/var/lib/hotbed/worker")
+	for _, want := range []string{"After=network-online.target\n", "Wants=network-online.target\n"} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("unit lacks %q:\n%s", want, unit)
 		}
-		if strings.Contains(unit, "tailscaled") || strings.Contains(unit, "Requires=") {
-			t.Fatalf("unit depends on tailscaled:\n%s", unit)
-		}
+	}
+	if strings.Contains(unit, "tailscaled") || strings.Contains(unit, "zfs") || strings.Contains(unit, "Requires=") {
+		t.Fatalf("unit has unexpected dependency:\n%s", unit)
 	}
 }

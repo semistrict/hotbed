@@ -1,8 +1,7 @@
 // Package setup provisions a hotbed worker node on the current machine in a
-// single command: directly on Linux (using native btrfs/zfs or a sparse
-// file-backed ZFS pool in ~/.hotbed), and on macOS natively too, every
-// command in a VM of machined's, which hotbed's daemon runs beside the
-// worker (internal/macworker).
+// single command: directly on Linux (any filesystem; workspaces run in VMs on
+// cladefs), and on macOS natively too, every command in a VM of machined's,
+// which hotbed's daemon runs beside the worker (internal/macworker).
 package setup
 
 import (
@@ -14,18 +13,12 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/semistrict/hotbed/internal/macworker"
 )
 
 const (
-	// DefaultDiskSize is the default virtual size of the sparse ZFS disk image.
-	DefaultDiskSize = 256 << 30 // 256 GiB
-	// DefaultPoolName is the ZFS pool name created for file- and disk-image-backed workers.
-	DefaultPoolName = "hotbed"
 	// DaemonLaunchAgentLabel is the unified macOS LaunchAgent label for `hotbed daemon`.
 	DaemonLaunchAgentLabel = "com.semistrict.hotbed.daemon"
 )
@@ -36,10 +29,6 @@ type Options struct {
 	Token          string // optional bearer/join token for remote HTTPS controllers
 	Dir            string // base directory; default ~/.hotbed
 	User           string // unix user commands run as; default current/SUDO_USER
-	DiskSize       int64  // virtual sparse ZFS disk size in bytes
-	ZFSDataset     string // optional ZFS dataset override (Linux native ZFS)
-	ZFSDevice      string // optional block device path under /dev/ for a ZFS pool (Linux)
-	ZFSARCMax      int64  // Linux: cap on the ZFS ARC of a pool hotbed makes, in bytes; 0 for zfs's default
 	UnitProperties []string
 	Slice          string
 	NoStart        bool
@@ -60,14 +49,13 @@ type Result struct {
 	User       string `json:"user"`
 	Node       string `json:"node,omitempty"`
 	ClusterID  string `json:"clusterId,omitempty"`
-	Storage    string `json:"storage"` // "btrfs", "zfs", "zfs-file", "zfs-device", "zfs-raw"
+	Storage    string `json:"storage"` // "cladefs"
 	Running    bool   `json:"running"`
 	Service    string `json:"service,omitempty"`
 	// Mac is how a Mac's worker and machined stand (hotbed's daemon runs
 	// them).
-	Mac   *macworker.State `json:"mac,omitempty"`
-	Disks []DiskStat       `json:"disks,omitempty"`
-	Next  []string         `json:"next,omitempty"`
+	Mac  *macworker.State `json:"mac,omitempty"`
+	Next []string         `json:"next,omitempty"`
 }
 
 // Status describes a locally configured worker.
@@ -82,8 +70,7 @@ type Status struct {
 	Service    string `json:"service,omitempty"`
 	// Mac is how a Mac's worker and machined stand (hotbed's daemon runs
 	// them).
-	Mac   *macworker.State `json:"mac,omitempty"`
-	Disks []DiskStat       `json:"disks,omitempty"`
+	Mac *macworker.State `json:"mac,omitempty"`
 }
 
 // LocalWorkerSocket is a worker on this machine that serves its clients
@@ -92,24 +79,6 @@ type Status struct {
 type LocalWorkerSocket struct {
 	NodeID string
 	Socket string
-}
-
-// DiskStat reports virtual vs actual allocated on-disk bytes for a sparse image.
-type DiskStat struct {
-	Name           string `json:"name"`
-	Path           string `json:"path"`
-	VirtualBytes   int64  `json:"virtualBytes,omitempty"`
-	LogicalBytes   int64  `json:"logicalBytes"`
-	AllocatedBytes int64  `json:"allocatedBytes"`
-}
-
-// TrimResult reports sparse space reclaimed by a trim operation.
-type TrimResult struct {
-	Dir            string     `json:"dir"`
-	BeforeBytes    int64      `json:"beforeBytes"`
-	AfterBytes     int64      `json:"afterBytes"`
-	ReclaimedBytes int64      `json:"reclaimedBytes"`
-	Disks          []DiskStat `json:"disks"`
 }
 
 // DestroyOptions control worker teardown.
@@ -203,65 +172,6 @@ func controllerRecord(path string) (string, error) {
 	return rec.Controller, nil
 }
 
-// ParseBytes parses human-readable byte sizes such as "256G", "8GiB", "4096M",
-// or "1T". Bare numbers are bytes.
-func ParseBytes(s string) (int64, error) {
-	raw := strings.TrimSpace(s)
-	if raw == "" {
-		return 0, errors.New("empty size")
-	}
-	u := strings.ToUpper(raw)
-	type suffix struct {
-		s string
-		m int64
-	}
-	suffixes := []suffix{
-		{"TIB", 1 << 40}, {"TB", 1 << 40}, {"T", 1 << 40},
-		{"GIB", 1 << 30}, {"GB", 1 << 30}, {"G", 1 << 30},
-		{"MIB", 1 << 20}, {"MB", 1 << 20}, {"M", 1 << 20},
-		{"KIB", 1 << 10}, {"KB", 1 << 10}, {"K", 1 << 10},
-		{"B", 1},
-	}
-	mult := int64(1)
-	numStr := u
-	for _, sf := range suffixes {
-		if strings.HasSuffix(u, sf.s) {
-			mult = sf.m
-			numStr = strings.TrimSpace(strings.TrimSuffix(u, sf.s))
-			break
-		}
-	}
-	n, err := strconv.ParseInt(numStr, 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("invalid size %q (use e.g. 256G, 16G, 512M)", s)
-	}
-	if n > (1<<62)/mult {
-		return 0, fmt.Errorf("size %q overflows int64", s)
-	}
-	return n * mult, nil
-}
-
-// FileDiskStat reads logical and actual allocated on-disk bytes for path.
-// On APFS and ext4/xfs/btrfs/zfs, stat.Blocks*512 reflects actual sparse
-// allocation after hole punching.
-func FileDiskStat(name, path string, virtualBytes int64) (DiskStat, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return DiskStat{}, err
-	}
-	st := DiskStat{
-		Name:           name,
-		Path:           path,
-		VirtualBytes:   virtualBytes,
-		LogicalBytes:   fi.Size(),
-		AllocatedBytes: fi.Size(),
-	}
-	if sys, ok := fi.Sys().(*syscall.Stat_t); ok {
-		st.AllocatedBytes = sys.Blocks * 512
-	}
-	return st, nil
-}
-
 func progressf(w io.Writer, format string, args ...any) {
 	if w == nil {
 		return
@@ -317,43 +227,4 @@ func copyFileAtomic(src, dst string, perm fs.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), dst)
-}
-
-func validateZFSDevicePath(dev string) error {
-	if dev == "" {
-		return errors.New("empty ZFS device path")
-	}
-	if strings.ContainsAny(dev, "\x00\n\r\t ") {
-		return fmt.Errorf("invalid ZFS device path %q: must not contain whitespace or control characters", dev)
-	}
-	if !filepath.IsAbs(dev) {
-		return fmt.Errorf("invalid ZFS device path %q: must be an absolute path under /dev/", dev)
-	}
-	for _, seg := range strings.Split(dev, "/") {
-		if seg == ".." {
-			return fmt.Errorf("invalid ZFS device path %q: must not contain '..'", dev)
-		}
-	}
-	clean := filepath.Clean(dev)
-	if !strings.HasPrefix(clean, "/dev/") || clean == "/dev" {
-		return fmt.Errorf("invalid ZFS device path %q: must be under /dev/", dev)
-	}
-	if clean != dev {
-		return fmt.Errorf("invalid ZFS device path %q: must be a clean path", dev)
-	}
-	return nil
-}
-
-// FormatBytes formats a byte count concisely for human progress messages.
-func FormatBytes(b int64) string {
-	switch {
-	case b >= 1<<30:
-		return fmt.Sprintf("%.2f GiB", float64(b)/(1<<30))
-	case b >= 1<<20:
-		return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20))
-	case b >= 1<<10:
-		return fmt.Sprintf("%.1f KiB", float64(b)/(1<<10))
-	default:
-		return fmt.Sprintf("%d B", b)
-	}
 }

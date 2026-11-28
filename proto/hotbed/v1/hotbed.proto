@@ -52,7 +52,7 @@ service ClusterService {
     option (command) = {
       name: "nodes"
       read_only: true
-      format: "{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n{{end}}"
+      format: "{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .online}}  online{{else}}  offline{{end}}\n{{end}}"
     };
   }
   // GetBuild is the build the controller runs, for a platform: what a node
@@ -683,14 +683,9 @@ message Node {
   DaemonLogSource daemon_logs = 15;
   // How it decides whether to start new work, as of its last heartbeat.
   Admission admission = 16;
-  // Retired with Standby and ReportHostUsage: no host powers its worker
-  // or reports its usage any more.
-  reserved 17, 18;
-  reserved "asleep", "host_usage";
-  // Why the worker cannot open its storage (a ZFS pool not imported, its
-  // disk missing), as of its last heartbeat: it waits for it and serves
-  // nothing meanwhile, so it is not online. Empty when its storage is open.
-  string storage_error = 19;
+  // Retired with Standby, ReportHostUsage, and ZFS/btrfs local storage.
+  reserved 17, 18, 19;
+  reserved "asleep", "host_usage", "storage_error";
   // Live cladefsd object-store (R2) counters when this node runs cladefsd.
   ObjectStoreStats object_store = 20;
 }
@@ -1340,7 +1335,7 @@ message Base {
   double prep_seconds = 28;
   // Time spent in git clone/fetch/checkout/submodule inside the freshen script.
   double git_seconds = 29;
-  // Post-script finalization time (VM stop, FUSE detach, ZFS snapshot, R2 sync).
+  // Post-script finalization time (VM stop, cell snapshot, R2 sync).
   double finalize_seconds = 30;
   // Currently running setup step name while building.
   string current_step = 31;
@@ -3082,10 +3077,9 @@ message HeartbeatRequest {
   // Summary and rotation state of the worker's WARN/ERROR slog daemon logs.
   DaemonLogSource daemon_logs = 14;
   Admission admission = 15;
-  // Set while the worker cannot open its storage: why. It heartbeats with
-  // this alone (and its resources' arch, CPUs and version, to follow the
-  // controller's build) until its storage opens.
-  string storage_error = 16;
+  // Retired with ZFS/btrfs local storage.
+  reserved 16;
+  reserved "storage_error";
   // This worker's cladefsd peer mTLS address (HOST:PORT) for LAN GetPart.
   string cladefs_peer_addr = 17;
   // This worker's cladefsd ephemeral host incarnation (for DecommissionHost).

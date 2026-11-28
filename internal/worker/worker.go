@@ -46,7 +46,6 @@ type JoinOptions struct {
 	Dir            string
 	Controller     string
 	User           string
-	Dataset        string
 	UnitProperties []string
 	Slice          string
 	Token          string
@@ -100,13 +99,14 @@ func resolveCommandUser(name string) (uid, gid int, err error) {
 	return uid, gid, nil
 }
 
-// CheckMachine is the real Check: Linux, root, a user to run commands as,
-// and a state directory on a filesystem that can fork.
-func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
+// CheckMachine is the real Check: Linux (as root) or macOS (non-root), a
+// non-root user to run commands as, and a writable state directory. Workspaces
+// live in VMs on cladefs, so the state directory works on any filesystem.
+func CheckMachine(_ context.Context, o JoinOptions) (string, error) {
 	switch runtime.GOOS {
 	case "linux":
 		if os.Geteuid() != 0 {
-			return "", api.Errorf(api.CodeInvalidArgs, "a worker runs as root, to fork volumes and start systemd units").
+			return "", api.Errorf(api.CodeInvalidArgs, "a worker runs as root, to start VMs and systemd units").
 				WithSuggestion("run it with sudo; commands still run as --user")
 		}
 		if o.Slice != "" {
@@ -131,47 +131,16 @@ func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
 	if err := os.MkdirAll(o.Dir, 0o755); err != nil {
 		return "", err
 	}
-	s, err := storage.Open(ctx, o.Dir, o.Dataset)
-	if err != nil {
-		return "", api.Errorf(api.CodeInvalidArgs, "%v", err).WithSuggestion("put the state directory on btrfs or zfs")
-	}
-	return s.Kind(), nil
+	return "cladefs", nil
 }
 
-// runtimeEnabled says cfg enables a runtime the worker can serve with.
+// runtimeEnabled says cfg enables the required VM + cladefs runtime.
 func runtimeEnabled(cfg statedir.WorkerConfig) bool {
-	return vmEnabled(cfg) || (cfg.CladefsFUSE != nil && cfg.CladefsFUSE.Enabled)
+	return vmEnabled(cfg)
 }
 
-// vmEnabled says cfg runs workspaces in VMs. It wins over cladefs_fuse when
-// both are enabled.
+// vmEnabled says cfg runs workspaces in VMs on cladefs.
 func vmEnabled(cfg statedir.WorkerConfig) bool { return cfg.VM != nil && cfg.VM.Enabled }
-
-// openLocalRootfs opens what a worker of cfg's runtime keeps on its own
-// filesystem in dir: the store of its workspaces' volumes, and the shared
-// base rootfs cold bases clone from (nil when it keeps none).
-//
-// A VM worker's workspaces are all cells cladefsd makes: their rootfs is
-// imported into cladefsd and inspected inside hotbed-guestd, never on the
-// host. It keeps no volumes and no local rootfs, so its state directory may
-// be on any filesystem (ext4 and xfs too) and it waits on no ZFS pool. A
-// cladefs host-FUSE worker clones bases from a local base image and traces
-// its commands against that rootfs by host chroot, so it needs btrfs or ZFS:
-// openCoW opens them, waiting while it cannot.
-func openLocalRootfs(ctx context.Context, cfg statedir.WorkerConfig, dir string, spec baseimage.Spec, openCoW func(context.Context) (storage.Store, error)) (storage.Store, *baseimage.Manager, error) {
-	if vmEnabled(cfg) {
-		return storage.NewDir(dir), nil, nil
-	}
-	store, err := openCoW(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	return store, &baseimage.Manager{
-		Store:     store,
-		Spec:      spec,
-		Provision: baseimage.SystemdProvisioner(cmp.Or(cfg.Slice, unit.DefaultSlice), filepath.Join(dir, "logs")),
-	}, nil
-}
 
 // refreshControllerConfig fetches the controller's effective config for
 // this worker and caches it in dir, as a heartbeat does.
@@ -234,7 +203,7 @@ func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (Joi
 		workerToken = joined.WorkerToken
 	}
 	cfg := statedir.WorkerConfig{
-		ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset,
+		ClusterID: joined.ClusterId, Controller: controller, User: o.User,
 		UnitProperties: o.UnitProperties, Slice: o.Slice, ControllerNodeID: "cf:" + joined.ClusterId,
 		Token: workerToken, NodeID: nodeID, Host: host,
 	}
@@ -339,18 +308,11 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, hc *http.Cl
 	follow.ConfigSync = NewConfigSyncer(dir, cfg, cachedRemote, effCfg, artifacts)
 
 	if !runtimeEnabled(effCfg) {
-		return api.Errorf(api.CodePlatformNotSupported, "worker requires either vm or cladefs_fuse runtime to be enabled").
-			WithSuggestion("enable vm or cladefs_fuse in hotbed.json or via hotbed config set")
+		return api.Errorf(api.CodePlatformNotSupported, "worker requires the vm + cladefs runtime to be enabled").
+			WithSuggestion("enable vm in hotbed.json or via hotbed config set")
 	}
 	baseSpec := baseimage.Spec{User: effCfg.User, UID: uid, GID: gid}
-	store, baseImg, err := openLocalRootfs(ctx, effCfg, dir, baseSpec, func(ctx context.Context) (storage.Store, error) {
-		return awaitStorage(ctx, func(ctx context.Context) (storage.Store, error) {
-			return storage.Open(ctx, dir, effCfg.Dataset)
-		}, cluster, effCfg.ClusterID, follow, api.ReportInterval)
-	})
-	if err != nil {
-		return err
-	}
+	store := storage.NewDir(dir)
 	prof := profiler.NewOTel(profiler.DefaultSampleHz)
 	if err := prof.Start(ctx); err != nil {
 		slog.Warn("always-on OpenTelemetry eBPF profiler could not start; continuing without continuous profiling", "err", err)
@@ -358,12 +320,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, hc *http.Cl
 	defer prof.Stop()
 
 	workSlice := cmp.Or(effCfg.Slice, unit.DefaultSlice)
-	// Tracers run against the local base rootfs by host chroot; a VM
-	// worker's run inside hotbed-guestd.
 	var inspector inspect.Linux
-	if baseImg != nil {
-		inspector.BaseRootDir = baseImg.ReadyRootDir
-	}
 
 	gitInterceptors := append(append([]connect.ClientInterceptor{}, ctrlInterceptors...), api.RideOut(30*time.Second, func(err error) {
 		slog.Warn("waiting for controller to mint git token", "err", err)
@@ -377,7 +334,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, hc *http.Cl
 	ecfg := EngineConfig{
 		Dir: dir, NodeID: self.NodeID, Host: self.Hostname, User: effCfg.User,
 		Slice: effCfg.Slice, UnitProperties: effCfg.UnitProperties, Store: store,
-		BaseSpec: baseSpec, BaseImage: baseImg, GitAuth: gitAuth,
+		BaseSpec: baseSpec, GitAuth: gitAuth,
 		Inspector: inspector, Profiler: prof,
 		Units: hostUnits(), System: hostSystem(effCfg.Slice),
 		DaemonLogs: dlogs, ControllerNodeID: effCfg.ControllerNodeID, RequireController: true,
@@ -386,35 +343,21 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, hc *http.Cl
 	if effCfg.Bench != nil {
 		ecfg.ScratchDisk = effCfg.Bench.Disk
 	}
-	if vmEnabled(effCfg) {
-		if err := EnsureKVMAccess(ctx, cmp.Or(effCfg.VM.VMUser, vm.DefaultVMUser)); err != nil {
-			return fmt.Errorf("give Firecracker /dev/kvm: %w", err)
-		}
-		vmb, err := OpenVMBackend(ctx, dir, *effCfg.VM, workSlice, "")
-		if err != nil {
-			return fmt.Errorf("start cladefs Firecracker VM backend: %w", err)
-		}
-		defer vmb.Close()
-		ecfg.VM = vmb
-		slog.Info("cladefs + Firecracker VM runtime enabled",
-			"defaultRuntime", vmb.DefaultRuntime(),
-			"peerAddr", effCfg.VM.CladefsPeerAddr,
-			"cellRoot", effCfg.VM.CellRoot,
-		)
-	} else {
-		cfb, err := OpenCladefsFUSEBackend(ctx, dir, *effCfg.CladefsFUSE)
-		if err != nil {
-			return fmt.Errorf("start cladefs host-FUSE backend: %w", err)
-		}
-		defer cfb.Close()
-		ecfg.CladefsFUSE = cfb
-		slog.Info("cladefs host-FUSE runtime enabled",
-			"defaultRuntime", cfb.DefaultRuntime(),
-			"peerAddr", effCfg.CladefsFUSE.CladefsPeerAddr,
-			"mountRoot", effCfg.CladefsFUSE.MountRoot,
-		)
+	if err := EnsureKVMAccess(ctx, cmp.Or(effCfg.VM.VMUser, vm.DefaultVMUser)); err != nil {
+		return fmt.Errorf("give Firecracker /dev/kvm: %w", err)
 	}
-	if err := prepareHost(ctx, hostPrep{cfg: cfg, effCfg: effCfg, ecfg: &ecfg, store: store, workSlice: workSlice}); err != nil {
+	vmb, err := OpenVMBackend(ctx, dir, *effCfg.VM, workSlice, "")
+	if err != nil {
+		return fmt.Errorf("start cladefs Firecracker VM backend: %w", err)
+	}
+	defer vmb.Close()
+	ecfg.VM = vmb
+	slog.Info("cladefs + Firecracker VM runtime enabled",
+		"defaultRuntime", vmb.DefaultRuntime(),
+		"peerAddr", effCfg.VM.CladefsPeerAddr,
+		"cellRoot", effCfg.VM.CellRoot,
+	)
+	if err := prepareHost(ctx, hostPrep{cfg: cfg, effCfg: effCfg, ecfg: &ecfg, workSlice: workSlice}); err != nil {
 		return err
 	}
 	eng, err := NewEngine(ctx, ecfg)
@@ -455,31 +398,6 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, hc *http.Cl
 		eng.Run(gctx)
 		return nil
 	})
-	// Warm the local base rootfs snapshot, if the worker keeps one, in the
-	// background on startup so the first cold workspace and tracer
-	// capabilities are ready quickly. Retry on transient startup failures
-	// (e.g. DNS right after boot).
-	go func() {
-		if baseImg == nil {
-			return
-		}
-		backoff := 5 * time.Second
-		for {
-			if _, _, err := baseImg.Ensure(gctx); err == nil {
-				return
-			} else if gctx.Err() != nil {
-				return
-			} else {
-				slog.Warn("warm shared base rootfs image; retrying", "backoff", backoff, "err", err)
-			}
-			select {
-			case <-gctx.Done():
-				return
-			case <-time.After(backoff):
-				backoff = min(backoff*2, time.Minute)
-			}
-		}
-	}()
 	// Its update.ErrRestart ends the others, and Run with it.
 	g.Go(func() error {
 		return connectWithReset(gctx, eng, cluster, cfg.ClusterID, follow, func() {

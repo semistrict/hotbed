@@ -73,7 +73,7 @@ export function NodePage() {
             )}
             <AdmissionBadge a={admission} now={now} />
             <ArchBadge arch={res?.arch ?? ""} />
-            <OnlineBadge online={n.online} storageError={n.storageError} />
+            <OnlineBadge online={n.online} />
             <Link
               to="/settings"
               search={{ scope: n.hostname }}
@@ -107,11 +107,6 @@ export function NodePage() {
           </div>
         }
       />
-      {!n.online && n.storageError && (
-        <div className="rounded-2xl border border-border bg-card/80 p-4 font-mono text-[12px] break-words text-serious-ink">
-          Its worker cannot open its storage, and serves nothing until it can: {n.storageError}
-        </div>
-      )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <StatTile label="CPU busy" value={n.online ? percent(usage?.cpuBusy ?? 0) : "—"} unit={`of ${res?.cpus ?? 0}`} />
         <StatTile label="Memory" value={n.online ? bytes(usage?.memoryUsedBytes ?? 0n) : "—"} unit={`/ ${bytes(res?.memoryBytes ?? 0n)}`} foot={`${bytes(n.reservedMemoryBytes)} guaranteed`} />

@@ -317,8 +317,7 @@ export class ControllerContext {
 
 	withOnline(n: Node): Node {
 		const nowMs = this.now();
-		n.online =
-			n.lastSeen !== undefined && nowMs - Number(n.lastSeen) <= ONLINE_WINDOW_MS && !n.storageError;
+		n.online = n.lastSeen !== undefined && nowMs - Number(n.lastSeen) <= ONLINE_WINDOW_MS;
 		return n;
 	}
 

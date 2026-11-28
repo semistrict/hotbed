@@ -1,25 +1,16 @@
-// Package storage keeps hotbed's bases and workspaces on a copy-on-write
-// filesystem: writable volumes, read-only snapshots of them, and writable
-// clones of snapshots, each made in constant time and sharing blocks with
-// what it came from.
-//
-// hotbed only ever creates, snapshots, clones and destroys volumes under its
-// own root; it never changes how the filesystem itself is set up.
+// Package storage defines the Store interface and NoVolumes implementation
+// used by hotbed workers. Production workers keep all workspaces and bases in
+// cladefs cells via VMs and store no local copy-on-write volumes (NewDir).
 package storage
 
 import (
 	"context"
 	"errors"
-	"fmt"
-	"regexp"
-	"strings"
 )
 
-// Store is one filesystem's volumes. Volume names are slash-separated paths
-// ("bases/ratel/g42", "ws/ws-3f2a"); snapshot names are flat and unique in
-// the store ("ratel-g42").
+// Store is a volume store interface (NoVolumes in production; fake.Store in tests).
 type Store interface {
-	// Kind is "btrfs" or "zfs".
+	// Kind identifies the store implementation ("none" in production, "fake" in tests).
 	Kind() string
 	// Create makes an empty writable volume.
 	Create(ctx context.Context, name string) error
@@ -42,14 +33,6 @@ type Store interface {
 	Usage(ctx context.Context, name string) (Usage, error)
 	// Space is the filesystem's size and free space.
 	Space(ctx context.Context) (Space, error)
-}
-
-// Pooled is a store whose volumes are datasets of a ZFS pool, which ZFS
-// writes from threads of its own: no cgroup's IO cap reaches their writers.
-type Pooled interface {
-	Store
-	// Dataset is the dataset the volumes are under, such as rpool/hotbed.
-	Dataset() string
 }
 
 // Usage of one volume.
@@ -76,35 +59,3 @@ var (
 	// ErrExists is a volume or snapshot that already exists.
 	ErrExists = errors.New("already exists")
 )
-
-// busy marks err ErrBusy when it says the kernel holds the volume busy: a
-// mount of it, often in another mount namespace, that has not gone yet.
-func busy(err error) error {
-	if err == nil || errors.Is(err, ErrBusy) {
-		return err
-	}
-	msg := err.Error()
-	if strings.Contains(msg, "dataset is busy") || strings.Contains(msg, "Device or resource busy") {
-		return fmt.Errorf("%w: %w", ErrBusy, err)
-	}
-	return err
-}
-
-var (
-	volumeName   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$`)
-	snapshotName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
-)
-
-func checkVolume(name string) error {
-	if !volumeName.MatchString(name) {
-		return fmt.Errorf("invalid volume name %q", name)
-	}
-	return nil
-}
-
-func checkSnapshot(name string) error {
-	if !snapshotName.MatchString(name) {
-		return fmt.Errorf("invalid snapshot name %q", name)
-	}
-	return nil
-}

@@ -97,7 +97,7 @@ func TestRejectRootCommandUser(t *testing.T) {
 				User:       bad.user,
 			}, nil, func(context.Context, JoinOptions) (string, error) {
 				checkCalled = true
-				return "btrfs", nil
+				return "cladefs", nil
 			})
 			assertRejected(t, err, bad.want)
 			if checkCalled {

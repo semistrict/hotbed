@@ -1,12 +1,9 @@
 package bench
 
 import (
-	"bufio"
 	"cmp"
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,24 +13,18 @@ import (
 // Quiet disks. Others' writes to a disk a measurement uses slow it down,
 // but they don't fail it, so they skew its numbers without saying so. While
 // one runs, other work may write at most the bound (Config.WorkWriteMB) to
-// each disk or pool the measurement uses:
+// each disk the measurement uses:
 //
-//   - A block device (the scratch disk, a btrfs store's disk): the work
-//     slice's io.max caps it at the bound, which holds where the filesystem
-//     charges writeback to the writer's cgroup (ext4, btrfs). The work
-//     slice's io.stat says what it wrote.
-//   - A ZFS pool: ZFS writes a pool from threads of its own, charged to no
-//     one's cgroup, so no cap reaches its writers (a unit capped at 8 MB/s
-//     on ubu1's pool vdev wrote 147 MB/s to it). Each dataset's kstat says
-//     what was written to it, so the worker holds back (parks) the commands
-//     of the volumes Loud names, before the measurement starts and while it
-//     runs.
+//   - A block device (the scratch disk): the work slice's io.max caps it at
+//     the bound, which holds where the filesystem charges writeback to the
+//     writer's cgroup (ext4, xfs). The work slice's io.stat says what it wrote.
 //   - The VMs' disks: cladefsd writes them for every VM, from threads of
-//     its own, so no cap reaches a VM's writes either. Each VM's guest
-//     tells cladefsd what it wrote (Options.Writes), and the worker holds
-//     back the loud ones' commands the same way. Asking costs every VM a
-//     little, so Sample asks only while a measurement waits or runs, and
-//     one starts once two samples name the writers to hold (Ready).
+//     its own, so no cap reaches a VM's writes. Each VM's guest tells
+//     cladefsd what it wrote (Options.Writes), and the worker holds back
+//     (parks) the loud ones' commands before the measurement starts and
+//     while it runs. Asking costs every VM a little, so Sample asks only
+//     while a measurement waits or runs, and one starts once two samples
+//     name the writers to hold (Ready).
 //
 // Either way Held fails a measurement whose disks saw others write past the
 // bound anyway, averaged over checkWindow, as a caller's own contamination
@@ -54,18 +45,16 @@ const (
 type written struct {
 	at time.Time
 	// disks is the work slice's writes to each block device it is capped
-	// on, by device name (zd0).
+	// on, by device name (nvme0n1).
 	disks map[string]int64
-	// vols is what was written to each volume of the pool (ws/3f2a01).
-	vols map[string]int64
 	// vms is what each volume's VM wrote to its disk (Options.Writes); nil
 	// when not asked.
 	vms map[string]int64
 	err error
 }
 
-// Writer is a volume writing to a place a measurement uses (the pool, the
-// VMs' disks), and how fast, in bytes a second.
+// Writer is a volume writing to a place a measurement uses (the VMs'
+// disks), and how fast, in bytes a second.
 type Writer struct {
 	Volume string
 	Rate   float64
@@ -83,16 +72,12 @@ type place struct {
 	costly bool
 }
 
-// places is where the worker holds writers back: the pool, the VMs' disks.
+// places is where the worker holds writers back: the VMs' disks.
 func (i *Isolation) places() []place {
-	var out []place
-	if i.o.Pool != "" {
-		out = append(out, place{name: i.o.Pool, vols: func(w written) map[string]int64 { return w.vols }})
+	if i.o.Writes == nil {
+		return nil
 	}
-	if i.o.Writes != nil {
-		out = append(out, place{name: i.writesTo(), vols: func(w written) map[string]int64 { return w.vms }, costly: true})
-	}
-	return out
+	return []place{{name: i.writesTo(), vols: func(w written) map[string]int64 { return w.vms }, costly: true}}
 }
 
 func (i *Isolation) writesTo() string {
@@ -149,9 +134,6 @@ func (i *Isolation) Ready() bool {
 func (i *Isolation) Sample(measuring bool) {
 	w := written{at: i.o.Now()}
 	w.disks, w.err = i.diskWrites()
-	if w.err == nil && i.o.Pool != "" {
-		w.vols, w.err = i.poolWrites()
-	}
 	if w.err == nil && i.o.Writes != nil && measuring {
 		w.vms, w.err = i.o.Writes()
 		if w.err == nil && w.vms == nil {
@@ -377,75 +359,4 @@ func (i *Isolation) devName(dev string) string {
 		}
 	}
 	return dev
-}
-
-// poolWrites is what was written to each volume under o.Pool, by ZFS's
-// per-dataset kstats: the bytes write(2) handed each one.
-func (i *Isolation) poolWrites() (map[string]int64, error) {
-	dir := "/proc/spl/kstat/zfs/" + poolOf(i.o.Pool)
-	entries, err := os.ReadDir(i.path(dir))
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]int64{}
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "objset-") {
-			continue
-		}
-		ds, n, err := i.objset(dir + "/" + e.Name())
-		if os.IsNotExist(err) {
-			continue // a dataset unmounted meanwhile
-		}
-		if err != nil {
-			return nil, err
-		}
-		if vol, ok := strings.CutPrefix(ds, i.o.Pool+"/"); ok {
-			out[vol] = n
-		}
-	}
-	return out, nil
-}
-
-// objset is a dataset's kstat's name and the bytes written to it.
-func (i *Isolation) objset(p string) (string, int64, error) {
-	f, err := os.Open(i.path(p))
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-	var ds string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) != 3 {
-			continue
-		}
-		switch fields[0] {
-		case "dataset_name":
-			ds = fields[2]
-		case "nwritten":
-			n, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil {
-				return "", 0, fmt.Errorf("%s: nwritten %q: %w", p, fields[2], err)
-			}
-			return ds, n, nil
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return "", 0, err
-	}
-	return "", 0, fmt.Errorf("%s: no nwritten", p)
-}
-
-// poolOf is the pool a dataset is in.
-func poolOf(dataset string) string {
-	pool, _, _ := strings.Cut(dataset, "/")
-	return pool
-}
-
-func syncPool(ctx context.Context, pool string) error {
-	if out, err := exec.CommandContext(ctx, "zpool", "sync", pool).CombinedOutput(); err != nil {
-		return fmt.Errorf("zpool sync %s: %w: %s", pool, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }

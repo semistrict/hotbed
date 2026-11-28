@@ -105,7 +105,6 @@ const SHARED_BASE_RETIRE_GRACE_MS = 15 * 60_000;
 // backend is up (it offers vm or cladefs) on the controller's build (an older
 // one may not know held_bases). Others keep the holds they last reported.
 export function reportsHeldBases(req: HeartbeatRequest, wantBuild: number): boolean {
-	if (req.storageError) return false;
 	if (!(req.resources?.runtimes ?? []).some((r) => r === "vm" || r === "cladefs")) return false;
 	return wantBuild === 0 || parseBuildNumber(req.resources?.version ?? "") >= wantBuild;
 }

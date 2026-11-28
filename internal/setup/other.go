@@ -34,10 +34,6 @@ func Stop(context.Context, string) (Status, error) {
 	return Status{}, unsupported()
 }
 
-func Trim(context.Context, string) (TrimResult, error) {
-	return TrimResult{}, unsupported()
-}
-
 func Destroy(context.Context, DestroyOptions) (DestroyResult, error) {
 	return DestroyResult{}, unsupported()
 }
