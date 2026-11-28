@@ -310,9 +310,13 @@ func (s *Supervisor) startMachined(ctx context.Context) (*child, string, error) 
 	if err != nil {
 		return nil, "", err
 	}
+	// No deadline: machined serves only once its cladefs daemon has opened
+	// its part cache, which reads every cached part on a filesystem whose
+	// holes it can't find (APFS), minutes for a Mac's hundreds of GiB. A
+	// deadline killed it mid-boot, forever (issue 33's rollout); a machined
+	// that fails ends, and the worker's state says it is starting meanwhile.
 	wait := time.NewTicker(20 * time.Millisecond)
 	defer wait.Stop()
-	deadline := time.After(time.Minute)
 	for {
 		if _, err := os.Stat(s.Paths.Socket); err == nil {
 			_ = os.WriteFile(s.machinedReleasePath(), []byte(release+"\n"), 0o600)
@@ -321,9 +325,6 @@ func (s *Supervisor) startMachined(ctx context.Context) (*child, string, error) 
 		select {
 		case <-c.done:
 			return nil, "", fmt.Errorf("machined ended before serving: %v", endedHow(c))
-		case <-deadline:
-			s.stop(c, cmpOr(s.MachinedStop, 90*time.Second))
-			return nil, "", fmt.Errorf("machined did not serve %s within a minute", s.Paths.Socket)
 		case <-ctx.Done():
 			s.stop(c, cmpOr(s.MachinedStop, 90*time.Second))
 			return nil, "", ctx.Err()
