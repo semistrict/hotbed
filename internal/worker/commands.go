@@ -1455,13 +1455,11 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 		}
 		return "memory", fmt.Sprintf("waiting for memory: running commands hold, are guaranteed or expect %s (limit %s)", gib(reserved), gib(limit))
 	}
-	var memTotal, memUsed, swapTotal, swapFree int64
+	var memTotal, memUsed int64
 	if hasMem {
 		memTotal, memUsed = mem.Total, e.effectiveMemUsedLocked(mem)
-		swapTotal, swapFree = mem.SwapTotal, mem.SwapFree
 	} else if e.lastMem.Total > 0 {
 		memTotal, memUsed = e.lastMem.Total, e.effectiveMemUsedLocked(e.lastMem)
-		swapTotal, swapFree = e.lastMem.SwapTotal, e.lastMem.SwapFree
 	} else if t := e.resources.GetMemoryBytes(); t > 0 && e.usage.GetMemoryUsedBytes() > 0 {
 		memTotal, memUsed = t, e.usage.GetMemoryUsedBytes()
 	}
@@ -1476,14 +1474,15 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 		if memUsed >= int64(float64(memTotal)*fullAt) {
 			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use (%s physically available on the node)", 100*float64(memUsed)/float64(memTotal), gib(max(0, physRoom)))
 		}
-		// When the work slice's swap budget is saturated (>= 95% used) and RAM
-		// is already above swapFullRAM with work running, nothing more can
-		// spill to swap: queue new work instead of piling into a permanent
-		// memory.high PSI livelock.
-		if !c.cmd().Bench && swapTotal > 0 && float64(swapTotal-swapFree) >= float64(swapTotal)*0.95 &&
-			float64(memUsed) >= float64(memTotal)*swapFullRAM && e.hasRunningWorkLocked() {
-			return "memory", fmt.Sprintf("waiting for memory: swap %.0f%% full (%s free) while RAM is %.0f%% in use",
-				100*float64(swapTotal-swapFree)/float64(swapTotal), gib(max(0, swapFree)), 100*float64(memUsed)/float64(memTotal))
+		// When a fixed swap budget (MemorySwapMax / Linux swap partition) is
+		// saturated (>= 95% used) and RAM is already above swapFullRAM with
+		// work running, nothing more can spill to swap: queue new work instead
+		// of piling into a permanent memory.high PSI livelock. Dynamic OS swap
+		// (macOS SwapDynamic) grows on demand and is bounded by diskLow.
+		if !c.cmd().Bench {
+			if swapHeld, swapReason := e.swapFullLocked(mem, hasMem); swapHeld {
+				return "memory", "waiting for memory: " + swapReason
+			}
 		}
 		// A freshen's MemoryLowBytes is an intra-hotbed concurrency reservation
 		// sized from an earlier build's PeakHeldBytes (anon + swap, capped at

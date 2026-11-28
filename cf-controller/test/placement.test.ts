@@ -329,4 +329,69 @@ describe("late-binding capacity and 2-host racing", () => {
 		});
 		expect(discRes.chosen?.host).toBe("ubu-conn");
 	});
+
+	it("routes synced runs away from a session's already-busy workspace onto an idle node", () => {
+		const cs = buildCandidates(
+			[
+				{
+					node: create(NodeSchema, { id: "n-mbp", hostname: "ramons-macbook-pro", online: true }),
+					online: true,
+					hb: create(HeartbeatRequestSchema, {
+						resources: create(ResourcesSchema, {
+							os: "darwin",
+							arch: "arm64",
+							cpus: 15,
+							memoryBytes: 48n << 30n,
+							runtimes: ["vm"],
+						}),
+					}),
+					bases: [],
+					workspaces: [],
+					commands: [
+						create(CommandSchema, {
+							id: "cmd-run",
+							workspaceId: "ws-busy",
+							state: CommandState.RUNNING,
+						}),
+					],
+				},
+				{
+					node: create(NodeSchema, { id: "n-mac", hostname: "mac", online: true }),
+					online: true,
+					hb: create(HeartbeatRequestSchema, {
+						resources: create(ResourcesSchema, {
+							os: "darwin",
+							arch: "arm64",
+							cpus: 11,
+							memoryBytes: 18n << 30n,
+							runtimes: ["vm"],
+						}),
+					}),
+					bases: [],
+					workspaces: [],
+					commands: [],
+				},
+			],
+			"cladefs",
+			new Map([["n-mbp", "ws-busy"]]),
+			() => 0,
+		);
+		expect(cs[0].mineBusy).toBe(true);
+		expect(candidateHasCapacity(cs[0])).toBe(false);
+		expect(cs[1].mineBusy).toBe(false);
+
+		// Synced run routes to idle mac instead of queueing behind ws-busy on mbp.
+		const synced = chooseCandidate(cs, undefined, [], true, { waitForCapacity: true });
+		expect(synced.chosen?.host).toBe("mac");
+		const d = buildPlacementDecision(cs, undefined, [], synced.chosen, synced.why, undefined);
+		expect(
+			d.candidates
+				.find((c) => c.hostname === "ramons-macbook-pro")
+				?.parts.some((pt) => pt.name === "workspace-busy"),
+		).toBe(true);
+
+		// Unsynced (--no-sync) run still stays pinned to its workspace on mbp.
+		const unsynced = chooseCandidate(cs, undefined, [], false, { waitForCapacity: true });
+		expect(unsynced.chosen?.host).toBe("ramons-macbook-pro");
+	});
 });

@@ -147,9 +147,13 @@ func darwinMemory() (sysinfo.Mem, error) {
 	m.Total = int64(total)
 	m.Available = int64(total - min(used, total))
 	// struct xsw_usage: total, avail, used (uint64s), page size, encrypted.
+	// macOS grows swapfiles dynamically on demand (keeping xsu_avail small
+	// relative to xsu_total even with abundant free disk), so SwapTotal is
+	// not a fixed swap partition limit.
 	if raw, err := unix.SysctlRaw("vm.swapusage"); err == nil && len(raw) >= 16 {
 		m.SwapTotal = int64(binary.LittleEndian.Uint64(raw[0:8]))
 		m.SwapFree = int64(binary.LittleEndian.Uint64(raw[8:16]))
+		m.SwapDynamic = true
 	} else if err != nil {
 		return m, fmt.Errorf("sysctl vm.swapusage: %w", err)
 	}

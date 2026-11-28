@@ -88,6 +88,8 @@ export interface Candidate {
 	view: NodeView;
 	host: string;
 	mine: string;
+	/** True when this session's workspace on this node already has a live command. */
+	mineBusy?: boolean;
 	warm: boolean;
 	broken: boolean;
 	tunnelConnected: boolean;
@@ -125,6 +127,7 @@ function candidateMemoryNeed(c: Candidate, p?: Placement): bigint {
 
 export function candidateHasCapacity(c: Candidate, p?: Placement): boolean {
 	if (!c.tunnelConnected) return false;
+	if (c.mineBusy) return false;
 	if (candidateHolds(c, p)) return false;
 	if (c.parked > 0) return false;
 	if (c.ram > 0n) {
@@ -189,6 +192,13 @@ export function candidateParts(c: Candidate, p?: Placement, archPref?: ArchPrefe
 			"tunnel-reconnecting",
 			RECONNECTING_COST,
 			"its controller WebSocket tunnel is reconnecting",
+		);
+	}
+	if (c.mineBusy) {
+		add(
+			"workspace-busy",
+			HOLDING_COST,
+			"the session's workspace here already has a live command running",
 		);
 	}
 	if (!c.mine) {
@@ -344,6 +354,8 @@ export function buildCandidates(
 			free = ram - (used > reserved ? used : reserved);
 		}
 
+		const mineId = mine.get(nv.node.id) ?? "";
+		let mineBusy = false;
 		let running = 0;
 		let queued = 0;
 		let parked = 0;
@@ -351,12 +363,23 @@ export function buildCandidates(
 			if (cmd.state === CommandState.RUNNING) running++;
 			else if (cmd.state === CommandState.QUEUED) queued++;
 			else if (cmd.state === CommandState.PARKED) parked++;
+			if (
+				mineId &&
+				cmd.workspaceId === mineId &&
+				(cmd.state === CommandState.RUNNING ||
+					cmd.state === CommandState.QUEUED ||
+					cmd.state === CommandState.PARKED ||
+					cmd.state === CommandState.PAUSED)
+			) {
+				mineBusy = true;
+			}
 		}
 
 		out.push({
 			view: nv,
 			host: nv.node.hostname,
-			mine: mine.get(nv.node.id) ?? "",
+			mine: mineId,
+			mineBusy,
 			warm,
 			broken,
 			tunnelConnected: nv.tunnelConnected !== false,

@@ -92,6 +92,9 @@ func readTrim(p string) string {
 // limits it more.
 type Mem struct {
 	Total, Available, SwapTotal, SwapFree int64
+	// SwapDynamic is true when the OS allocates swapfiles on demand (macOS),
+	// so SwapTotal is only the currently allocated swapfiles, not a fixed cap.
+	SwapDynamic bool
 	// Domain is what Total and Available are of: "" for the host, or a
 	// cgroup, such as /user.slice.
 	Domain string

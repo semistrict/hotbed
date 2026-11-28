@@ -475,18 +475,26 @@ func TestSwapFullHoldsNewWorkWhenRAMAboveAdmitLimit(t *testing.T) {
 	if cWait.State != queued || !strings.Contains(cWait.Reason, "swap") {
 		t.Fatalf("c-wait with full slice swap = %v (%q), want queued for swap", cWait.State, cWait.Reason)
 	}
+	if adm := e.Heartbeat("cl").GetAdmission(); !adm.GetHolding() || !strings.Contains(adm.GetReason(), "swap") {
+		t.Fatalf("fixed swap full must report Admission.Holding=true so controller routes around it, got %+v", adm)
+	}
 
-	// Once swap headroom returns (e.g. an idle VM stopped or swap drained), c-wait admits.
+	// Dynamic OS swap (macOS vm.swapusage grows swapfiles on demand) must NOT
+	// falsely hold admission when swap_free is small relative to allocated swap.
 	sys.SetMem(sysinfo.Mem{
-		Total:     16 * giB,
-		Available: 4 * giB,
-		SwapTotal: 4 * giB,
-		SwapFree:  2 * giB,
+		Total:       16 * giB,
+		Available:   4 * giB,
+		SwapTotal:   20 * giB,
+		SwapFree:    512 << 20, // ~97.5% of currently allocated swapfiles
+		SwapDynamic: true,
 	})
 	e.Sample()
+	if adm := e.Heartbeat("cl").GetAdmission(); adm.GetHolding() {
+		t.Fatalf("dynamic swap must not set Admission.Holding, got %+v", adm)
+	}
 	e.admit(t.Context())
 	if st := e.state("c-wait"); st != running {
-		t.Fatalf("c-wait after swap headroom returned = %v, want running", st)
+		t.Fatalf("c-wait with dynamic swap = %v, want running", st)
 	}
 }
 

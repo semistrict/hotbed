@@ -6,6 +6,7 @@ import (
 	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/sysinfo"
 )
 
 // CPU pressure (PSI some avg10, %) past which more work makes all of it
@@ -99,12 +100,37 @@ func (e *Engine) cladefsMemoryStarved() (bool, string) {
 	return false, ""
 }
 
+// swapFullLocked reports whether a fixed swap cap (non-dynamic swap) is
+// >= 95% full while effective RAM is >= swapFullRAM and work is running.
+// Call with e.mu held.
+func (e *Engine) swapFullLocked(mem sysinfo.Mem, hasMem bool) (bool, string) {
+	if !hasMem {
+		mem = e.lastMem
+		hasMem = mem.Total > 0
+	}
+	if !hasMem || mem.Total <= 0 || mem.SwapDynamic || mem.SwapTotal <= 0 {
+		return false, ""
+	}
+	memUsed := e.effectiveMemUsedLocked(mem)
+	if float64(mem.SwapTotal-mem.SwapFree) >= float64(mem.SwapTotal)*0.95 &&
+		float64(memUsed) >= float64(mem.Total)*swapFullRAM && e.hasRunningWorkLocked() {
+		return true, fmt.Sprintf("swap %.0f%% full (%s free) while RAM is %.0f%% in use",
+			100*float64(mem.SwapTotal-mem.SwapFree)/float64(mem.SwapTotal),
+			gib(max(0, mem.SwapFree)),
+			100*float64(memUsed)/float64(mem.Total))
+	}
+	return false, ""
+}
+
 // nodeHold is what holds every new command on the node now, whatever it
 // would need, or "": cladefsd memory starvation, saturated CPUs, memory
-// pressure or a full disk. Call with e.mu held.
+// pressure, a full fixed swap cap, or a full disk. Call with e.mu held.
 func (e *Engine) nodeHold() (kind, reason string) {
 	if cladefsHeld, cladefsReason := e.cladefsMemoryStarved(); cladefsHeld {
 		return "cladefs-memory", cladefsReason
+	}
+	if swapHeld, swapReason := e.swapFullLocked(sysinfo.Mem{}, false); swapHeld {
+		return "memory", swapReason
 	}
 	switch u := e.usage; {
 	case e.cpu.holding:
@@ -181,7 +207,7 @@ func (e *Engine) admission() *pb.Admission {
 		},
 		{
 			Name: "memory-reserved", Value: float64(e.reserved()), Limit: float64(e.admitLimit()), Unit: "bytes",
-			Holding: waiting["memory"] > 0, Waiting: waiting["memory"],
+			Holding: waiting["memory"] > 0 || e.held.kind == "memory", Waiting: waiting["memory"],
 			Detail: "held at most or guaranteed by running and parked commands, base builds too, plus the growth their estimates still expect, pooled (not all peak at once), of the work slice's memory budget",
 		},
 		{
