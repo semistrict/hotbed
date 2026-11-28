@@ -28,8 +28,47 @@ const BROKEN_COST = 10;
 const PRESSURE_COST = 1;
 const HOLDING_COST = 1;
 const RECONNECTING_COST = 5;
+const SCARCE_ARCH_COST = 1.5;
 export const FULL_RAM_FRAC = 0.95; // mirrors internal/worker/engine.go fullAt
 export const RACE_COST_MARGIN = 0.35;
+
+export interface ArchPreference {
+	arch: string;
+	cpus: number;
+	archCpus: Map<string, number>;
+}
+
+/**
+ * When a placement asks for no specific --arch and multiple architectures fit,
+ * prefers the architecture with strictly more total online CPU capacity so
+ * arch-agnostic runs default to the abundant pool instead of consuming scarce
+ * architecture capacity (e.g. defaulting to arm64 over a single amd64 host).
+ */
+export function preferredArchFor(fit: Candidate[], p?: Placement): ArchPreference | undefined {
+	if (p?.arch) return undefined;
+	const archCpus = new Map<string, number>();
+	for (const c of fit) {
+		if (!c.tunnelConnected) continue;
+		const arch = c.view.hb?.resources?.arch ?? "";
+		if (!arch) continue;
+		archCpus.set(arch, (archCpus.get(arch) ?? 0) + Math.max(c.cpus, 0));
+	}
+	if (archCpus.size < 2) return undefined;
+	let bestArch = "";
+	let bestCpus = -1;
+	let tied = false;
+	for (const [arch, cpus] of archCpus) {
+		if (cpus > bestCpus) {
+			bestArch = arch;
+			bestCpus = cpus;
+			tied = false;
+		} else if (cpus === bestCpus) {
+			tied = true;
+		}
+	}
+	if (tied || bestCpus <= 0) return undefined;
+	return { arch: bestArch, cpus: bestCpus, archCpus };
+}
 
 export interface NodeRow {
 	node: Node;
@@ -98,7 +137,7 @@ export function candidateHasCapacity(c: Candidate, p?: Placement): boolean {
 	return true;
 }
 
-export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
+export function candidateParts(c: Candidate, p?: Placement, archPref?: ArchPreference): CostPart[] {
 	const out: CostPart[] = [
 		create(CostPartSchema, {
 			name: "cpu-busy",
@@ -161,11 +200,20 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 			add("broken", BROKEN_COST, "its newest base of the project failed");
 		}
 	}
+	const nodeArch = c.view.hb?.resources?.arch ?? "";
+	if (archPref && nodeArch && nodeArch !== archPref.arch) {
+		const myCpus = archPref.archCpus.get(nodeArch) ?? c.cpus;
+		add(
+			"arch-capacity",
+			SCARCE_ARCH_COST,
+			`${nodeArch} has less cluster capacity than ${archPref.arch} (${myCpus} vs ${archPref.cpus} CPUs)`,
+		);
+	}
 	return out;
 }
 
-export function candidateCost(c: Candidate, p?: Placement): number {
-	return candidateParts(c, p).reduce((sum, part) => sum + part.value, 0);
+export function candidateCost(c: Candidate, p?: Placement, archPref?: ArchPreference): number {
+	return candidateParts(c, p, archPref).reduce((sum, part) => sum + part.value, 0);
 }
 
 export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: string[]): string {
@@ -327,10 +375,14 @@ export function buildCandidates(
 	return out;
 }
 
-export function rankCandidates(cs: Candidate[], p?: Placement): Candidate[] {
+export function rankCandidates(
+	cs: Candidate[],
+	p?: Placement,
+	archPref?: ArchPreference,
+): Candidate[] {
 	return [...cs].sort((a, b) => {
-		const ca = candidateCost(a, p);
-		const cb = candidateCost(b, p);
+		const ca = candidateCost(a, p, archPref);
+		const cb = candidateCost(b, p, archPref);
 		if (ca !== cb) return ca < cb ? -1 : 1;
 		if (a.free !== b.free) return a.free > b.free ? -1 : 1;
 		return a.host < b.host ? -1 : a.host > b.host ? 1 : 0;
@@ -411,8 +463,9 @@ function pickFromFit(
 	why: string,
 	pinned: boolean,
 	waitForCapacity: boolean,
+	archPref?: ArchPreference,
 ): ChooseResult {
-	const ranked = rankCandidates(fit, p);
+	const ranked = rankCandidates(fit, p, archPref);
 	const withCap = ranked.filter((c) => candidateHasCapacity(c, p));
 	if (withCap.length > 0) {
 		const primary = withCap[0];
@@ -421,7 +474,9 @@ function pickFromFit(
 		if (!pinned && !primary.mine) {
 			runnerUp = withCap.slice(1).find((c) => !c.mine && c.tunnelConnected);
 			if (runnerUp) {
-				raceImmediate = candidateCost(runnerUp, p) - candidateCost(primary, p) <= RACE_COST_MARGIN;
+				raceImmediate =
+					candidateCost(runnerUp, p, archPref) - candidateCost(primary, p, archPref) <=
+					RACE_COST_MARGIN;
 			}
 		}
 		return { chosen: primary, runnerUp, raceImmediate, why };
@@ -457,6 +512,8 @@ export function chooseCandidate(
 	const waitForCapacity = Boolean(opts?.waitForCapacity);
 	const scope = cs;
 	const fits = (c: Candidate) => candidateUnfit(c, p, hosts) === "";
+	const allFit = scope.filter(fits);
+	const archPref = preferredArchFor(allFit, p);
 	const held = scope.filter((c) => c.mine !== "");
 	if (!syncs && held.length > 0) {
 		const fit = held.filter(fits);
@@ -467,6 +524,7 @@ export function chooseCandidate(
 				"the run syncs no checkout, so it stays in the session's workspace",
 				fit.length <= 1,
 				waitForCapacity,
+				archPref,
 			);
 		}
 		const away = held.filter(
@@ -476,11 +534,17 @@ export function chooseCandidate(
 			return { why: "", err: refusal(away, p, hosts, true) };
 		}
 	}
-	const fit = scope.filter(fits);
-	if (fit.length === 0) {
+	if (allFit.length === 0) {
 		return { why: "", err: refusal(scope, p, hosts, false) };
 	}
-	return pickFromFit(fit, p, "the least costly node", fit.length <= 1, waitForCapacity);
+	return pickFromFit(
+		allFit,
+		p,
+		"the least costly node",
+		allFit.length <= 1,
+		waitForCapacity,
+		archPref,
+	);
 }
 
 export function buildPlacementDecision(
@@ -492,6 +556,10 @@ export function buildPlacementDecision(
 	err: HotbedError | undefined,
 	opts?: { noSync?: boolean; throwaway?: boolean },
 ): PlacementDecision {
+	const archPref = preferredArchFor(
+		cs.filter((c) => candidateUnfit(c, p, hosts) === ""),
+		p,
+	);
 	const d = create(PlacementDecisionSchema, {
 		nodeId: err ? "" : (chosen?.view.node.id ?? ""),
 		hostname: err ? "" : (chosen?.host ?? ""),
@@ -511,8 +579,8 @@ export function buildPlacementDecision(
 			unfit,
 		});
 		if (!unfit) {
-			pc.parts = candidateParts(c, p);
-			pc.cost = candidateCost(c, p);
+			pc.parts = candidateParts(c, p, archPref);
+			pc.cost = candidateCost(c, p, archPref);
 		}
 		d.candidates.push(pc);
 	}

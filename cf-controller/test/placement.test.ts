@@ -237,4 +237,96 @@ describe("late-binding capacity and 2-host racing", () => {
 		expect(cs[0].warm).toBe(false);
 		expect(cs[0].running).toBe(1);
 	});
+
+	it("defaults arch-agnostic runs to the arch with the most cluster CPU capacity, spilling over when saturated", () => {
+		const archNode = (
+			host: string,
+			arch: string,
+			cpus: number,
+			overrides: Partial<Candidate> = {},
+		): Candidate => {
+			const resources = create(ResourcesSchema, {
+				arch,
+				cpus,
+				memoryBytes: 18n << 30n,
+				runtimes: ["vm"],
+			});
+			return vmNode({
+				host,
+				cpus,
+				view: { online: true, hb: { resources }, node: { id: host } },
+				...overrides,
+			} as unknown as Partial<Candidate>);
+		};
+
+		const ubu1 = archNode("ubu1", "amd64", 16, { cpuBusy: 0.01, warm: true });
+		const mac = archNode("mac", "arm64", 11, { cpuBusy: 0.36, warm: false });
+		const mbp = archNode("ramons-macbook-pro", "arm64", 15, {
+			cpuBusy: 0.84,
+			running: 1,
+			warm: true,
+		});
+
+		// arm64 has 26 CPUs vs amd64's 16 CPUs: arch-agnostic run defaults to arm64
+		// (picking mac over busier mbp and over idle ubu1), and records arch-capacity.
+		const picked = chooseCandidate([ubu1, mac, mbp], undefined, [], true, {
+			waitForCapacity: true,
+		});
+		expect(picked.chosen?.host).toBe("mac");
+		expect(picked.runnerUp?.host).toBe("ramons-macbook-pro");
+
+		const d = buildPlacementDecision(
+			[ubu1, mac, mbp],
+			undefined,
+			[],
+			picked.chosen,
+			picked.why,
+			undefined,
+		);
+		const ubuCand = d.candidates.find((c) => c.hostname === "ubu1");
+		expect(ubuCand?.parts.some((pt) => pt.name === "arch-capacity")).toBe(true);
+
+		// Explicit --arch amd64 applies no arch-capacity penalty and picks ubu1.
+		const amdReq = create(PlacementSchema, { arch: "amd64" });
+		const explicit = chooseCandidate([ubu1, mac, mbp], amdReq, [], true, {
+			waitForCapacity: true,
+		});
+		expect(explicit.chosen?.host).toBe("ubu1");
+		const dExplicit = buildPlacementDecision(
+			[ubu1, mac, mbp],
+			amdReq,
+			[],
+			explicit.chosen,
+			explicit.why,
+			undefined,
+		);
+		expect(
+			dExplicit.candidates
+				.find((c) => c.hostname === "ubu1")
+				?.parts.some((pt) => pt.name === "arch-capacity"),
+		).toBe(false);
+
+		// When all arm64 nodes are saturated, arch-agnostic runs spill over to amd64.
+		const macFull = archNode("mac", "arm64", 11, { admission: holding });
+		const mbpFull = archNode("ramons-macbook-pro", "arm64", 15, { admission: holding });
+		const spillover = chooseCandidate([ubu1, macFull, mbpFull], undefined, [], true, {
+			waitForCapacity: true,
+		});
+		expect(spillover.chosen?.host).toBe("ubu1");
+
+		// Equal-capacity arches have no bias: idle amd64 beats busy arm64.
+		const arm16 = archNode("arm16", "arm64", 16, { cpuBusy: 0.9 });
+		const balanced = chooseCandidate([ubu1, arm16], undefined, [], true, {
+			waitForCapacity: true,
+		});
+		expect(balanced.chosen?.host).toBe("ubu1");
+
+		// Disconnected tunnels do not count toward an architecture's live capacity.
+		const disconnectedArm = archNode("arm-disc", "arm64", 64, { tunnelConnected: false });
+		const connectedAmd = archNode("ubu-conn", "amd64", 16, { tunnelConnected: true });
+		const discRes = chooseCandidate([disconnectedArm, connectedAmd], undefined, [], true, {
+			waitForCapacity: true,
+		});
+		expect(discRes.chosen?.host).toBe("ubu-conn");
+	});
 });
