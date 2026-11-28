@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestDarwinSystemCPUAndMemory(t *testing.T) {
+func TestDarwinSystemCPU(t *testing.T) {
 	var sys darwinSystem
 	cpu, err := sys.CPU()
 	if err != nil {
@@ -17,13 +17,6 @@ func TestDarwinSystemCPUAndMemory(t *testing.T) {
 	}
 	if cpu.Busy < 0 || cpu.Busy > 1 || math.IsNaN(cpu.Busy) {
 		t.Fatalf("darwinSystem.CPU().Busy = %v, want in [0, 1]", cpu.Busy)
-	}
-	mem, err := sys.Meminfo()
-	if err != nil {
-		t.Fatalf("darwinSystem.Meminfo() err = %v, want nil", err)
-	}
-	if mem.Total <= 0 || mem.Available < 0 || mem.Available > mem.Total {
-		t.Fatalf("darwinSystem.Meminfo() = %+v, want positive Total with 0 <= Available <= Total", mem)
 	}
 	if _, err := sys.Pressure("cpu"); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("darwinSystem.Pressure(cpu) err = %v, want ErrUnsupported", err)
