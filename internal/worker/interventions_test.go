@@ -22,6 +22,8 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/inspect"
+	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/statedir"
 )
 
 type fakeInspector struct {
@@ -1135,5 +1137,74 @@ func TestInterventionCommentBoundAndTimelineConcise(t *testing.T) {
 	lastSeq := cmd.Interventions[len(cmd.Interventions)-1].Seq
 	if lastSeq != 42 {
 		t.Fatalf("last Seq = %d, want 42 (monotonic across cap)", lastSeq)
+	}
+}
+
+type failingFreezeRuntime struct {
+	runtime.WorkspaceRuntime
+	freezeErr error
+}
+
+func (f *failingFreezeRuntime) FreezeCommand(context.Context, string, string) error {
+	return f.freezeErr
+}
+
+func (f *failingFreezeRuntime) StatusMany(context.Context, string, []string) (map[string]runtime.CommandStatus, error) {
+	return nil, f.freezeErr
+}
+
+// When a guest VM's hotbed-guestd stops answering vsock RPCs (e.g. wedged in D
+// state under memory pressure), Pause wraps the error as a retryable
+// WORKER_UNREACHABLE error with VM console clues and a `hotbed stop` suggestion.
+func TestPauseUnreachableGuestVMReturnsStructuredErrorWithConsoleHint(t *testing.T) {
+	now := time.Unix(1795300000, 0)
+	dir := t.TempDir()
+	vmBackend := newVMBackend(dir, statedir.VMConfig{})
+	consoleDir := filepath.Join(dir, "vms", "w-vm")
+	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	consoleLog := "[ 1200.000] INFO: task exe:832 blocked for more than 122 seconds.\n" +
+		"[ 1200.001] Out of memory: Killed process 999 (cargo)\n"
+	if err := os.WriteFile(filepath.Join(consoleDir, "console.log"), []byte(consoleLog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
+	e := newInterventionEngine(t, dir, store, units, nil, &now, func(cfg *EngineConfig) {
+		cfg.VM = vmBackend
+		cfg.Runtime = &failingFreezeRuntime{
+			freezeErr: connect.NewError(connect.CodeUnavailable, "unexpected EOF"),
+		}
+	})
+	e.guest.mu.Lock()
+	e.guest.cmds["hotbed-c-vm"] = &rtCmd{wsID: "w-vm", cmdID: "c-vm"}
+	e.guest.mu.Unlock()
+	e.vmWorkspaces.Store("w-vm", struct{}{})
+	e.mu.Lock()
+	e.workspaces["w-vm"] = &workspace{rec: &pb.WorkspaceRecord{
+		Workspace: &pb.Workspace{Id: "w-vm", Project: "app", SessionId: "sess-vm", State: idle, Runtime: "vm"},
+	}}
+	e.commands["c-vm"] = &command{rec: &pb.CommandRecord{
+		Command: &pb.Command{Id: "c-vm", WorkspaceId: "w-vm", SessionId: "sess-vm", State: running, Argv: "cargo test"},
+	}}
+	e.mu.Unlock()
+
+	_, err := e.Pause(t.Context(), "c-vm", Intervention{Comment: "checking stall", Host: "laptop"})
+	if err == nil {
+		t.Fatal("Pause succeeded on unreachable guestd, want error")
+	}
+	var ae *api.Error
+	if !errors.As(err, &ae) {
+		t.Fatalf("Pause err = %T (%v), want *api.Error", err, err)
+	}
+	if ae.Code != api.CodeWorkerUnreachable || !ae.Retryable {
+		t.Fatalf("Pause api.Error = %+v, want retryable WORKER_UNREACHABLE", ae)
+	}
+	if !strings.Contains(ae.Message, "VM console:") || !strings.Contains(ae.Message, "blocked for more than 122 seconds") {
+		t.Errorf("Pause error message missing VM console hint: %q", ae.Message)
+	}
+	if !strings.Contains(ae.Suggestion, "hotbed stop") {
+		t.Errorf("Pause error suggestion missing hotbed stop: %q", ae.Suggestion)
 	}
 }

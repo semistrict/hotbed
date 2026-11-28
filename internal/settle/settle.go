@@ -20,10 +20,12 @@ const (
 	// Window is how many of the newest rows a program can still redraw by
 	// moving the cursor up: more than any multi-line progress display.
 	Window = 64
-	// ScreenRows is the height of the terminal a command runs in (guestd's):
-	// absolute positions (CSI H) count from the top of its last ScreenRows
-	// rows.
+	// ScreenRows and ScreenCols are the dimensions of the terminal a command
+	// runs in (guestd's defaultTTYRows x defaultTTYCols): absolute positions
+	// (CSI H) count from the top of the last ScreenRows rows, and TTY screens
+	// auto-wrap at ScreenCols (VT100 DECAWM pending-wrap).
 	ScreenRows = 50
+	ScreenCols = 200
 	// MaxCols bounds a row: a cursor moved past it, or text written past it,
 	// goes nowhere, so a hostile or broken output cannot grow one row
 	// without end.
@@ -32,12 +34,14 @@ const (
 
 // Screen is a terminal emulator that emits each row once it settles.
 type Screen struct {
-	rows  [][]rune
-	rowTs []int64 // receive timestamp (unix ms) for each row in rows
-	row   int     // the cursor's row, an index into rows
-	col   int
-	emit  func(string, int64)
-	curTs int64 // timestamp of the WriteAt currently executing
+	rows        [][]rune
+	rowTs       []int64 // receive timestamp (unix ms) for each row in rows
+	row         int     // the cursor's row, an index into rows
+	col         int
+	cols        int  // wrap width (0 = no auto-wrap, bounded by MaxCols)
+	pendingWrap bool // VT100 DECAWM delayed wrap after writing the rightmost cell
+	emit        func(string, int64)
+	curTs       int64 // timestamp of the WriteAt currently executing
 
 	// An escape sequence in progress across writes.
 	state   escState
@@ -66,10 +70,27 @@ func New(emit func(line string)) *Screen {
 	return NewTimed(func(line string, _ int64) { emit(line) })
 }
 
+// NewCols is New with VT100 auto-wrap at cols columns (0 disables wrapping).
+func NewCols(cols int, emit func(line string)) *Screen {
+	return NewTimedCols(cols, func(line string, _ int64) { emit(line) })
+}
+
 // NewTimed is a screen that calls emit with each settled line and its received
 // timestamp (unix ms, 0 when unknown), in order.
 func NewTimed(emit func(line string, ts int64)) *Screen {
-	return &Screen{rows: [][]rune{nil}, rowTs: []int64{0}, emit: emit}
+	return NewTimedCols(0, emit)
+}
+
+// NewTimedCols is NewTimed with VT100 pending-wrap at cols columns (0 disables
+// wrapping, bounding rows at MaxCols).
+func NewTimedCols(cols int, emit func(line string, ts int64)) *Screen {
+	if cols < 0 {
+		cols = 0
+	}
+	if cols > MaxCols {
+		cols = MaxCols
+	}
+	return &Screen{rows: [][]rune{nil}, rowTs: []int64{0}, cols: cols, emit: emit}
 }
 
 // WriteAt feeds what the program wrote, stamped with the unix-ms time ts at
@@ -129,19 +150,23 @@ func (s *Screen) Write(p []byte) {
 		case b == '\n':
 			// A newline starts the next line at its start, as a terminal
 			// turns it into \r\n (onlcr) and as a log written to a file means.
+			s.pendingWrap = false
 			s.lineFeed()
 			s.col = 0
 			i++
 		case b == '\r':
+			s.pendingWrap = false
 			s.col = 0
 			i++
 		case b == '\b':
+			s.pendingWrap = false
 			if s.col > 0 {
 				s.col--
 			}
 			i++
 		case b == '\t':
-			s.col = min((s.col/8+1)*8, MaxCols)
+			s.pendingWrap = false
+			s.col = min((s.col/8+1)*8, s.maxCol())
 			i++
 		case b < 0x20 || b == 0x7f:
 			i++ // other controls (BEL, SI, SO, NUL) print nothing
@@ -173,16 +198,20 @@ func (s *Screen) escapeByte(b byte) {
 		s.save()
 	case '8': // restore it
 		s.state = ground
+		s.pendingWrap = false
 		s.restore()
 	case 'M': // reverse index: up a row
 		s.state = ground
+		s.pendingWrap = false
 		s.up(1)
 	case 'E': // next line
 		s.state = ground
+		s.pendingWrap = false
 		s.lineFeed()
 		s.col = 0
 	case 'D': // index: down a row
 		s.state = ground
+		s.pendingWrap = false
 		s.lineFeed()
 	default:
 		s.state = ground // ESC 7, ESC 8, ESC =, and the rest change nothing seen here
@@ -214,32 +243,41 @@ func (s *Screen) csiByte(b byte) {
 	}
 	switch b {
 	case 'A': // cursor up
+		s.pendingWrap = false
 		s.up(n(0, 1))
 	case 'B', 'e': // cursor down
+		s.pendingWrap = false
 		s.down(n(0, 1))
 	case 'C', 'a': // cursor forward
-		s.col = min(s.col+n(0, 1), MaxCols)
+		s.pendingWrap = false
+		s.col = min(s.col+n(0, 1), s.maxCol())
 	case 'D': // cursor back
+		s.pendingWrap = false
 		s.col = max(0, s.col-n(0, 1))
 	case 'E': // next line
+		s.pendingWrap = false
 		s.down(n(0, 1))
 		s.col = 0
 	case 'F': // previous line
+		s.pendingWrap = false
 		s.up(n(0, 1))
 		s.col = 0
 	case 'G', '`': // column
-		s.col = n(0, 1) - 1
+		s.pendingWrap = false
+		s.col = min(n(0, 1)-1, s.maxCol())
 	case 'H', 'f': // position on the screen: its last ScreenRows rows
+		s.pendingWrap = false
 		top := max(0, len(s.rows)-ScreenRows)
 		s.row = top + min(n(0, 1), ScreenRows) - 1
 		for s.row >= len(s.rows) {
 			s.rows = append(s.rows, nil)
 			s.rowTs = append(s.rowTs, 0)
 		}
-		s.col = n(1, 1) - 1
+		s.col = min(n(1, 1)-1, s.maxCol())
 	case 's':
 		s.save()
 	case 'u':
+		s.pendingWrap = false
 		s.restore()
 	case 'K': // erase in line
 		s.eraseLine(n(0, 0))
@@ -277,7 +315,38 @@ func (s *Screen) restore() {
 	}
 }
 
+func (s *Screen) maxCol() int {
+	if s.cols > 0 {
+		return s.cols - 1
+	}
+	return MaxCols
+}
+
 func (s *Screen) put(r rune) {
+	if s.cols > 0 {
+		if s.pendingWrap {
+			s.pendingWrap = false
+			s.lineFeed()
+			s.col = 0
+		}
+		row := s.rows[s.row]
+		for len(row) < s.col {
+			row = append(row, ' ')
+		}
+		if s.col < len(row) {
+			row[s.col] = r
+		} else {
+			row = append(row, r)
+		}
+		s.rows[s.row] = row
+		s.touchRow(s.row)
+		if s.col+1 >= s.cols {
+			s.pendingWrap = true
+		} else {
+			s.col++
+		}
+		return
+	}
 	if s.col >= MaxCols {
 		return
 	}
@@ -394,7 +463,7 @@ func (s *Screen) Flush() {
 	for i := 0; i <= last; i++ {
 		s.emit(line(s.rows[i]), s.rowTs[i])
 	}
-	s.rows, s.rowTs, s.row, s.col = [][]rune{nil}, []int64{0}, 0, 0
+	s.rows, s.rowTs, s.row, s.col, s.pendingWrap = [][]rune{nil}, []int64{0}, 0, 0, false
 }
 
 func line(r []rune) string { return strings.TrimRight(string(r), " ") }

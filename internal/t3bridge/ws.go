@@ -44,10 +44,35 @@ func WSURL(controllerBaseURL string) (string, error) {
 	return u.String(), nil
 }
 
+// InterventionNotice describes an external stop/pause of a session's command
+// delivered over /ws/questions so the owning T3 Code thread sees the stop and
+// its reason right away.
+type InterventionNotice struct {
+	CommandID      string `json:"commandId"`
+	Seq            int32  `json:"seq"`
+	Kind           string `json:"kind"`
+	SessionID      string `json:"sessionId"`
+	T3CodeThreadID string `json:"t3codeThreadId"`
+	Argv           string `json:"argv"`
+	By             string `json:"by"`
+	Comment        string `json:"comment"`
+	Diagnosed      bool   `json:"diagnosed"`
+	At             int64  `json:"at"`
+}
+
+// Key uniquely identifies an intervention on a command for deduplication.
+func (iv *InterventionNotice) Key() string {
+	if iv == nil || iv.CommandID == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", iv.CommandID, iv.Seq)
+}
+
 type wireMessage struct {
-	Type      string            `json:"type"`
-	Event     string            `json:"event,omitempty"`
-	Questions []json.RawMessage `json:"questions,omitempty"`
+	Type         string              `json:"type"`
+	Event        string              `json:"event,omitempty"`
+	Questions    []json.RawMessage   `json:"questions,omitempty"`
+	Intervention *InterventionNotice `json:"intervention,omitempty"`
 }
 
 func decodeQuestions(raws []json.RawMessage) ([]*pb.Question, error) {
@@ -199,16 +224,25 @@ func serveWSOnce(
 			log.Warn("t3-bridge ignoring malformed frame", "err", err)
 			continue
 		}
-		qs, err := decodeQuestions(frame.Questions)
-		if err != nil {
-			log.Warn("t3-bridge ignoring frame with undecodable question", "type", frame.Type, "err", err)
-			continue
-		}
 		switch frame.Type {
 		case "snapshot":
+			qs, err := decodeQuestions(frame.Questions)
+			if err != nil {
+				log.Warn("t3-bridge ignoring frame with undecodable question", "type", frame.Type, "err", err)
+				continue
+			}
 			emit(Event{Kind: EventSnapshot, Questions: qs})
 		case "update":
+			qs, err := decodeQuestions(frame.Questions)
+			if err != nil {
+				log.Warn("t3-bridge ignoring frame with undecodable question", "type", frame.Type, "err", err)
+				continue
+			}
 			emit(Event{Kind: EventUpdate, EventName: frame.Event, Questions: qs})
+		case "intervention":
+			if frame.Intervention != nil && frame.Intervention.CommandID != "" && frame.Intervention.T3CodeThreadID != "" {
+				emit(Event{Kind: EventIntervention, Intervention: frame.Intervention})
+			}
 		}
 	}
 }

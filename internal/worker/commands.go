@@ -21,10 +21,12 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/cmdlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitauth"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/settle"
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -1045,6 +1047,8 @@ func (e *Engine) admit(ctx context.Context) {
 		volPath := e.commandVolPath(c)
 		cmdID := c.cmd().Id
 		isBench := c.cmd().Bench
+		isTTY := c.cmd().Tty
+		logPath, _ := e.logPath(cmdID)
 		if w, ok := e.workspaces[c.runtimeTarget()]; ok && inGuest {
 			w.vmUsed = true // the next command needs a VM of its own
 			w.vmMeasured = w.vmMeasured || isBench
@@ -1144,6 +1148,9 @@ func (e *Engine) admit(ctx context.Context) {
 		}
 		var booted string
 		if err == nil {
+			if isTTY && logPath != "" {
+				_ = cmdlog.WriteTTYCols(logPath, settle.ScreenCols)
+			}
 			startCall := time.Now()
 			err = x.Start(ctx, l)
 			if err == nil && e.cfg.VM != nil {

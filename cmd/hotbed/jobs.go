@@ -177,9 +177,12 @@ func attachFor(ctx context.Context, wk workerClients, id, session string, wait t
 
 // outputBudget passes the first limit bytes of a command's output through
 // to w, cut at a line's end where one is near, and holds back the rest,
-// noting once, inline, that it does.
+// noting once, inline (and on stderr, so pipelines whose stdout goes to a
+// consumer like base64/tar still see why stdout stopped), that it does.
 type outputBudget struct {
 	w       io.Writer
+	stderr  io.Writer
+	cmdID   string
 	limit   int64
 	written int64
 	held    int64
@@ -206,6 +209,13 @@ func (b *outputBudget) Write(p []byte) (int, error) {
 	}
 	if len(p) > 0 {
 		if b.held == 0 {
+			if b.stderr != nil {
+				if b.cmdID != "" {
+					fmt.Fprintf(b.stderr, "hotbed: %s output exceeded --max-output %s and was truncated; pass --max-output 0 for full output, or read all of it with hotbed output %s\n", b.cmdID, formatBytes(b.limit), b.cmdID)
+				} else {
+					fmt.Fprintf(b.stderr, "hotbed: output exceeded --max-output %s and was truncated; pass --max-output 0 for full output\n", formatBytes(b.limit))
+				}
+			}
 			if _, err := fmt.Fprintf(b.w, "\n[hotbed: output past %s stops printing here as it runs; all of it is kept, and its last lines print at its end]\n", formatBytes(b.limit)); err != nil {
 				return 0, err
 			}
@@ -226,11 +236,17 @@ func printTail(ctx context.Context, wk workerClients, id string, w io.Writer) er
 	if len(q.Lines) == 0 {
 		return nil
 	}
-	fmt.Fprintf(w, "[hotbed: its last %d of %d lines:]\n", len(q.Lines), q.TotalLines)
-	for _, l := range q.Lines {
-		fmt.Fprintln(w, l.Text)
+	if _, err := fmt.Fprintf(w, "[hotbed: its last %d of %d lines:]\n", len(q.Lines), q.TotalLines); err != nil {
+		return err
 	}
-	fmt.Fprintf(w, "[hotbed: all %d lines are kept: hotbed output %s --grep PATTERN (or --from N --to M, --head N, --tail N)]\n", q.TotalLines, id)
+	for _, l := range q.Lines {
+		if _, err := fmt.Fprintln(w, l.Text); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "[hotbed: all %d lines are kept: hotbed output %s --grep PATTERN (or --from N --to M, --head N, --tail N)]\n", q.TotalLines, id); err != nil {
+		return err
+	}
 	return nil
 }
 

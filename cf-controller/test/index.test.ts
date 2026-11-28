@@ -23,6 +23,7 @@ import {
 	ClusterService,
 	CommandChangeSchema,
 	CommandEventSchema,
+	CommandInterventionSchema,
 	CommandLimitsSchema,
 	CommandLogSchema,
 	CommandSchema,
@@ -37,6 +38,7 @@ import {
 	FreshenState,
 	GitAuthService,
 	HeartbeatRequestSchema,
+	InterventionKind,
 	ListFilesResponseSchema,
 	ManagedArtifactSchema,
 	MemoryScope,
@@ -61,6 +63,7 @@ import {
 	ScheduleService,
 	SessionService,
 	SharedBaseSchema,
+	StampSchema,
 	StepSchema,
 	TraceCommandChunkSchema,
 	WorkerConfigSchema,
@@ -3184,6 +3187,130 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		} finally {
 			listAll.mockRestore();
 			allEvents.mockRestore();
+		}
+	});
+
+	it("broadcasts external stop/pause interventions over /ws/questions to wake the owning T3 thread", async () => {
+		const owner = ownerClients();
+		const nodeId = "node-iv-bridge";
+		const hostname = "ubu-iv";
+		const sessId = "serene-skink-iv";
+		const threadId = "t3-thread-iv-1";
+		const cmdId = "2unymhaqoe";
+
+		await owner.cluster.addProject({ name: "proj-iv" });
+		await owner.sessions.startSession({
+			id: sessId,
+			project: "proj-iv",
+			t3codeThreadId: threadId,
+		});
+
+		const wc = workerClients(OWNER_TOKEN, nodeId, hostname);
+		const joined = await wc.cluster.join({});
+		await wc.cluster.heartbeat({
+			clusterId: joined.clusterId,
+			resources: create(ResourcesSchema, { arch: "amd64", cpus: 8, memoryBytes: 16n << 30n }),
+		});
+		await wc.cluster.pushEvents({
+			clusterId: joined.clusterId,
+			checkpoint: create(CheckpointSchema, {
+				seq: 1n,
+				commands: [
+					create(CommandSchema, {
+						id: cmdId,
+						workspaceId: "ws-iv",
+						sessionId: sessId,
+						state: CommandState.RUNNING,
+						argv: "cargo test -p cladefs",
+					}),
+				],
+			}),
+		});
+
+		const tunnel = await openMockWorkerTunnel(OWNER_TOKEN, nodeId, hostname, {
+			unary: {
+				"/hotbed.v1.WorkspaceService/StopCommand": () =>
+					encodeProto(
+						CommandSchema,
+						create(CommandSchema, {
+							id: cmdId,
+							workspaceId: "ws-iv",
+							sessionId: sessId,
+							state: CommandState.CANCELLED,
+							argv: "cargo test -p cladefs",
+							interventions: [
+								create(CommandInterventionSchema, {
+									seq: 1,
+									kind: InterventionKind.STOP,
+									comment: "stopping slow test",
+									diagnosed: true,
+									by: create(StampSchema, { host: "ramon-mac", at: BigInt(Date.now()) }),
+								}),
+							],
+						}),
+					),
+			},
+		});
+
+		const qRes = await SELF.fetch("https://controller.test/ws/questions", {
+			headers: {
+				Upgrade: "websocket",
+				Authorization: `Bearer ${OWNER_TOKEN}`,
+				"X-Hotbed-Host": "ramon-mac",
+			},
+		});
+		expect(qRes.status).toBe(101);
+		const qws = qRes.webSocket!;
+		qws.accept();
+		const frames: unknown[] = [];
+		qws.addEventListener("message", (ev) => {
+			const raw = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+			frames.push(JSON.parse(raw));
+		});
+
+		try {
+			// Stopping from the owning session itself must NOT broadcast an external intervention wake.
+			await owner.workspaces.stopCommand({ id: cmdId, sessionId: sessId, comment: "self stop" });
+			await new Promise((r) => setTimeout(r, 25));
+			expect(frames.filter((f) => (f as { type?: string }).type === "intervention")).toHaveLength(
+				0,
+			);
+
+			// Stopping externally (no sessionId, e.g. from cockpit or user CLI) MUST broadcast.
+			await owner.workspaces.stopCommand({
+				id: cmdId,
+				comment: "stopping slow test",
+				diagnose: true,
+			});
+			await new Promise((r) => setTimeout(r, 25));
+			const ivFrames = frames.filter(
+				(f) => (f as { type?: string }).type === "intervention",
+			) as Array<{
+				type: string;
+				intervention: {
+					commandId: string;
+					seq: number;
+					kind: string;
+					sessionId: string;
+					t3codeThreadId: string;
+					by: string;
+					comment: string;
+					diagnosed: boolean;
+				};
+			}>;
+			expect(ivFrames).toHaveLength(1);
+			expect(ivFrames[0].intervention).toMatchObject({
+				commandId: cmdId,
+				seq: 1,
+				kind: "stop",
+				sessionId: sessId,
+				t3codeThreadId: threadId,
+				comment: "stopping slow test",
+				diagnosed: true,
+			});
+		} finally {
+			qws.close(1000, "test done");
+			tunnel.close();
 		}
 	});
 });

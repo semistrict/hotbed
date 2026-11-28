@@ -577,6 +577,10 @@ func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	configureGuestSysctls(log, "/proc")
 	configureGuestMGLRU(log, "/sys")
 	configureGuestZramSwap(log)
+	// Shield hotbed-guestd (PID 1 and its forked PID 2 child) from the guest
+	// OOM killer; spawned command processes explicitly raise oom_score_adj to
+	// +1000 so workloads are always killed before the control agent.
+	protectSelfFromOOM(log, "/proc/self/oom_score_adj")
 	// Ensure loopback is up (minimal Firecracker kernels leave lo DOWN).
 	if ipBin, err := exec.LookPath("ip"); err == nil {
 		_ = exec.Command(ipBin, "link", "set", "lo", "up").Run()
@@ -649,5 +653,14 @@ func syncGuestClockWithOps(log *slog.Logger, raw string, now func() time.Time, s
 	}
 	if err := setTime(hostSec); err != nil && log != nil {
 		log.Warn("sync guest clock from HOTBED_NOW failed", "host_sec", hostSec, "skew_s", skew, "err", err)
+	}
+}
+
+// protectSelfFromOOM writes -1000 to oomScorePath so the guest kernel's OOM
+// killer never kills hotbed-guestd under guest memory pressure (spawned
+// commands explicitly get +1000).
+func protectSelfFromOOM(log *slog.Logger, oomScorePath string) {
+	if err := os.WriteFile(oomScorePath, []byte("-1000\n"), 0o644); err != nil && !os.IsNotExist(err) && log != nil {
+		log.Warn("set guestd oom_score_adj failed", "path", oomScorePath, "err", err)
 	}
 }

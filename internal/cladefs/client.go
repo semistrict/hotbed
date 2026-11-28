@@ -756,6 +756,18 @@ func IsGone(err error) bool {
 	return errors.Is(err, storage.ErrNotFound) || isNotFound(err) || isDeleted(err)
 }
 
+// IsResourceExhausted reports whether err says cladefsd refused the request
+// because the host is out of memory or cell capacity right now (retryable once
+// memory frees up). Unwraps wrapped errors via errors.As because gRPC's
+// status.Code does not inspect wrapped error chains.
+func IsResourceExhausted(err error) bool {
+	var st interface{ GRPCStatus() *status.Status }
+	if errors.As(err, &st) && st.GRPCStatus().Code() == codes.ResourceExhausted {
+		return true
+	}
+	return status.Code(err) == codes.ResourceExhausted
+}
+
 func isNotFound(err error) bool {
 	if errors.Is(err, syscall.ENOENT) {
 		return true

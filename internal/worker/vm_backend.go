@@ -971,6 +971,49 @@ func (b *VMBackend) StopVM(ctx context.Context, wsID string) error {
 	return b.mgr.StopVM(ctx, wsID)
 }
 
+// ConsoleTail returns the last maxBytes of wsID's VM console log (trimmed to
+// whole lines), or "" when unavailable. Used to attach host-side kernel/hang
+// context when guestd inside the VM stops answering.
+func (b *VMBackend) ConsoleTail(wsID string, maxBytes int) string {
+	if b == nil || wsID == "" || maxBytes <= 0 {
+		return ""
+	}
+	var logPath string
+	if b.mgr != nil {
+		if inst := b.mgr.Get(wsID); inst != nil {
+			logPath = inst.ConsoleLog
+		}
+	}
+	if logPath == "" && b.workerDir != "" {
+		logPath = filepath.Join(b.workerDir, "vms", wsID, "console.log")
+	}
+	if logPath == "" {
+		return ""
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() <= 0 {
+		return ""
+	}
+	start := max(int64(0), st.Size()-int64(maxBytes))
+	buf := make([]byte, st.Size()-start)
+	n, err := f.ReadAt(buf, start)
+	if n == 0 {
+		return ""
+	}
+	s := strings.ReplaceAll(string(buf[:n]), "\r\n", "\n")
+	if start > 0 {
+		if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+			s = s[idx+1:]
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
 // CurrentKernelPath returns the active guest kernel path for new VM boots.
 func (b *VMBackend) CurrentKernelPath() string {
 	return cmp.Or(b.configSnapshot().KernelPath, vm.DefaultKernelPath)

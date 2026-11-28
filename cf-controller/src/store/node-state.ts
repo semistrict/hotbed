@@ -108,6 +108,9 @@ function commandUpdateEvent(what: CommandUpdate_What, c: Command, detail: string
 			d = interventionNote(c, last);
 		}
 	}
+	if (!d && c.reason) {
+		d = c.reason;
+	}
 	return create(SessionEventSchema, {
 		detail: d,
 		event: {
@@ -354,6 +357,7 @@ export class NodeStateStore {
 			}
 		}
 
+		const oldCmdById = new Map(old.commands.map((c) => [c.id, c]));
 		for (const c of old.commands) {
 			if (keptCmd.has(c.id) || !isCommandLive(c.state)) continue;
 			out.lost.push(c.id);
@@ -367,6 +371,40 @@ export class NodeStateStore {
 				)
 			) {
 				out.sessions.add(c.sessionId);
+			}
+		}
+
+		// Reconcile commands that were live before the checkpoint and appear in
+		// the checkpoint as ended or paused: if their transition event was
+		// skipped (e.g. epoch reset or oversized batch triggering a checkpoint),
+		// emit the session event so `hotbed poll` still reports it.
+		for (const c of cp.commands) {
+			const prev = oldCmdById.get(c.id);
+			if (!c.sessionId || !prev || prev.state === c.state || !isCommandLive(prev.state)) {
+				continue;
+			}
+			let what: CommandUpdate_What = CommandUpdate_What.UNSPECIFIED;
+			let detail = c.reason;
+			switch (c.state) {
+				case CommandState.CANCELLED:
+					what = CommandUpdate_What.CANCELLED;
+					break;
+				case CommandState.PAUSED:
+					what = CommandUpdate_What.PAUSED;
+					break;
+				case CommandState.SUCCEEDED:
+				case CommandState.FAILED:
+					what = CommandUpdate_What.EXITED;
+					if (!detail && c.exitCode !== undefined) {
+						detail = `exit ${c.exitCode}`;
+					}
+					break;
+			}
+			if (what !== CommandUpdate_What.UNSPECIFIED) {
+				const evAt = c.endedAt && c.endedAt > 0n ? c.endedAt : at;
+				if (this.sessions.recordEvent(c.sessionId, evAt, commandUpdateEvent(what, c, detail))) {
+					out.sessions.add(c.sessionId);
+				}
 			}
 		}
 

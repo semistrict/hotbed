@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/hotbed/internal/cmdlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/outq"
+	"github.com/semistrict/hotbed/internal/settle"
 )
 
 // Bounds on how long a query of output waits for --until or --wait.
@@ -56,12 +57,14 @@ func (e *Engine) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*
 		return nil, err
 	}
 	defer done()
+	cols := e.logTTYCols(req.Id, path)
+	q.Cols = cols
 	after := req.After
 	if req.SinceSync {
 		q.SinceOffset = e.syncedAt(req.Id)
 		if until != nil {
 			// Waiting for a line since the sync: lines before it are past.
-			line, total, err := outq.LineAt(fileSource(path), q.SinceOffset, req.Raw)
+			line, total, err := outq.LineAtCols(fileSource(path), q.SinceOffset, req.Raw, cols)
 			if err != nil {
 				return nil, err
 			}
@@ -74,7 +77,7 @@ func (e *Engine) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*
 	}
 	var waited string
 	if until != nil || req.Wait {
-		if waited, err = e.waitOutput(ctx, req.Id, path, until, after, req.Raw, timeout); err != nil {
+		if waited, err = e.waitOutput(ctx, req.Id, path, until, after, req.Raw, cols, timeout); err != nil {
 			return nil, err
 		}
 	}
@@ -154,10 +157,22 @@ func outputQuery(req *pb.QueryOutputRequest) (outq.Query, *regexp.Regexp, error)
 	return q, until, nil
 }
 
+// logTTYCols returns the PTY column width for command id's log at path, or 0
+// when the command did not run in a TTY.
+func (e *Engine) logTTYCols(id, path string) int {
+	if cols := cmdlog.ReadTTYCols(path); cols > 0 {
+		return cols
+	}
+	if cmd, ok := e.Command(id); ok && cmd.Tty {
+		return settle.ScreenCols
+	}
+	return 0
+}
+
 // waitOutput waits, at most timeout, until a line of command id's output
 // (at path) past after matches until (when given), or the command ends or
 // pauses, and says which.
-func (e *Engine) waitOutput(ctx context.Context, id, path string, until *regexp.Regexp, after int64, raw bool, timeout time.Duration) (string, error) {
+func (e *Engine) waitOutput(ctx context.Context, id, path string, until *regexp.Regexp, after int64, raw bool, cols int, timeout time.Duration) (string, error) {
 	// A command not yet started has no log: it reads as empty until it does.
 	var f *os.File
 	defer func() {
@@ -168,7 +183,7 @@ func (e *Engine) waitOutput(ctx context.Context, id, path string, until *regexp.
 	var w *outq.Watcher
 	var buf []byte
 	if until != nil {
-		w = outq.NewWatcher(until, after, raw)
+		w = outq.NewWatcherCols(until, after, raw, cols)
 		buf = make([]byte, 256<<10)
 	}
 	var off int64

@@ -238,6 +238,32 @@ func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
 	}
 }
 
+func TestRunHelpDoesNotMentionRemovedNodeFlag(t *testing.T) {
+	t.Parallel()
+	c := newCluster(t)
+	code, _, stderr := c.hotbed("--help")
+	if code != 0 {
+		t.Fatalf("--help: exit %d, stderr %q", code, stderr)
+	}
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.Contains(line, "run [flags]") {
+			if strings.Contains(line, "--node") {
+				t.Errorf("top-level help for run still mentions removed --node flag: %q", line)
+			}
+			if !strings.Contains(line, "--arch") || !strings.Contains(line, "--runtime") {
+				t.Errorf("top-level help for run should mention --arch and --runtime: %q", line)
+			}
+		}
+	}
+	code, _, runHelp := c.hotbed("run", "--help")
+	if code != 0 {
+		t.Fatalf("run --help: exit %d, stderr %q", code, runHelp)
+	}
+	if strings.Contains(runHelp, "--node") {
+		t.Errorf("run --help mentions removed --node flag:\n%s", runHelp)
+	}
+}
+
 // When all eligible hosts are holding work, an unconstrained run queues at the
 // controller instead of committing to one full host's local queue, and runs on
 // whichever eligible host frees up first.

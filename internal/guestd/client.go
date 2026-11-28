@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -67,12 +68,24 @@ func isTransientReset(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, syscall.ECONNRESET) ||
+	if errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, syscall.ENOTCONN) ||
 		errors.Is(err, syscall.ECONNABORTED) ||
 		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF)
+		errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// connecthttp turns transport-level io.ErrUnexpectedEOF / EOF into a
+	// CodeUnavailable connect.Error whose message may not retain the original
+	// sentinel via errors.Is.
+	if connect.CodeOf(err) == connect.CodeUnavailable {
+		msg := err.Error()
+		if strings.Contains(msg, "unexpected EOF") || strings.Contains(msg, "connection reset by peer") || strings.Contains(msg, "broken pipe") {
+			return true
+		}
+	}
+	return false
 }
 
 func retryUnary[T any](ctx context.Context, fn func() (T, error)) (T, error) {

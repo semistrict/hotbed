@@ -2,15 +2,21 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
+	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
@@ -110,5 +116,63 @@ func TestProjectBaseBuildNeedsAFreshenRunner(t *testing.T) {
 				t.Fatalf("forked %d cells for a build that cannot run, want none", len(api.forkReqs))
 			}
 		})
+	}
+}
+
+type stubPrepareCladefsBackend struct {
+	cladefsBackend
+	attempts int
+	failN    int
+}
+
+func (s *stubPrepareCladefsBackend) PrepareWorkspace(_ context.Context, _ string, _ cladefs.CellRef, _ uint64, _ bool) (*pb.CladefsCell, error) {
+	s.attempts++
+	if s.attempts <= s.failN {
+		return nil, fmt.Errorf("fork workspace cell: %w", status.Error(codes.ResourceExhausted, "the host's memory is full"))
+	}
+	return &pb.CladefsCell{Tenant: 1, Cell: 901, Version: 0}, nil
+}
+
+// When cladefsd rejects a fork with ResourceExhausted ("the host's memory is full"),
+// prepareCladefsCell waits with backoff and updates the workspace reason instead of
+// failing the workspace immediately.
+func TestPrepareCladefsCellRetriesOnResourceExhausted(t *testing.T) {
+	origBackoff, origMaxWait := cladefsMemoryWaitBackoff, cladefsMemoryWaitMaxWait
+	cladefsMemoryWaitBackoff = 5 * time.Millisecond
+	cladefsMemoryWaitMaxWait = 2 * time.Second
+	t.Cleanup(func() {
+		cladefsMemoryWaitBackoff, cladefsMemoryWaitMaxWait = origBackoff, origMaxWait
+	})
+
+	store := &fake.Store{Root: t.TempDir()}
+	e, err := NewEngine(t.Context(), EngineConfig{
+		Dir: t.TempDir(), NodeID: "n1", Host: "ubu1", Store: store, BaseImage: fake.BaseImage(store),
+		Units: &fake.Units{}, System: fake.NewSystem(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.Close() })
+
+	w := &workspace{rec: &pb.WorkspaceRecord{
+		Workspace: &pb.Workspace{Id: "ws-mem", Project: "cladefs", State: preparing, Reason: "preparing"},
+	}}
+	e.mu.Lock()
+	e.workspaces["ws-mem"] = w
+	e.mu.Unlock()
+
+	stub := &stubPrepareCladefsBackend{failN: 2}
+	cell, err := e.prepareCladefsCell(t.Context(), w, stub, "ws-mem", cladefs.CellRef{Tenant: 1, Cell: 100, Version: 1}, 1, false)
+	if err != nil {
+		t.Fatalf("prepareCladefsCell: %v", err)
+	}
+	if stub.attempts != 3 {
+		t.Fatalf("attempts = %d, want 3 (2 ResourceExhausted + 1 success)", stub.attempts)
+	}
+	if cell.GetCell() != 901 {
+		t.Fatalf("cell = %+v, want cell 901", cell)
+	}
+	if !strings.Contains(w.ws().Reason, "cladefsd host memory headroom") {
+		t.Fatalf("workspace reason = %q, want waiting message for cladefsd memory headroom", w.ws().Reason)
 	}
 }

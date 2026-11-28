@@ -116,3 +116,45 @@ func TestStatusLineDrawnWithSaveAndRestore(t *testing.T) {
 		t.Errorf("Lines = %q, want %q", got, want)
 	}
 }
+
+// A TTY tool like cargo-nextest/indicatif pads each progress row to the PTY
+// width without writing '\n', relying on VT100 DECAWM auto-wrap, and redraws
+// its progress block with CSI n A / CSI 2 K. With cols set, settled output
+// wraps onto distinct rows so FAIL lines survive progress redraws instead of
+// collapsing onto row 0 and being erased.
+func TestPendingWrapPreservesNextestFailLines(t *testing.T) {
+	pad := func(s string) string {
+		if len(s) >= ScreenCols {
+			return s[:ScreenCols]
+		}
+		return s + strings.Repeat(" ", ScreenCols-len(s))
+	}
+	var b strings.Builder
+	// Initial 3-row progress block (no newlines, relying on 200-col wrap).
+	b.WriteString(pad("   Running [ 00:00:01] 0/2: 2 running"))
+	b.WriteString(pad("   [ 00:00:01] crate::test_a"))
+	b.WriteString(pad("   [ 00:00:01] crate::test_b"))
+	// Erase the 3-row progress block, emit a FAIL line, then redraw 2-row block.
+	b.WriteString("\x1b[2A\r\x1b[2K\x1b[1B\x1b[2K\x1b[1B\x1b[2K\x1b[2A")
+	b.WriteString("\x1b[1;31m        FAIL\x1b[0m [   0.042s] (1/2) crate::test_a\r\n")
+	b.WriteString("  stderr: assertion `left == right` failed\r\n")
+	b.WriteString(pad("   Running [ 00:00:02] 1/2: 1 running, 1 failed"))
+	b.WriteString(pad("   [ 00:00:02] crate::test_b"))
+	// Final erase of the 2-row block and summary.
+	b.WriteString("\x1b[1A\r\x1b[2K\x1b[1B\x1b[2K\x1b[1A")
+	b.WriteString("     Summary [   0.100s] 2 tests run: 1 passed, 1 failed\r\n")
+
+	var got []string
+	s := NewCols(ScreenCols, func(l string) { got = append(got, l) })
+	s.Write([]byte(b.String()))
+	s.Flush()
+
+	want := []string{
+		"        FAIL [   0.042s] (1/2) crate::test_a",
+		"  stderr: assertion `left == right` failed",
+		"     Summary [   0.100s] 2 tests run: 1 passed, 1 failed",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("NewCols(%d) settled =\n%q\nwant =\n%q", ScreenCols, got, want)
+	}
+}

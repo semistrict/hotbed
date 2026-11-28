@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/semistrict/hotbed/internal/settle"
 )
 
 // chunks is a Source reading out in pieces of n bytes, so lines and escape
@@ -270,5 +272,31 @@ func TestRunTimedPopulatesReceivedAt(t *testing.T) {
 	}
 	if len(grepAns.Lines) != 2 || grepAns.Lines[0].ReceivedAt != 1_700_000_005_000 || grepAns.Lines[1].ReceivedAt != 1_700_000_009_000 {
 		t.Fatalf("grep lines = %+v", grepAns.Lines)
+	}
+}
+
+func TestTTYColsClipMatchAndRawGrepPast256KiB(t *testing.T) {
+	// 1. Query{Cols: settle.ScreenCols} wraps nextest-style space-padded rows.
+	pad := func(s string) string {
+		return s + strings.Repeat(" ", settle.ScreenCols-len(s))
+	}
+	ttyLog := pad("Running 0/1") + "\x1b[1A\r\x1b[2KFAIL crate::it\r\nSummary: 1 failed\r\n"
+	a := run(t, ttyLog, Query{Cols: settle.ScreenCols, Grep: regexp.MustCompile("FAIL")})
+	if a.Matches != 1 || len(a.Lines) != 1 || a.Lines[0].Text != "FAIL crate::it" {
+		t.Fatalf("TTY Cols grep = %+v", a)
+	}
+
+	// 2. clipMatch centers the window around a match past MaxLineRunes.
+	longLine := strings.Repeat("a", MaxLineRunes+500) + "NEEDLE_HERE" + strings.Repeat("b", 500) + "\n"
+	a = run(t, longLine, Query{Grep: regexp.MustCompile("NEEDLE_HERE")})
+	if a.Matches != 1 || len(a.Lines) != 1 || !strings.Contains(a.Lines[0].Text, "NEEDLE_HERE") {
+		t.Fatalf("clipMatch lost match past MaxLineRunes: %+v", a.Lines)
+	}
+
+	// 3. Raw --grep scans past maxRawLine (256 KiB) to find matches deep in a single raw line.
+	hugeRaw := strings.Repeat("z", maxRawLine+40_000) + "DEEP_FAIL_TOKEN" + strings.Repeat("q", 100) + "\n"
+	a = run(t, hugeRaw, Query{Raw: true, Grep: regexp.MustCompile("DEEP_FAIL_TOKEN")})
+	if a.Matches != 1 || len(a.Lines) != 1 || !strings.Contains(a.Lines[0].Text, "DEEP_FAIL_TOKEN") {
+		t.Fatalf("raw grep missed match past 256 KiB: matches=%d lines=%+v", a.Matches, a.Lines)
 	}
 }

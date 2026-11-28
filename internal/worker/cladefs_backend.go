@@ -724,6 +724,66 @@ const defaultCellRoot = "/mnt/fxdax-scratch/cladefsd/cells/hotbed"
 // still return PREPARING promptly.
 const cladefsCreateReadyWait = 1500 * time.Millisecond
 
+// cladefsMemoryWaitBackoff and cladefsMemoryWaitMax bound how long workspace
+// preparation waits for cladefsd to free host memory headroom when ForkVersion
+// fails with ResourceExhausted ("the host's memory is full").
+var (
+	cladefsMemoryWaitBackoff = time.Second
+	cladefsMemoryWaitMaxWait = maxQueueWait
+)
+
+// prepareCladefsCell calls b.PrepareWorkspace, retrying with backoff while
+// cladefsd reports ResourceExhausted (host memory full) instead of permanently
+// failing the workspace. While waiting, it updates w's reason so WatchWorkspace
+// callers see why preparation is held.
+func (e *Engine) prepareCladefsCell(
+	ctx context.Context,
+	w *workspace,
+	b cladefsBackend,
+	wsID string,
+	fromRef cladefs.CellRef,
+	fencingToken uint64,
+	captureBase bool,
+) (*pb.CladefsCell, error) {
+	waitStarted := time.Time{}
+	delay := cladefsMemoryWaitBackoff
+	if delay <= 0 {
+		delay = time.Second
+	}
+	maxWait := cladefsMemoryWaitMaxWait
+	if maxWait <= 0 {
+		maxWait = maxQueueWait
+	}
+	for {
+		cell, err := b.PrepareWorkspace(ctx, wsID, fromRef, fencingToken, captureBase)
+		if err == nil || !cladefs.IsResourceExhausted(err) {
+			return cell, err
+		}
+		if waitStarted.IsZero() {
+			waitStarted = e.now()
+		}
+		if ctx.Err() != nil || e.now().Sub(waitStarted) >= maxWait {
+			return nil, err
+		}
+		waitReason := "waiting for cladefsd host memory headroom (daemon memory full)"
+		e.mu.Lock()
+		if w.ws().State == preparing && !w.releasing && w.ws().Reason != waitReason {
+			w.ws().Reason = waitReason
+			e.saveWorkspace(w, change{what: "waiting", detail: waitReason})
+		}
+		e.mu.Unlock()
+		slog.Info("cladefsd host memory full while preparing workspace; waiting for headroom", "workspace", wsID, "retryIn", delay, "err", err)
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, ctx.Err()
+		case <-t.C:
+		}
+		delay = min(delay*2, 5*time.Second)
+	}
+}
+
 // createCladefsWorkspace creates a workspace on b from the project's warm base
 // (or the bare OS base image on a cold project / --fresh), without touching the
 // host's ZFS/btrfs store. Synced runs and runs with an existing warm base fork
@@ -819,7 +879,7 @@ func (e *Engine) createCladefsWorkspace(ctx context.Context, req *pb.CreateWorks
 				}
 			}
 			if err == nil {
-				cell, err = b.PrepareWorkspace(forkCtx, req.Id, fromRef, req.GetFencingToken(), captureBase)
+				cell, err = e.prepareCladefsCell(forkCtx, w, b, req.Id, fromRef, req.GetFencingToken(), captureBase)
 				if err == nil && projBase != nil {
 					// Hold and record an adopted shared base only after
 					// PrepareWorkspace actually forked it, so an unreachable
@@ -834,7 +894,7 @@ func (e *Engine) createCladefsWorkspace(ctx context.Context, req *pb.CreateWorks
 					if !hasSteps {
 						baseID = "baseimage-" + baseKey
 						if imgRef, ierr := b.EnsureProvisionedBaseImage(forkCtx, baseSpec, prov); ierr == nil {
-							cell, err = b.PrepareWorkspace(forkCtx, req.Id, imgRef, req.GetFencingToken(), captureBase)
+							cell, err = e.prepareCladefsCell(forkCtx, w, b, req.Id, imgRef, req.GetFencingToken(), captureBase)
 						} else {
 							err = ierr
 						}
@@ -873,7 +933,7 @@ func (e *Engine) createCladefsWorkspace(ctx context.Context, req *pb.CreateWorks
 				baseStepHashes = maps.Clone(projBase.StepHashes)
 				note = baseRes.Note
 				e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
-				cell, err = b.PrepareWorkspace(forkCtx, req.Id, projBase.Ref, req.GetFencingToken(), false)
+				cell, err = e.prepareCladefsCell(forkCtx, w, b, req.Id, projBase.Ref, req.GetFencingToken(), false)
 				if cladefs.IsGone(err) {
 					b.heldBases().forget(p.Name, projBase.Ref)
 				}

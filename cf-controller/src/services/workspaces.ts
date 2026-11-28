@@ -1217,6 +1217,39 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 	}
 
+	function notifyExternalIntervention(
+		kind: "stop" | "pause",
+		reqSession: string,
+		callerHost: string,
+		comment: string,
+		cmd: Command,
+	): void {
+		if (!ctrl.questionBridge || !cmd.sessionId || reqSession === cmd.sessionId) {
+			return;
+		}
+		const sess = ctrl.store.sessions.tryGet(cmd.sessionId);
+		if (!sess?.t3codeThreadId) {
+			return;
+		}
+		const last =
+			cmd.interventions.length > 0 ? cmd.interventions[cmd.interventions.length - 1] : undefined;
+		const by = last?.by?.session
+			? `session ${last.by.session}${last.by.host ? ` on ${last.by.host}` : ""}`
+			: last?.by?.host || callerHost || "user";
+		ctrl.questionBridge.broadcastIntervention({
+			commandId: cmd.id,
+			seq: last?.seq ?? 1,
+			kind,
+			sessionId: cmd.sessionId,
+			t3codeThreadId: sess.t3codeThreadId,
+			argv: cmd.argv,
+			by,
+			comment: last?.comment || comment || "",
+			diagnosed: Boolean(last?.diagnosed),
+			at: Number(last?.by?.at ?? BigInt(ctrl.now())),
+		});
+	}
+
 	async function stopCommandInternal(req: StopCommandRequest): Promise<Command> {
 		const fwd = clone(StopCommandRequestSchema, req);
 		fwd.host = "";
@@ -1559,7 +1592,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			fwd.host = getCaller(ctx.values).hostname;
 			fwd.internal = false;
 			fwd.reason = "";
-			return byHand(
+			const res = await byHand(
 				fwd.id,
 				fwd.sessionId,
 				fwd.diagnose,
@@ -1575,12 +1608,14 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						t,
 					),
 			);
+			notifyExternalIntervention("stop", fwd.sessionId, fwd.host, fwd.comment, res);
+			return res;
 		},
 
 		async pauseCommand(req, ctx) {
 			const fwd = clone(PauseCommandRequestSchema, req);
 			fwd.host = getCaller(ctx.values).hostname;
-			return byHand(
+			const res = await byHand(
 				fwd.id,
 				fwd.sessionId,
 				fwd.diagnose,
@@ -1596,6 +1631,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						t,
 					),
 			);
+			notifyExternalIntervention("pause", fwd.sessionId, fwd.host, fwd.comment, res);
+			return res;
 		},
 
 		async resumeCommand(req, ctx) {
@@ -1776,6 +1813,24 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 				return out;
 			};
+			const finishedWithoutLog = (err: unknown): MessageShape<typeof OutputQuerySchema> | null => {
+				if (codeOf(err) !== ErrorCode.NotFound) return null;
+				const f = ctrl.store.commands.finished(req.id);
+				if (!f) return null;
+				const note = f.reason
+					? `no log on worker: ${f.reason}`
+					: "no log on worker (command ended without output or its log was pruned)";
+				return create(OutputQuerySchema, {
+					commandId: req.id,
+					state: f.state,
+					exitCode: f.exitCode,
+					totalLines: 0n,
+					nextLine: 0n,
+					totalBytes: 0n,
+					omitted: note,
+					waited: req.wait || req.until ? "ended" : "",
+				});
+			};
 
 			if ((!req.wait && !req.until) || req.timeoutSeconds < 0) {
 				// Retry once on a retryable WorkerUnreachable (e.g. brief worker
@@ -1806,6 +1861,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 								continue;
 							}
 						}
+						const fallback = finishedWithoutLog(werr);
+						if (fallback) return fallback;
 						throw werr;
 					}
 				}
@@ -1870,6 +1927,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 							}
 						}
 					}
+					const fallback = finishedWithoutLog(werr);
+					if (fallback) return fallback;
 					throw werr;
 				}
 			}

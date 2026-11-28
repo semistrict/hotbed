@@ -157,6 +157,17 @@ func (e *Engine) Pause(ctx context.Context, id string, in Intervention) (*pb.Com
 		})
 	})
 	if err != nil {
+		if e.runsInGuest(c) {
+			extra := e.vmUnreachableContext(c.runtimeTarget())
+			msg := fmt.Sprintf("pause %s: VM guest agent is unreachable (%v)", id, err)
+			if extra != "" {
+				msg += "; " + extra
+			}
+			ae := api.Errorf(api.CodeWorkerUnreachable, "%s", msg).
+				WithSuggestion(fmt.Sprintf("the guest kernel or hotbed-guestd may be wedged under memory pressure; retry or stop it (%s)", sessionScopedCmd("stop", h.cmd.SessionId, id)))
+			ae.Retryable = true
+			return nil, ae
+		}
 		return nil, fmt.Errorf("pause %s: %w", id, err)
 	}
 	e.mu.Lock()
@@ -435,6 +446,11 @@ func (e *Engine) diagnose(ctx context.Context, cmd *pb.Command, iv *pb.CommandIn
 		} else if d.Inspect, err = e.cfg.Runtime.InspectCommand(ctx, route.wsID, inspectReq); err != nil {
 			failed = append(failed, "its inspection: "+message(err))
 		}
+		if len(failed) > 0 {
+			if extra := e.vmUnreachableContext(route.wsID); extra != "" {
+				failed = append(failed, extra)
+			}
+		}
 	} else {
 		target := e.hostInspectTarget(ctx, cmd.Id, route)
 		if err := e.cfg.Inspector.Sample(ctx, target, sampleReq, onSample); err != nil {
@@ -460,6 +476,38 @@ func (e *Engine) diagnose(ctx context.Context, cmd *pb.Command, iv *pb.CommandIn
 	}
 	iv.Diagnosed = true
 	return bounded
+}
+
+// vmUnreachableContext extracts a concise host-side clue from a VM's console
+// log (e.g. kernel hung-task or OOM lines) when hotbed-guestd stops answering.
+func (e *Engine) vmUnreachableContext(wsID string) string {
+	if e.cfg.VM == nil || wsID == "" {
+		return ""
+	}
+	tail := e.cfg.VM.ConsoleTail(wsID, 4096)
+	if tail == "" {
+		return ""
+	}
+	var hints []string
+	for _, line := range strings.Split(tail, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" {
+			continue
+		}
+		if strings.Contains(l, "blocked for more than") ||
+			strings.Contains(l, "Out of memory") ||
+			strings.Contains(l, "Killed process") ||
+			strings.Contains(l, "Kernel panic") {
+			hints = append(hints, l)
+		}
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	if len(hints) > 2 {
+		hints = hints[len(hints)-2:]
+	}
+	return "VM console: " + strings.Join(hints, " | ")
 }
 
 // boundDiagnostics ensures d encodes to at most maxDiagnosticsBytes (1 MiB) by

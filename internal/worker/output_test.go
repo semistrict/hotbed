@@ -11,6 +11,7 @@ import (
 	"github.com/semistrict/hotbed/internal/cmdlog"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/settle"
 )
 
 // outputOf is the output of a command that wrote log and ended.
@@ -239,5 +240,38 @@ func TestNewEngineRefusesALogLimitWithNoTail(t *testing.T) {
 	})
 	if err == nil || err.Error() != "log limit {Head:1048576 Tail:0}: keep a head of at least 0 bytes and a tail of at least 1048576" {
 		t.Errorf("NewEngine with no tail: %v", err)
+	}
+}
+
+// A TTY command records its PTY column width in a .tty sidecar so QueryOutput
+// still wraps space-padded progress rows even after the command is forgotten
+// from live engine memory, and cmdlog.Remove cleans the sidecar up.
+func TestQueryOutputUsesTTYSidecarAfterCommandForgotten(t *testing.T) {
+	e, _ := outputEngine(t, cmdlog.Limit{})
+	path := filepath.Join(e.logsDir(), "c-tty.log")
+	pad := func(s string) string {
+		return s + strings.Repeat(" ", settle.ScreenCols-len(s))
+	}
+	raw := pad("Running [00:01] 0/1") + "\x1b[1A\r\x1b[2K        FAIL [0.05s] pkg::broken\r\n"
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdlog.WriteTTYCols(path, settle.ScreenCols); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := e.QueryOutput(t.Context(), &pb.QueryOutputRequest{Id: "c-tty", Grep: "FAIL"})
+	if err != nil {
+		t.Fatalf("QueryOutput: %v", err)
+	}
+	if q.GetMatches() != 1 || len(q.Lines) != 1 || !strings.Contains(q.Lines[0].Text, "FAIL [0.05s] pkg::broken") {
+		t.Fatalf("QueryOutput on forgotten TTY log = %+v, want 1 FAIL match", q)
+	}
+
+	if err := cmdlog.Remove(path); err != nil {
+		t.Fatalf("cmdlog.Remove: %v", err)
+	}
+	if cols := cmdlog.ReadTTYCols(path); cols != 0 {
+		t.Fatalf("ReadTTYCols after Remove = %d, want 0", cols)
 	}
 }

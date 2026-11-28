@@ -42,7 +42,7 @@ func (c *shellCmd) Exec(context.Context, deps) (any, error) { return nil, errors
 
 // Raw connects to an existing workspace of the session (preferring a ready
 // workspace over load-based migration to another node, creating one only if
-// the session has none matching --node/--arch), optionally syncs the current
+// the session has none matching --arch/--runtime), optionally syncs the current
 // checkout when --sync is set, requests a one-time SSH ticket, and runs ssh.
 func (c *shellCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if _, err := exec.LookPath("ssh"); err != nil {

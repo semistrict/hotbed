@@ -394,6 +394,7 @@ export class WorkerTunnelHub {
 					call.error = hotbedError(
 						ErrorCode.Internal,
 						"worker stream exceeded controller buffer limit",
+						{ retryable: true },
 					);
 					call.done = true;
 					this.pending.delete(msg.id);

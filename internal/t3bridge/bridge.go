@@ -26,13 +26,15 @@ const (
 	EventSnapshot EventKind = iota + 1
 	EventUpdate
 	EventDisconnected
+	EventIntervention
 )
 
 // Event is an input from the controller WebSocket stream into Bridge.
 type Event struct {
-	Kind      EventKind
-	EventName string
-	Questions []*pb.Question
+	Kind         EventKind
+	EventName    string
+	Questions    []*pb.Question
+	Intervention *InterventionNotice
 }
 
 // Status summarizes live bridge state for observers such as hotbed daemon / menubar.
@@ -85,15 +87,17 @@ const (
 )
 
 type workerResult struct {
-	kind     workerResultKind
-	threadID string
-	status   ThreadState
-	batch    []*pb.Question
-	err      error
+	kind          workerResultKind
+	threadID      string
+	status        ThreadState
+	batch         []*pb.Question
+	interventions []*InterventionNotice
+	err           error
 }
 
-// Bridge tracks Hotbed question outbox updates for T3 Code threads and delivers
-// idle-aware, debounced, revision-tracked wake messages via the local T3 CLI.
+// Bridge tracks Hotbed question outbox updates and external command
+// interventions for T3 Code threads and delivers idle-aware, debounced,
+// deduplicated wake messages via the local T3 CLI.
 type Bridge struct {
 	cfg Config
 	log *slog.Logger
@@ -106,15 +110,17 @@ type Bridge struct {
 	doneOnce   sync.Once
 
 	// Actor-owned state (accessed only inside RunLoop).
-	connected      bool
-	outbox         map[int32]*pb.Question
-	notified       map[int32]int64
-	threads        map[string]*threadWork
-	lastWakeAt     time.Time
-	lastWakeThread string
-	lastWakeIDs    []int32
-	lastError      string
-	workerWG       sync.WaitGroup
+	connected             bool
+	outbox                map[int32]*pb.Question
+	notified              map[int32]int64
+	pendingInterventions  map[string]*InterventionNotice
+	notifiedInterventions map[string]int64
+	threads               map[string]*threadWork
+	lastWakeAt            time.Time
+	lastWakeThread        string
+	lastWakeIDs           []int32
+	lastError             string
+	workerWG              sync.WaitGroup
 }
 
 // New constructs a Bridge and loads persisted notified revisions from cfg.State.
@@ -141,25 +147,29 @@ func New(cfg Config) (*Bridge, error) {
 	}
 
 	notified := map[int32]int64{}
+	notifiedIvs := map[string]int64{}
 	if cfg.State != nil {
-		loaded, err := cfg.State.Load()
+		loaded, loadedIvs, err := cfg.State.LoadAll()
 		if err != nil {
 			return nil, err
 		}
 		notified = loaded
+		notifiedIvs = loadedIvs
 	}
 
 	return &Bridge{
-		cfg:        cfg,
-		log:        log,
-		now:        nowFn,
-		events:     make(chan Event, 128),
-		timerFires: make(chan timerFire, 128),
-		workerDone: make(chan workerResult, 128),
-		done:       make(chan struct{}),
-		outbox:     map[int32]*pb.Question{},
-		notified:   notified,
-		threads:    map[string]*threadWork{},
+		cfg:                   cfg,
+		log:                   log,
+		now:                   nowFn,
+		events:                make(chan Event, 128),
+		timerFires:            make(chan timerFire, 128),
+		workerDone:            make(chan workerResult, 128),
+		done:                  make(chan struct{}),
+		outbox:                map[int32]*pb.Question{},
+		notified:              notified,
+		pendingInterventions:  map[string]*InterventionNotice{},
+		notifiedInterventions: notifiedIvs,
+		threads:               map[string]*threadWork{},
 	}, nil
 }
 
@@ -299,8 +309,18 @@ func (b *Bridge) recordSent(res workerResult) {
 			b.notified[q.GetId()] = q.GetRevision()
 		}
 	}
+	for _, iv := range res.interventions {
+		if key := iv.Key(); key != "" {
+			at := iv.At
+			if at <= 0 {
+				at = b.now().UnixMilli()
+			}
+			b.notifiedInterventions[key] = at
+			delete(b.pendingInterventions, key)
+		}
+	}
 	if b.cfg.State != nil {
-		if err := b.cfg.State.Save(b.notified); err != nil {
+		if err := b.cfg.State.SaveAll(b.notified, b.notifiedInterventions); err != nil {
 			b.log.Warn("t3-bridge persist notified state failed", "path", b.cfg.State.Path, "err", err)
 		}
 	}
@@ -378,9 +398,66 @@ func (b *Bridge) handleEvent(ctx context.Context, ev Event) {
 		for tid := range touchedThreads {
 			b.onThreadOutboxChanged(tid, newOrRevisedThreads[tid])
 		}
+
+	case EventIntervention:
+		b.connected = true
+		iv := ev.Intervention
+		if iv != nil && iv.T3CodeThreadID != "" {
+			if key := iv.Key(); key != "" && b.notifiedInterventions[key] == 0 {
+				b.pendingInterventions[key] = iv
+				b.onThreadIntervention(iv.T3CodeThreadID)
+			}
+		}
 	}
 	b.reportStatus()
 	_ = ctx
+}
+
+func (b *Bridge) pendingInterventionsForThread(threadID string) []*InterventionNotice {
+	var out []*InterventionNotice
+	for key, iv := range b.pendingInterventions {
+		if iv.T3CodeThreadID != threadID {
+			continue
+		}
+		if b.notifiedInterventions[key] > 0 {
+			continue
+		}
+		out = append(out, iv)
+	}
+	slices.SortFunc(out, func(a, c *InterventionNotice) int {
+		if d := cmp.Compare(a.At, c.At); d != 0 {
+			return d
+		}
+		if d := cmp.Compare(a.CommandID, c.CommandID); d != 0 {
+			return d
+		}
+		return cmp.Compare(a.Seq, c.Seq)
+	})
+	return out
+}
+
+func (b *Bridge) hasPendingForThread(threadID string) bool {
+	return len(b.pendingForThread(threadID)) > 0 || len(b.pendingInterventionsForThread(threadID)) > 0
+}
+
+func (b *Bridge) onThreadIntervention(threadID string) {
+	if threadID == "" || !b.hasPendingForThread(threadID) {
+		return
+	}
+	tw := b.threads[threadID]
+	if tw == nil {
+		tw = &threadWork{}
+		b.threads[threadID] = tw
+	}
+	// Deliver external stop/pause interventions promptly without waiting for
+	// the multi-answer question debounce window.
+	tw.ignored = false
+	tw.errBackoff = 0
+	tw.debounceUntil = b.now()
+	if !b.connected || tw.inFlight {
+		return
+	}
+	b.armTimer(threadID, tw, 0)
 }
 
 func (b *Bridge) pendingForThread(threadID string) []*pb.Question {
@@ -407,8 +484,7 @@ func (b *Bridge) onThreadOutboxChanged(threadID string, resetDebounce bool) {
 	if threadID == "" {
 		return
 	}
-	pending := b.pendingForThread(threadID)
-	if len(pending) == 0 {
+	if !b.hasPendingForThread(threadID) {
 		if tw, ok := b.threads[threadID]; ok {
 			if tw.timer != nil {
 				tw.timer.Stop()
@@ -472,8 +548,7 @@ func (b *Bridge) handleTimerFire(ctx context.Context, fire timerFire) {
 	if !b.connected || tw.inFlight || tw.ignored {
 		return
 	}
-	pending := b.pendingForThread(fire.threadID)
-	if len(pending) == 0 {
+	if !b.hasPendingForThread(fire.threadID) {
 		delete(b.threads, fire.threadID)
 		return
 	}
@@ -503,7 +578,7 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 		if res.err != nil {
 			b.lastError = res.err.Error()
 			b.log.Warn("t3-bridge thread status check failed; will retry", "threadId", res.threadID, "err", res.err)
-			if len(b.pendingForThread(res.threadID)) == 0 {
+			if !b.hasPendingForThread(res.threadID) {
 				delete(b.threads, res.threadID)
 				b.reportStatus()
 				return
@@ -523,8 +598,7 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 			return
 		}
 		if res.status.IsBusy() {
-			pending := b.pendingForThread(res.threadID)
-			if len(pending) == 0 {
+			if !b.hasPendingForThread(res.threadID) {
 				delete(b.threads, res.threadID)
 				b.reportStatus()
 				return
@@ -543,7 +617,8 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 			return
 		}
 		pending := b.pendingForThread(res.threadID)
-		if len(pending) == 0 {
+		pendingIvs := b.pendingInterventionsForThread(res.threadID)
+		if len(pending) == 0 && len(pendingIvs) == 0 {
 			delete(b.threads, res.threadID)
 			b.reportStatus()
 			return
@@ -554,22 +629,22 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 			return
 		}
 
-		msg := FormatWakeMessage(pending)
+		msg := FormatWakePayload(pending, pendingIvs)
 		tw.inFlight = true
 		b.workerWG.Add(1)
-		go func(tid string, batch []*pb.Question, text string) {
+		go func(tid string, batch []*pb.Question, ivs []*InterventionNotice, text string) {
 			defer b.workerWG.Done()
 			err := b.cfg.T3.SendMessage(ctx, tid, text)
 			// Delivered unconditionally: RunLoop, or shutdown after it,
 			// records what was sent.
-			b.workerDone <- workerResult{kind: workerResSent, threadID: tid, batch: batch, err: err}
-		}(res.threadID, pending, msg)
+			b.workerDone <- workerResult{kind: workerResSent, threadID: tid, batch: batch, interventions: ivs, err: err}
+		}(res.threadID, pending, pendingIvs, msg)
 
 	case workerResSent:
 		if res.err != nil {
 			b.lastError = res.err.Error()
 			b.log.Warn("t3-bridge send wake message failed; will retry", "threadId", res.threadID, "err", res.err)
-			if len(b.pendingForThread(res.threadID)) == 0 {
+			if !b.hasPendingForThread(res.threadID) {
 				delete(b.threads, res.threadID)
 				b.reportStatus()
 				return
@@ -590,11 +665,11 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 		b.lastWakeAt = b.now()
 		b.lastWakeThread = res.threadID
 		b.lastWakeIDs = ids
-		b.log.Info("t3-bridge notified idle thread", "threadId", res.threadID, "questionIds", ids)
+		b.log.Info("t3-bridge notified idle thread", "threadId", res.threadID, "questionIds", ids, "interventions", len(res.interventions))
 
-		// If newer questions or revisions arrived while SendMessage was in flight,
-		// wait for the thread to settle (at least pollInterval or remaining debounce).
-		if remaining := b.pendingForThread(res.threadID); len(remaining) > 0 {
+		// If newer questions, revisions, or interventions arrived while
+		// SendMessage was in flight, wait for the thread to settle.
+		if b.hasPendingForThread(res.threadID) {
 			if b.connected {
 				wait := max(b.cfg.PollInterval, tw.debounceUntil.Sub(b.now()))
 				b.armTimer(res.threadID, tw, wait)

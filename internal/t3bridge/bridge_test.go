@@ -801,3 +801,114 @@ func TestFormatWakeMessage(t *testing.T) {
 		t.Errorf("single dismissed message unexpected:\n%s", msg2)
 	}
 }
+
+func TestBridgeDeliversExternalInterventionImmediatelyAndDeduplicatesAcrossRestart(t *testing.T) {
+	t3 := newFakeT3()
+	t3.setState("t-iv", ThreadState{Exists: true, Status: "completed"})
+	storePath := filepath.Join(t.TempDir(), "iv-state.json")
+	store := &StateStore{Path: storePath}
+
+	// Serve one intervention frame over /ws/questions and verify end-to-end WS
+	// parsing, immediate wake (well under the 2s question debounce), and state
+	// persistence.
+	var conns atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		conns.Add(1)
+		_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"type":"snapshot","questions":[]}`))
+		frame, _ := json.Marshal(map[string]any{
+			"type": "intervention",
+			"intervention": map[string]any{
+				"commandId":      "2unymhaqoe",
+				"seq":            1,
+				"kind":           "stop",
+				"sessionId":      "serene-skink",
+				"t3codeThreadId": "t-iv",
+				"argv":           "cargo test -p cladefs",
+				"by":             "ramon@mac",
+				"comment":        "taking too long; run just unit tests",
+				"diagnosed":      true,
+				"at":             1795738800000,
+			},
+		})
+		_ = c.Write(r.Context(), websocket.MessageText, frame)
+		for {
+			_, data, err := c.Read(r.Context())
+			if err != nil {
+				return
+			}
+			if string(data) == "ping" {
+				_ = c.Write(r.Context(), websocket.MessageText, []byte("pong"))
+			}
+		}
+	}))
+	defer srv.Close()
+
+	bridge1, err := New(Config{
+		ControllerURL: srv.URL,
+		TokenFunc:     func(context.Context) (string, error) { return "test-tok", nil },
+		HTTPClient:    srv.Client(),
+		T3:            t3,
+		State:         store,
+		Debounce:      2 * time.Second, // interventions must bypass this debounce
+		PollInterval:  15 * time.Millisecond,
+		PingInterval:  100 * time.Millisecond,
+		ReadTimeout:   500 * time.Millisecond,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New bridge1: %v", err)
+	}
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	done1 := make(chan error, 1)
+	start := time.Now()
+	go func() { done1 <- bridge1.Run(ctx1) }()
+
+	w := waitSent(t, t3, 1*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("intervention wake took %s, expected immediate delivery bypassing 2s debounce", elapsed)
+	}
+	for _, want := range []string{
+		"2unymhaqoe",
+		"ramon@mac",
+		"taking too long; run just unit tests",
+		"hotbed diagnostics 2unymhaqoe",
+		"hotbed output 2unymhaqoe",
+	} {
+		if !strings.Contains(w.Message, want) {
+			t.Errorf("intervention wake missing %q:\n%s", want, w.Message)
+		}
+	}
+	cancel1()
+	<-done1
+
+	// Restart a second bridge using the same StateStore: replaying the same
+	// intervention (commandId + seq) must NOT re-send it.
+	bridge2, err := New(Config{
+		ControllerURL: srv.URL,
+		TokenFunc:     func(context.Context) (string, error) { return "test-tok", nil },
+		HTTPClient:    srv.Client(),
+		T3:            t3,
+		State:         &StateStore{Path: storePath},
+		Debounce:      20 * time.Millisecond,
+		PollInterval:  15 * time.Millisecond,
+		PingInterval:  100 * time.Millisecond,
+		ReadTimeout:   500 * time.Millisecond,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New bridge2: %v", err)
+	}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() { done2 <- bridge2.Run(ctx2) }()
+	defer func() {
+		cancel2()
+		<-done2
+	}()
+	assertNoSent(t, t3, 200*time.Millisecond)
+}

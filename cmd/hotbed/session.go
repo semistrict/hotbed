@@ -1034,7 +1034,7 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		where = "throwaway workspace " + ws.Id
 	}
 	fmt.Fprintf(d.stderr, "hotbed: %s running in %s on %s (hotbed stop -s %s %s)\n", cmd.Id, where, ws.Node, session, cmd.Id)
-	out := &outputBudget{w: d.stdout, limit: maxOutput}
+	out := &outputBudget{w: d.stdout, stderr: d.stderr, cmdID: cmd.Id, limit: maxOutput}
 	code, detached, err := attachFor(ctx, w, cmd.Id, session, wait, out, d.stderr)
 	if out.held > 0 && (err == nil || detached) {
 		tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -1537,7 +1537,7 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 			// proxy while the command was queued before exiting quickly); drain
 			// any output written after offset without setting Wait (which would
 			// resume a paused command).
-			if err := drainLog(ctx, wk, id, offset, timestamps, writeChunk, wait); err != nil {
+			if err := drainLog(ctx, wk, id, offset, timestamps, true, writeChunk, wait); err != nil {
 				return nil, err
 			}
 		}
@@ -1578,12 +1578,14 @@ func applyFollowTerminal(id string, c *pb.Command, state pb.CommandState, endedB
 }
 
 // drainLog reads any remaining output of id from offset without following or
-// setting Wait (so it never resumes a paused command).
-func drainLog(ctx context.Context, wk workerClients, id string, offset int64, timestamps bool, writeChunk func([]byte, int64) error, wait func(error) bool) error {
+// setting Wait (so it never resumes a paused command). When allowNotFound is
+// true, a NotFound response (e.g. a command cancelled before producing a log)
+// finishes cleanly without error.
+func drainLog(ctx context.Context, wk workerClients, id string, offset int64, timestamps, allowNotFound bool, writeChunk func([]byte, int64) error, wait func(error) bool) error {
 	for {
 		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Timestamps: timestamps})
 		if err != nil {
-			if api.CodeOf(err) == api.CodeNotFound {
+			if allowNotFound && api.CodeOf(err) == api.CodeNotFound {
 				return nil
 			}
 			if wait(err) {
@@ -1615,7 +1617,7 @@ func drainLog(ctx context.Context, wk workerClients, id string, offset int64, ti
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if api.CodeOf(recvErr) == api.CodeNotFound {
+		if allowNotFound && api.CodeOf(recvErr) == api.CodeNotFound {
 			return nil
 		}
 		if wk.resetStream != nil {
@@ -1698,38 +1700,47 @@ func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		}
 		return code, true, err
 	}
-	in, err := w.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: c.Command, Timestamps: c.Timestamps})
-	if err != nil {
-		return 0, false, err
-	}
-	defer in.Close()
 	var tw *timestampLineWriter
 	if c.Timestamps {
 		tw = &timestampLineWriter{w: d.stdout, now: time.Now()}
 	}
-	for {
-		chunk, err := in.Receive()
-		if errors.Is(err, io.EOF) || ctx.Err() != nil {
-			if tw != nil {
-				if ferr := tw.Flush(); ferr != nil {
-					return 0, true, ferr
-				}
-			}
-			return exitOK, true, nil
-		}
-		if err != nil {
-			return 0, true, err
-		}
+	writeChunk := func(data []byte, receivedAt int64) error {
 		if tw != nil {
-			if err := tw.WriteChunk(chunk.Data, chunk.ReceivedAt); err != nil {
-				return 0, true, err
-			}
-			continue
+			return tw.WriteChunk(data, receivedAt)
 		}
-		if _, err := d.stdout.Write(chunk.Data); err != nil {
-			return 0, true, err
+		_, err := d.stdout.Write(data)
+		return err
+	}
+	var down time.Time
+	wait := func(err error) bool {
+		if ctx.Err() != nil || !api.FromConnect(err).Retryable {
+			return false
+		}
+		if down.IsZero() {
+			down = time.Now()
+		}
+		if time.Since(down) > followRideOut {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Second):
+			return true
 		}
 	}
+	if err := drainLog(ctx, w, c.Command, 0, c.Timestamps, false, writeChunk, wait); err != nil {
+		if ctx.Err() != nil {
+			return 130, true, nil
+		}
+		return 0, true, err
+	}
+	if tw != nil {
+		if ferr := tw.Flush(); ferr != nil {
+			return 0, true, ferr
+		}
+	}
+	return exitOK, true, nil
 }
 
 func (c *logsCmd) Exec(context.Context, deps) (any, error) { return nil, errors.New("logs is raw") }

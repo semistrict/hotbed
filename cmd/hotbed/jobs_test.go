@@ -55,6 +55,9 @@ func TestRunDetachesAfterItsWaitAndOutputReadsItAll(t *testing.T) {
 	if !strings.Contains(stderr, "hotbed: "+id+" still runs after 3s, detached") {
 		t.Errorf("stderr %q, want it to say it was left running", stderr)
 	}
+	if !strings.Contains(stderr, "output exceeded --max-output 200 B") || !strings.Contains(stderr, "--max-output 0") {
+		t.Errorf("stderr %q, want truncation warning naming --max-output 0", stderr)
+	}
 	if got, ok := c.engine().Command(id); !ok || got.Attached || got.State != pb.CommandState_COMMAND_STATE_RUNNING {
 		t.Fatalf("after the run: %v, want it running, detached", got)
 	}
@@ -351,5 +354,75 @@ func TestOutputBoundedRetriesServerDeadlineAndPlainWorkerUnreachable(t *testing.
 	}
 	if len(q2.Lines) != 1 || q2.Lines[0].Text != "second" {
 		t.Fatalf("output --after 1 = %+v, want [second]", q2.Lines)
+	}
+}
+
+// A run with --max-output 0 streams output well past the 32 KiB default
+// verbatim without inserting truncation banners, and `hotbed logs` resumes
+// from its byte offset if the FollowLog stream fails with a retryable error.
+func TestRunMaxOutputZeroAndLogsResumeOnRetryableStreamBreak(t *testing.T) {
+	c := newCluster(t)
+	c.cli.rideOut = 5 * time.Second
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "wide-fox")
+	c.workspace("wide-fox", nil)
+
+	// 64 KiB of deterministic lines (> defaultMaxOutput = 32 KiB).
+	code, out, stderr := c.hotbed("run", "-s", "wide-fox", "-r", "app", "--max-output", "0", "--",
+		"sh", "-c", `i=1; while [ $i -le 1000 ]; do printf 'row-%04d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n' "$i"; i=$((i+1)); done`)
+	if code != exitOK {
+		t.Fatalf("run --max-output 0: exit %d, stderr %q", code, stderr)
+	}
+	if len(out) < 60*1024 {
+		t.Fatalf("stdout len = %d, want > 60 KiB", len(out))
+	}
+	if strings.Contains(out, "[hotbed: output past") {
+		t.Fatalf("stdout with --max-output 0 must not contain truncation banner")
+	}
+	if !strings.HasPrefix(out, "row-0001-") || !strings.HasSuffix(out, "row-1000-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n") {
+		t.Fatalf("stdout boundaries corrupted: prefix=%q suffix=%q", out[:min(32, len(out))], out[max(0, len(out)-70):])
+	}
+
+	m := runningID.FindStringSubmatch(stderr)
+	if m == nil {
+		t.Fatalf("no command ID in stderr %q", stderr)
+	}
+	id := m[1]
+
+	// Force the first FollowLog call for `hotbed logs` to fail with a retryable
+	// WORKER_UNREACHABLE error; `hotbed logs` must retry and return the exact same bytes.
+	var logCalls atomic.Int32
+	detailBytes, err := proto.Marshal(&pb.ErrorInfo{
+		Code:      string(api.CodeWorkerUnreachable),
+		Retryable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	errPayload := fmt.Sprintf(
+		`{"code":"unavailable","message":"worker stream exceeded controller buffer limit","details":[{"type":"hotbed.v1.ErrorInfo","value":%q}]}`,
+		base64.RawStdEncoding.EncodeToString(detailBytes),
+	)
+	origHandler := *c.handler.Load()
+	var flaky http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hotbed.v1.WorkspaceService/FollowLog" && logCalls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(errPayload))
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+	c.handler.Store(&flaky)
+
+	code, logsOut, logsErr := c.hotbed("logs", id)
+	if code != exitOK {
+		t.Fatalf("hotbed logs %s: exit %d, stderr %q", id, code, logsErr)
+	}
+	if logCalls.Load() < 2 {
+		t.Fatalf("expected FollowLog retry in hotbed logs, got %d calls", logCalls.Load())
+	}
+	if logsOut != out {
+		t.Fatalf("hotbed logs len=%d != run stdout len=%d", len(logsOut), len(out))
 	}
 }

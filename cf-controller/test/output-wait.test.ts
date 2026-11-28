@@ -13,9 +13,15 @@ import { describe, expect, it } from "vite-plus/test";
 import {
 	CheckpointSchema,
 	ClusterService,
+	CommandChangeSchema,
 	CommandSchema,
 	CommandState,
+	CommandUpdate_What,
 	ErrorInfoSchema,
+	EventSchema,
+	FinishedCommandSchema,
+	FollowLogRequestSchema,
+	LogChunkSchema,
 	OutputLineSchema,
 	OutputQuerySchema,
 	QueryOutputRequestSchema,
@@ -571,6 +577,189 @@ describe("WorkspaceService.QueryOutput --wait resilience", () => {
 			expect(res.lines[0]?.text).toBe("line 96");
 		} finally {
 			ws2.close(1000, "test done");
+		}
+	});
+
+	it("marks stream buffer limit overflow retryable so FollowLog resumes from offset", async () => {
+		const { state } = fakeDurableObjectState();
+		const hub = new WorkerTunnelHub(state, 50);
+		const ws = new FakeWebSocket();
+		hub.accept(ws as unknown as WebSocket, {
+			nodeId: "node-stream-overflow",
+			hostname: "ubu1",
+			connectedAt: 1000,
+		});
+
+		const iter = hub.callServerStream(
+			"node-stream-overflow",
+			"ubu1",
+			"/hotbed.v1.WorkspaceService/FollowLog",
+			FollowLogRequestSchema,
+			create(FollowLogRequestSchema, { id: "cmdbig0001", offset: 0n }),
+			LogChunkSchema,
+		);
+		const firstNext = iter[Symbol.asyncIterator]().next();
+		await Promise.resolve();
+		expect(ws.sent.length).toBe(1);
+		const reqFrame = JSON.parse(ws.sent[0]!) as TunnelDownMessage;
+		expect(reqFrame.type).toBe("rpc_req");
+
+		// Push 1 MiB chunks without draining the iterator until > 16 MiB queued.
+		const oneMiB = encodeBase64(
+			encodeProto(LogChunkSchema, create(LogChunkSchema, { data: new Uint8Array(1024 * 1024) })),
+		);
+		const chunkFrame = JSON.stringify({
+			type: "rpc_msg",
+			id: reqFrame.id,
+			body: oneMiB,
+		} satisfies TunnelUpMessage);
+		// Consume the first chunk (which resolves firstNext), then overflow before next() is called again.
+		hub.handleMessage(ws as unknown as WebSocket, chunkFrame);
+		const first = await firstNext;
+		expect(first.done).toBe(false);
+		for (let i = 0; i < 17; i++) {
+			hub.handleMessage(ws as unknown as WebSocket, chunkFrame);
+		}
+
+		let caught: unknown;
+		try {
+			for await (const _chunk of iter) {
+				// drain until overflow error surfaces
+			}
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(HotbedError);
+		expect((caught as HotbedError).retryable).toBe(true);
+		expect((caught as HotbedError).message).toContain("exceeded controller buffer limit");
+	});
+
+	it("records checkpoint cancellation in session events and serves QueryOutput from finished history when worker log is gone", async () => {
+		const owner = ownerClients();
+		const nodeId = "node-ckpt-cancel";
+		const hostname = "ubu-ckpt";
+		const cmdId = "7mj5o3wrsj";
+		const sessId = "stable-ibex-ckpt";
+
+		await owner.cluster.addProject({ name: "proj-ckpt" });
+		await owner.sessions.startSession({ id: sessId, project: "proj-ckpt" });
+
+		const workerTransport = makeTransport(OWNER_TOKEN, {
+			"X-Hotbed-Node-Id": nodeId,
+			"X-Hotbed-Host": hostname,
+		});
+		const workerCluster = createClient(ClusterService, workerTransport);
+		const joined = await workerCluster.join({});
+		await workerCluster.heartbeat({
+			clusterId: joined.clusterId,
+			resources: create(ResourcesSchema, { arch: "amd64", cpus: 16, memoryBytes: 32n << 30n }),
+		});
+
+		// 1. Seed queued command in checkpoint 1.
+		await workerCluster.pushEvents({
+			clusterId: joined.clusterId,
+			checkpoint: create(CheckpointSchema, {
+				seq: 1n,
+				commands: [
+					create(CommandSchema, {
+						id: cmdId,
+						workspaceId: "ws-ckpt",
+						sessionId: sessId,
+						state: CommandState.QUEUED,
+						argv: "cargo test",
+					}),
+				],
+			}),
+		});
+
+		// 2. Checkpoint 2 transitions the live command directly to CANCELLED with a queue-timeout
+		// reason (no accompanying event): applyCheckpoint must emit WHAT_CANCELLED for poll.
+		const cancelReason =
+			"nothing can queue for more than 15m (last wait: waiting for measurement cojaienimd)";
+		await workerCluster.pushEvents({
+			clusterId: joined.clusterId,
+			checkpoint: create(CheckpointSchema, {
+				seq: 2n,
+				commands: [
+					create(CommandSchema, {
+						id: cmdId,
+						workspaceId: "ws-ckpt",
+						sessionId: sessId,
+						state: CommandState.CANCELLED,
+						reason: cancelReason,
+						argv: "cargo test",
+					}),
+				],
+			}),
+		});
+
+		const polled = await owner.sessions.poll({
+			sessionId: sessId,
+			after: 0n,
+			timeoutSeconds: 1,
+		});
+		const cancelEv = polled.events.find(
+			(ev) =>
+				ev.event.case === "command" &&
+				ev.event.value.what === CommandUpdate_What.CANCELLED &&
+				ev.event.value.commandId === cmdId,
+		);
+		expect(cancelEv).toBeDefined();
+		expect(cancelEv?.detail).toContain("nothing can queue for more than 15m");
+
+		// 3. Record finished history for the cancelled command, then have the worker return
+		// NOT_FOUND for QueryOutput (no .log file was ever created): controller must fall back
+		// to finished history and return its CANCELLED state and reason.
+		await workerCluster.pushEvents({
+			clusterId: joined.clusterId,
+			events: [
+				create(EventSchema, {
+					seq: 3n,
+					at: BigInt(Date.now()),
+					change: {
+						case: "command",
+						value: create(CommandChangeSchema, {
+							what: "cancelled",
+							command: create(CommandSchema, {
+								id: cmdId,
+								workspaceId: "ws-ckpt",
+								sessionId: sessId,
+								state: CommandState.CANCELLED,
+								reason: cancelReason,
+								argv: "cargo test",
+							}),
+							finished: create(FinishedCommandSchema, {
+								id: cmdId,
+								workspaceId: "ws-ckpt",
+								sessionId: sessId,
+								state: CommandState.CANCELLED,
+								reason: cancelReason,
+								argv: "cargo test",
+								endedAt: BigInt(Date.now()),
+							}),
+						}),
+					},
+				}),
+			],
+		});
+		const ws = await connectWorker(nodeId, hostname, (_req, sock, id) => {
+			sock.send(
+				JSON.stringify({
+					type: "rpc_err",
+					id,
+					code: ErrorCode.NotFound,
+					message: `no log of command ${cmdId}`,
+				} satisfies TunnelUpMessage),
+			);
+		});
+		try {
+			const res = await owner.workspaces.queryOutput({ id: cmdId, tail: 20 });
+			expect(res.commandId).toBe(cmdId);
+			expect(res.state).toBe(CommandState.CANCELLED);
+			expect(res.totalLines).toBe(0n);
+			expect(res.omitted).toContain("nothing can queue for more than 15m");
+		} finally {
+			ws.close(1000, "test done");
 		}
 	});
 });

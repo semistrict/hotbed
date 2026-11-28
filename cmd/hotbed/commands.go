@@ -111,7 +111,7 @@ type cli struct {
 	JQ   string `name:"jq" help:"Filter the response JSON with a jq expression."`
 
 	Session   sessionCmd   `cmd:"" help:"Start or end a session; everything an agent runs belongs to one."`
-	Run       runCmd       `cmd:"" help:"Run a command on the node the controller picks (--node, --arch narrow it), in the session's workspace there, which it gets if it has none; run from a checkout of the repo, it syncs it there first."`
+	Run       runCmd       `cmd:"" help:"Run a command on the node the controller picks (--arch, --runtime narrow it), in the session's workspace there, which it gets if it has none; run from a checkout of the repo, it syncs it there first."`
 	Shell     shellCmd     `cmd:"" help:"Open an interactive shell (over SSH) in the session's workspace (reuses an existing workspace when it has one; --sync pushes local checkout edits first)."`
 	Sync      syncCmd      `cmd:"" help:"Send a checkout's state, uncommitted changes too, to every workspace the session has of its repo."`
 	Logs      logsCmd      `cmd:"" help:"Print a command's output (all of it, its last lines, or until it ends)."`

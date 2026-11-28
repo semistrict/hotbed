@@ -22,6 +22,19 @@ export type QuestionBridgeEvent =
 	| "revised"
 	| "deleted";
 
+export interface InterventionBridgeNotice {
+	commandId: string;
+	seq: number;
+	kind: "stop" | "pause";
+	sessionId: string;
+	t3codeThreadId: string;
+	argv: string;
+	by: string;
+	comment: string;
+	diagnosed: boolean;
+	at: number;
+}
+
 export type QuestionBridgeDownMessage =
 	| {
 			type: "snapshot";
@@ -31,6 +44,10 @@ export type QuestionBridgeDownMessage =
 			type: "update";
 			event: QuestionBridgeEvent;
 			questions: JsonValue[];
+	  }
+	| {
+			type: "intervention";
+			intervention: InterventionBridgeNotice;
 	  };
 
 interface QuestionBridgeUpMessage {
@@ -115,6 +132,25 @@ export class QuestionBridgeHub {
 			type: "update",
 			event,
 			questions: relevant.map(serializeQuestion),
+		} satisfies QuestionBridgeDownMessage);
+		for (const ws of sockets) {
+			if (ws.readyState !== WebSocket.OPEN) continue;
+			try {
+				ws.send(payload);
+			} catch {
+				// Ignore broken socket so remaining bridges still receive the update.
+			}
+		}
+	}
+
+	/** Pushes an external command intervention (stop/pause by a user or another session) to all connected bridges. */
+	broadcastIntervention(intervention: InterventionBridgeNotice): void {
+		if (!intervention.t3codeThreadId) return;
+		const sockets = this.ctx.getWebSockets(QUESTION_BRIDGE_TAG);
+		if (sockets.length === 0) return;
+		const payload = JSON.stringify({
+			type: "intervention",
+			intervention,
 		} satisfies QuestionBridgeDownMessage);
 		for (const ws of sockets) {
 			if (ws.readyState !== WebSocket.OPEN) continue;

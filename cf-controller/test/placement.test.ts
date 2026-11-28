@@ -394,4 +394,35 @@ describe("late-binding capacity and 2-host racing", () => {
 		const unsynced = chooseCandidate(cs, undefined, [], false, { waitForCapacity: true });
 		expect(unsynced.chosen?.host).toBe("ramons-macbook-pro");
 	});
+
+	it("holds a new workspace fork when the only fit node has cladefs-memory holding", () => {
+		const cladefsFull = create(AdmissionSchema, {
+			holding: true,
+			reason: "cladefs host memory full",
+			signals: [create(AdmissionSignalSchema, { name: "cladefs-memory", holding: true })],
+		});
+		const ubu = vmNode({ host: "ubu1", mine: "", admission: cladefsFull });
+
+		// Even with only one fit node (pinned) and waitForCapacity: false (--detach),
+		// a new workspace fork cannot succeed while cladefs-memory is holding.
+		const detached = chooseCandidate([ubu], undefined, [], true, { waitForCapacity: false });
+		expect(detached.allBusy).toBe(true);
+		expect(detached.chosen).toBeUndefined();
+		expect(detached.busyHosts).toEqual(["ubu1"]);
+
+		const attached = chooseCandidate([ubu], undefined, [], true, { waitForCapacity: true });
+		expect(attached.allBusy).toBe(true);
+		expect(attached.chosen).toBeUndefined();
+
+		// Reusing an existing workspace (mine != "") needs no cladefs fork, so it still places.
+		const reuse = chooseCandidate(
+			[vmNode({ host: "ubu1", mine: "ws-existing", admission: cladefsFull })],
+			undefined,
+			[],
+			true,
+			{ waitForCapacity: false },
+		);
+		expect(reuse.allBusy).toBeUndefined();
+		expect(reuse.chosen?.host).toBe("ubu1");
+	});
 });

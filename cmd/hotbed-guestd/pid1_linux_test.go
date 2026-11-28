@@ -392,3 +392,18 @@ func TestConfigureGuestZramSwap(t *testing.T) {
 		}
 	})
 }
+
+func TestProtectSelfFromOOM(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "oom_score_adj")
+	if err := os.WriteFile(p, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	protectSelfFromOOM(nil, p)
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "-1000\n" {
+		t.Fatalf("oom_score_adj = %q, want %q", string(got), "-1000\n")
+	}
+}

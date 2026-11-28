@@ -105,6 +105,11 @@ export interface Candidate {
 	admission?: Admission;
 }
 
+function candidateCladefsMemoryFull(c: Candidate): boolean {
+	if (!c.admission?.holding) return false;
+	return c.admission.signals.some((s) => s.holding && s.name === "cladefs-memory");
+}
+
 function candidateHolds(c: Candidate, p?: Placement): boolean {
 	if (!c.admission?.holding) return false;
 	for (const s of c.admission.signals) {
@@ -505,6 +510,17 @@ function pickFromFit(
 		return { chosen: primary, runnerUp, raceImmediate, why };
 	}
 	if (!pinned && waitForCapacity) {
+		return {
+			allBusy: true,
+			busyHosts: ranked.map((c) => c.host),
+			why: "",
+		};
+	}
+	// Even on a single fit node (pinned) or a detached run (!waitForCapacity),
+	// if creating a new workspace (!mine) is required and every fit node's
+	// cladefs daemon is refusing new cells due to host memory fullness, hold
+	// placement until headroom returns rather than failing the workspace fork.
+	if (ranked.every((c) => !c.mine && candidateCladefsMemoryFull(c))) {
 		return {
 			allBusy: true,
 			busyHosts: ranked.map((c) => c.host),

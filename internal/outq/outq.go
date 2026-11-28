@@ -39,6 +39,9 @@ type Query struct {
 	SinceOffset     int64
 	// Raw reads lines as written, not settled.
 	Raw bool
+	// Cols is the terminal width for settled output auto-wrap (0 disables
+	// wrapping, keeping non-TTY lines intact).
+	Cols int
 	// Max is the most lines an answer holds (0 for DefaultMax).
 	Max int
 }
@@ -98,9 +101,14 @@ func (q *Query) max() int {
 	return q.Max
 }
 
-// maxRawLine bounds a raw line held while it is read: past it, a line with
-// no end is cut (its text is clipped in an answer anyway).
-const maxRawLine = 4 * settle.MaxCols
+// maxRawLine bounds a raw line held while it is read for non-grep queries.
+// For --grep on raw output, maxRawGrepLine allows scanning much longer
+// newline-less lines (such as raw progress redraws) so matches deep inside
+// them are still found and surfaced via clipMatch.
+const (
+	maxRawLine     = 4 * settle.MaxCols
+	maxRawGrepLine = 16 << 20
+)
 
 // lines reads src's lines, numbered from 1, calling fn with each, its received
 // timestamp (unix ms, 0 when unknown), and the first line written at or after
@@ -114,6 +122,10 @@ func (q *Query) lines(src TimedSource, fn func(n int64, text string, ts int64, s
 		fn(n, text, ts, sinceLine)
 	}
 	if q.Raw {
+		rawCap := maxRawLine
+		if q.Grep != nil {
+			rawCap = maxRawGrepLine
+		}
 		var partial []byte
 		var lineTs int64
 		err = src(func(off int64, chunk []byte, ts int64) error {
@@ -128,13 +140,13 @@ func (q *Query) lines(src TimedSource, fn func(n int64, text string, ts int64, s
 					if len(chunk) > 0 && ts > 0 {
 						lineTs = ts
 					}
-					partial = append(partial, chunk[:min(len(chunk), max(0, maxRawLine-len(partial)))]...)
+					partial = append(partial, chunk[:min(len(chunk), max(0, rawCap-len(partial)))]...)
 					return nil
 				}
 				if ts > 0 {
 					lineTs = ts
 				}
-				partial = append(partial, chunk[:min(i, max(0, maxRawLine-len(partial)))]...)
+				partial = append(partial, chunk[:min(i, max(0, rawCap-len(partial)))]...)
 				emit(toText(partial), lineTs)
 				partial = partial[:0]
 				lineTs = 0
@@ -147,7 +159,7 @@ func (q *Query) lines(src TimedSource, fn func(n int64, text string, ts int64, s
 		}
 		return n, final, err
 	}
-	sc := settle.NewTimed(emit)
+	sc := settle.NewTimedCols(q.Cols, emit)
 	err = src(func(off int64, chunk []byte, ts int64) error {
 		if q.SinceOffset >= 0 && sinceLine == 0 && off+int64(len(chunk)) > q.SinceOffset {
 			before := max(0, q.SinceOffset-off)
@@ -179,6 +191,42 @@ func clip(s string) string {
 	}
 	r := []rune(s)
 	return string(r[:MaxLineRunes]) + fmt.Sprintf(" …[+%d characters]", len(r)-MaxLineRunes)
+}
+
+// clipMatch clips a matching line to MaxLineRunes, centering the window around
+// the first match when it falls past MaxLineRunes so long lines never hide
+// what --grep matched.
+func clipMatch(s string, re *regexp.Regexp) string {
+	if len(s) <= MaxLineRunes || utf8.RuneCountInString(s) <= MaxLineRunes {
+		return s
+	}
+	if re == nil {
+		return clip(s)
+	}
+	loc := re.FindStringIndex(s)
+	if loc == nil {
+		return clip(s)
+	}
+	matchStartRune := utf8.RuneCountInString(s[:loc[0]])
+	matchEndRune := matchStartRune + utf8.RuneCountInString(s[loc[0]:loc[1]])
+	r := []rune(s)
+	if matchEndRune <= MaxLineRunes {
+		return string(r[:MaxLineRunes]) + fmt.Sprintf(" …[+%d characters]", len(r)-MaxLineRunes)
+	}
+	start := max(0, matchStartRune-MaxLineRunes/4)
+	end := min(len(r), start+MaxLineRunes)
+	if end-start < MaxLineRunes {
+		start = max(0, end-MaxLineRunes)
+	}
+	var b strings.Builder
+	if start > 0 {
+		fmt.Fprintf(&b, "…[+%d characters] ", start)
+	}
+	b.WriteString(string(r[start:end]))
+	if rem := len(r) - end; rem > 0 {
+		fmt.Fprintf(&b, " …[+%d characters]", rem)
+	}
+	return b.String()
 }
 
 // inRange says whether line n is in the range q asks for, given the first
@@ -334,7 +382,11 @@ func (q *Query) grep(src TimedSource) (Answer, error) {
 			cut = true
 			return
 		}
-		a.Lines = append(a.Lines, &pb.OutputLine{Number: n, Text: clip(text), Match: isMatch[n], ReceivedAt: ts})
+		txt := clip(text)
+		if isMatch[n] {
+			txt = clipMatch(text, q.Grep)
+		}
+		a.Lines = append(a.Lines, &pb.OutputLine{Number: n, Text: txt, Match: isMatch[n], ReceivedAt: ts})
 	})
 	if err != nil {
 		return Answer{}, err
@@ -365,7 +417,12 @@ func (q *Query) grep(src TimedSource) (Answer, error) {
 // LineAt is the first line of src written at or after byte offset, or 0
 // when src has not reached it yet; and how many lines src has.
 func LineAt(src Source, offset int64, raw bool) (line, total int64, err error) {
-	q := Query{SinceOffset: offset, Raw: raw}
+	return LineAtCols(src, offset, raw, 0)
+}
+
+// LineAtCols is LineAt with settled auto-wrap at cols (0 disables wrapping).
+func LineAtCols(src Source, offset int64, raw bool, cols int) (line, total int64, err error) {
+	q := Query{SinceOffset: offset, Raw: raw, Cols: cols}
 	total, _, err = q.lines(untimed(src), func(_ int64, _ string, _ int64, since int64) { line = since })
 	return line, total, err
 }
@@ -384,8 +441,13 @@ type Watcher struct {
 
 // NewWatcher watches for a line past after that re matches.
 func NewWatcher(re *regexp.Regexp, after int64, raw bool) *Watcher {
+	return NewWatcherCols(re, after, raw, 0)
+}
+
+// NewWatcherCols is NewWatcher with settled auto-wrap at cols (0 disables wrapping).
+func NewWatcherCols(re *regexp.Regexp, after int64, raw bool, cols int) *Watcher {
 	w := &Watcher{re: re, after: after, raw: raw}
-	w.sc = settle.New(func(text string) {
+	w.sc = settle.NewCols(cols, func(text string) {
 		w.n++
 		w.see(w.n, text)
 	})

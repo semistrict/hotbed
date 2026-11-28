@@ -534,7 +534,7 @@ func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*p
 	var lines []string
 	var timestamps []int64
 	if needsSettle {
-		sc := settle.NewTimed(func(line string, ts int64) {
+		sc := settle.NewTimedCols(s.E.logTTYCols(req.Id, path), func(line string, ts int64) {
 			lines = append(lines, line)
 			timestamps = append(timestamps, ts)
 		})
